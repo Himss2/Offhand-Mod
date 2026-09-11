@@ -1,8 +1,11 @@
 #pragma once
 
+#include <array>
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
+#include <cstring>
+#include <type_traits>
 
 namespace levioffhand::render::native_attachment_fix {
     inline constexpr std::uint32_t kMainhandSlot=5;
@@ -11,7 +14,117 @@ namespace levioffhand::render::native_attachment_fix {
         0x9B36370;
     inline constexpr std::uintptr_t kV2AttachmentDrawCallsiteRva=
         0xA2C87BC;
-    inline constexpr float kBowTppRightOffset=0.20F;
+    inline constexpr std::size_t kBoneLocalPoseOffset=0x70;
+
+    struct LocalAttachmentPose {
+        std::array<float,3> position{};
+        std::array<float,3> rotation{};
+
+        friend constexpr bool operator==(
+            const LocalAttachmentPose&,
+            const LocalAttachmentPose&
+        ) noexcept =default;
+    };
+
+    static_assert(sizeof(LocalAttachmentPose)==24);
+    static_assert(std::is_trivially_copyable_v<LocalAttachmentPose>);
+    static_assert(offsetof(LocalAttachmentPose,position)==0);
+    static_assert(offsetof(LocalAttachmentPose,rotation)==12);
+
+    using LocalPoseMutator=bool(*)(LocalAttachmentPose&) noexcept;
+
+    [[nodiscard]]
+    inline bool validLocalPose(
+        const LocalAttachmentPose& pose
+    ) noexcept {
+        for(const float value:pose.position) {
+            if(!std::isfinite(value)) {
+                return false;
+            }
+        }
+
+        for(const float value:pose.rotation) {
+            if(!std::isfinite(value)) {
+                return false;
+            }
+        }
+
+        return true;
+    }
+
+    [[nodiscard]]
+    inline bool mirrorBowLocalPose(
+        LocalAttachmentPose& pose
+    ) noexcept {
+        if(!validLocalPose(pose)) {
+            return false;
+        }
+
+        pose.position[0]=-pose.position[0];
+        return true;
+    }
+
+    [[nodiscard]]
+    inline bool mirrorAndRotateTridentLocalPose(
+        LocalAttachmentPose& pose
+    ) noexcept {
+        if(!validLocalPose(pose)) {
+            return false;
+        }
+
+        pose.position[0]=-pose.position[0];
+        pose.rotation[2]+=180.0F;
+        return true;
+    }
+
+    class ScopedLocalPoseOverride final {
+    public:
+        ScopedLocalPoseOverride(
+            void* boneState,
+            LocalPoseMutator mutator
+        ) noexcept {
+            if(!boneState || !mutator) {
+                return;
+            }
+
+            mTarget=
+                static_cast<std::byte*>(boneState)
+                + kBoneLocalPoseOffset;
+            std::memcpy(&mOriginal,mTarget,sizeof(mOriginal));
+
+            LocalAttachmentPose corrected=mOriginal;
+            if(!mutator(corrected)) {
+                mTarget=nullptr;
+                return;
+            }
+
+            std::memcpy(mTarget,&corrected,sizeof(corrected));
+            mActive=true;
+        }
+
+        ~ScopedLocalPoseOverride() {
+            if(mActive) {
+                std::memcpy(mTarget,&mOriginal,sizeof(mOriginal));
+            }
+        }
+
+        ScopedLocalPoseOverride(const ScopedLocalPoseOverride&)=delete;
+        ScopedLocalPoseOverride& operator=(
+            const ScopedLocalPoseOverride&
+        )=delete;
+        ScopedLocalPoseOverride(ScopedLocalPoseOverride&&)=delete;
+        ScopedLocalPoseOverride& operator=(ScopedLocalPoseOverride&&)=delete;
+
+        [[nodiscard]]
+        bool active() const noexcept {
+            return mActive;
+        }
+
+    private:
+        std::byte* mTarget=nullptr;
+        LocalAttachmentPose mOriginal{};
+        bool mActive=false;
+    };
 
     template<std::size_t Size>
     [[nodiscard]]
@@ -73,7 +186,7 @@ namespace levioffhand::render::native_attachment_fix {
     }
 
     [[nodiscard]]
-    constexpr bool shouldOffsetBowPose(
+    constexpr bool shouldFixBowLocalPose(
         bool isBow,
         std::uint32_t slot,
         bool isFirstPerson
@@ -103,7 +216,7 @@ namespace levioffhand::render::native_attachment_fix {
     }
 
     [[nodiscard]]
-    constexpr bool shouldFixTridentPose(
+    constexpr bool shouldFixTridentLocalPose(
         bool isTrident,
         std::uint32_t slot,
         bool isFirstPerson
@@ -114,45 +227,4 @@ namespace levioffhand::render::native_attachment_fix {
             && isFirstPerson;
     }
 
-    template<typename MatrixValues>
-    void offsetBowRight(
-        MatrixValues& matrix,
-        float distance=kBowTppRightOffset
-    ) noexcept {
-        // Device calibration established that the held-item semantic
-        // horizontal axis is matrix column 1 (not column 0, which primarily
-        // changed depth in v0.2.48).  Normalize it so attachment scale cannot
-        // amplify the requested visual-right adjustment.
-        const float x=matrix[4];
-        const float y=matrix[5];
-        const float z=matrix[6];
-        const float lengthSquared=x*x+y*y+z*z;
-
-        if(
-            !std::isfinite(distance)
-            || !std::isfinite(lengthSquared)
-            || lengthSquared<=1.0e-12F
-        ) {
-            return;
-        }
-
-        const float scale=distance/std::sqrt(lengthSquared);
-
-        matrix[12]+=x*scale;
-        matrix[13]+=y*scale;
-        matrix[14]+=z*scale;
-    }
-
-    template<typename MatrixValues>
-    void rotateTridentPoleHeadUp(
-        MatrixValues& matrix
-    ) noexcept {
-        // Local M * Rz(180 deg): flip the pole orientation while preserving
-        // its absolute translation.  Hand placement is handled separately by
-        // resolving the attachment owner from rightitem to leftitem.  Never
-        // reflect matrix[12] here: that moved v0.2.48 outside the FPP frustum.
-        for(std::size_t index=0;index<8;++index) {
-            matrix[index]=-matrix[index];
-        }
-    }
 }

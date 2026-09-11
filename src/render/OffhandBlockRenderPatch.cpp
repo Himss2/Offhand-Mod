@@ -303,8 +303,8 @@ namespace levioffhand::render {
         thread_local std::uint32_t gTridentFppAttachmentDepth=0;
         thread_local bool gBowTppBindingLogged=false;
         thread_local bool gTridentFppBindingLogged=false;
-        thread_local bool gBowTppOffsetLogged=false;
-        thread_local bool gTridentFppPoseLogged=false;
+        thread_local bool gBowTppLocalPoseLogged=false;
+        thread_local bool gTridentFppLocalPoseLogged=false;
 
         struct BindingPrefix {
             std::int32_t ownerBoneIndex{-1};
@@ -1296,14 +1296,14 @@ namespace levioffhand::render {
                 );
             const bool offsetBow=
                 effectiveOffhandDraw
-                && native_attachment_fix::shouldOffsetBowPose(
+                && native_attachment_fix::shouldFixBowLocalPose(
                     isBow,
                     slot,
                     isFirstPerson
                 );
             const bool fixPose=
                 effectiveOffhandDraw
-                && native_attachment_fix::shouldFixTridentPose(
+                && native_attachment_fix::shouldFixTridentLocalPose(
                     isTrident,
                     slot,
                     isFirstPerson
@@ -1347,8 +1347,6 @@ namespace levioffhand::render {
                 return;
             }
 
-            original(boneState,pivot,matrix);
-
             if(
                 !boneState
                 || !matrix
@@ -1360,6 +1358,7 @@ namespace levioffhand::render {
                     kComposeAttachmentBoneMatrixCallsiteRva
                 )
             ) {
+                original(boneState,pivot,matrix);
                 return;
             }
 
@@ -1384,49 +1383,53 @@ namespace levioffhand::render {
                 gTridentFppAttachmentDepth!=0
                 && boneNameHash==native_attachment_fix::kPoleBoneHash;
 
-            if(!offsetBowRoot && !fixTridentRoot) {
-                return;
-            }
-
+            native_attachment_fix::LocalPoseMutator localPoseMutator=nullptr;
             if(offsetBowRoot) {
-                native_attachment_fix::offsetBowRight(matrix->value);
+                localPoseMutator=
+                    &native_attachment_fix::mirrorBowLocalPose;
+            } else if(fixTridentRoot) {
+                localPoseMutator=
+                    &native_attachment_fix::mirrorAndRotateTridentLocalPose;
             }
 
-            if(fixTridentRoot) {
-                native_attachment_fix::rotateTridentPoleHeadUp(
-                    matrix->value
-                );
-            }
-
-            // F147ED0 returns the same composed matrix in x2 and caches it in
-            // boneState+0x30. Keep both copies identical so child bones inherit
-            // the corrected root and the final geometry uses that same pose.
-            writeValue<OffhandBlockRenderPatch::Matrix64>(
+            // F147ED0 consumes the animated local position/rotation from
+            // boneState+0x70 before producing its composed matrix. v0.2.49
+            // changed that output after composition, which emitted markers but
+            // did not move the model on device. Override only the target root's
+            // local pose for this native call; RAII restores all 24 bytes before
+            // the detour returns so animation state cannot accumulate or leak.
+            native_attachment_fix::ScopedLocalPoseOverride localPoseOverride(
                 boneState,
-                0x30,
-                *matrix
+                localPoseMutator
             );
 
-            if(offsetBowRoot && !gBowTppOffsetLogged) {
-                gBowTppOffsetLogged=true;
+            original(boneState,pivot,matrix);
+
+            if(
+                offsetBowRoot
+                && localPoseOverride.active()
+                && !gBowTppLocalPoseLogged
+            ) {
+                gBowTppLocalPoseLogged=true;
                 __android_log_print(
                     ANDROID_LOG_INFO,
                     kLogTag,
-                    "[BowTppRightOffset] slot6 root moved %.2f on "
-                    "semantic horizontal axis",
-                    static_cast<double>(
-                        native_attachment_fix::kBowTppRightOffset
-                    )
+                    "[BowTppLocalPose] slot6 rightitem local position.x "
+                    "mirrored before native composition"
                 );
             }
 
-            if(fixTridentRoot && !gTridentFppPoseLogged) {
-                gTridentFppPoseLogged=true;
+            if(
+                fixTridentRoot
+                && localPoseOverride.active()
+                && !gTridentFppLocalPoseLogged
+            ) {
+                gTridentFppLocalPoseLogged=true;
                 __android_log_print(
                     ANDROID_LOG_INFO,
                     kLogTag,
-                    "[TridentFppPoleRotation] slot6 pole rotated Z180; "
-                    "translation preserved"
+                    "[TridentFppLocalPose] slot6 pole local position.x "
+                    "mirrored and rotation.z advanced 180 degrees"
                 );
             }
         }
@@ -2821,8 +2824,8 @@ namespace levioffhand::render {
         gTridentFppAttachmentDepth=0;
         gBowTppBindingLogged=false;
         gTridentFppBindingLogged=false;
-        gBowTppOffsetLogged=false;
-        gTridentFppPoseLogged=false;
+        gBowTppLocalPoseLogged=false;
+        gTridentFppLocalPoseLogged=false;
 
         gCurrentToolFamily=
             ToolFamily::None;
@@ -3420,8 +3423,8 @@ namespace levioffhand::render {
         gTridentFppAttachmentDepth=0;
         gBowTppBindingLogged=false;
         gTridentFppBindingLogged=false;
-        gBowTppOffsetLogged=false;
-        gTridentFppPoseLogged=false;
+        gBowTppLocalPoseLogged=false;
+        gTridentFppLocalPoseLogged=false;
 
 
         mRenderOffhandOriginal=nullptr;
@@ -3641,8 +3644,8 @@ namespace levioffhand::render {
         gTridentFppAttachmentDepth=0;
         gBowTppBindingLogged=false;
         gTridentFppBindingLogged=false;
-        gBowTppOffsetLogged=false;
-        gTridentFppPoseLogged=false;
+        gBowTppLocalPoseLogged=false;
+        gTridentFppLocalPoseLogged=false;
 
         __android_log_print(
             ANDROID_LOG_INFO,
