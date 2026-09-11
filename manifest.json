@@ -2,7 +2,7 @@
   "type": "preload-native",
   "name": "Levi Offhand",
   "author": "Himss2",
-  "version": "0.2.49",
+  "version": "0.2.50",
   "entry": "liblevi_offhand.so",
   "minecraft_versions": [
     "1.26.45.1"

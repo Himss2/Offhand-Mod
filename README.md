@@ -2,21 +2,25 @@
 
 Native Levi Launcher Android mod for Minecraft Bedrock **1.26.45.1**.
 
-## v0.2.49 — Runtime-corrected native attachment poses
+## v0.2.50 — Pre-composition local attachment poses
 
 This version keeps arbitrary offhand storage and the existing item/block
-rendering support, then corrects the two remaining native attachment cases:
+rendering support, then moves the two remaining native attachment corrections
+to the local animated pose that Minecraft actually consumes:
 
 - Bow in TPP keeps the proven native slot-6 `rightitem` to owner `leftitem`
-  binding, so there is still exactly one Bow in the offhand. Its `0.20`
-  adjustment now follows the renderer's semantic horizontal basis
-  (`matrix[4..6]`). v0.2.48 used column 0, which primarily changed depth and
-  therefore produced no visible rightward movement.
+  binding, so there is still exactly one Bow in the offhand. Only the root's
+  local animated `position.x` is mirrored before native matrix composition.
 - Trident in FPP now moves sides by resolving its attachment owner from
-  `rightitem` to `leftitem` only inside the exact first-person slot-6 pass.
-  Its `pole` root is then rotated 180 degrees while preserving translation.
-  This removes the v0.2.48 absolute-X reflection that moved the model outside
-  the FPP frustum and made it disappear.
+  `rightitem` to `leftitem` only inside the exact first-person slot-6 pass. The
+  `pole` root's local `position.x` is mirrored and its local Z rotation is
+  advanced 180 degrees before composition.
+
+v0.2.49 edited the already-composed output matrix. Device logs proved those
+hooks ran, but the visual pose did not change. v0.2.50 instead temporarily
+edits bone state `+0x70..+0x87`, calls the native composer, and restores the
+original 24 bytes immediately. This prevents animation changes from leaking or
+accumulating across camera, item, actor, and inventory-preview renders.
 
 The Bow FPP mask and the correct Trident TPP path remain in place. The failed
 TPP experiments that enabled a second generic Bow or suppressed the whole
@@ -40,7 +44,7 @@ bash ./scripts/build.sh
 The arm64 package is written to:
 
 ```text
-dist/arm64-v8a/levi-offhand-v0.2.49.levipack
+dist/arm64-v8a/levi-offhand-v0.2.50.levipack
 ```
 
 ## Runtime validation
@@ -54,5 +58,5 @@ Use the exact Minecraft version above and check:
 5. Mainhand items and other players' equipment continue to render normally.
 
 Useful one-time log markers are `[BowTppBoneBinding]`,
-`[BowTppRightOffset]`, `[TridentFppBoneBinding]`, and
-`[TridentFppPoleRotation]`.
+`[BowTppLocalPose]`, `[TridentFppBoneBinding]`, and
+`[TridentFppLocalPose]`.
