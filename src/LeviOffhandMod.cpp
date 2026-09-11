@@ -96,10 +96,10 @@ public:
             "Bow FPP fixed: generic FIRSTPERSON_LEFT with native DataDriven Bow masked"
         );
         context.logger().info(
-            "Bow TPP fix v0.2.49: native slot6 Bow shifted right on semantic horizontal axis"
+            "Bow TPP fix v0.2.50: slot6 rightitem local position.x mirrored before composition"
         );
         context.logger().info(
-            "Trident FPP fix v0.2.49: slot6 owner bound left; pole rotated 180 degrees"
+            "Trident FPP fix v0.2.50: slot6 owner bound left; pole local X mirrored and Z rotated 180 degrees"
         );
         context.logger().info(
             "Decorated Pot/Copper calibration frozen as default values"
