@@ -2,6 +2,7 @@ from pathlib import Path
 
 
 SOURCE = Path("src/render/OffhandBlockRenderPatch.cpp").read_text()
+NATIVE_HELPER = Path("src/render/NativeAttachmentFix.hpp").read_text()
 
 
 required = {
@@ -33,19 +34,24 @@ required = {
     "Trident FPP binding depth": "gTridentFppBindingDepth",
     "Trident FPP binding marker": "[TridentFppBoneBinding]",
     "Bow TPP draw depth": "gBowTppAttachmentDepth",
-    "Bow pose scope": "shouldOffsetBowPose(",
-    "Bow root offset": "offsetBowRight(",
-    "Bow root offset marker": "[BowTppRightOffset]",
-    "Trident exact scope": "shouldFixTridentPose(",
+    "Bow pose scope": "shouldFixBowLocalPose(",
+    "scoped local pose override": "ScopedLocalPoseOverride localPoseOverride(",
+    "Bow local pose correction": "mirrorBowLocalPose",
+    "Bow local pose marker": "[BowTppLocalPose]",
+    "Trident exact scope": "shouldFixTridentLocalPose(",
     "Trident pole guard": "kPoleBoneHash",
-    "Trident matrix correction": "rotateTridentPoleHeadUp(",
-    "Trident pole rotation marker": "[TridentFppPoleRotation]",
+    "Trident local pose correction": "mirrorAndRotateTridentLocalPose",
+    "Trident local pose marker": "[TridentFppLocalPose]",
     "FPP Bow mask retained": "BowFppWeakItemMask bowMask",
     "native Trident retained": "suppress generic item-form submission",
 }
 
 for name, marker in required.items():
     assert marker in SOURCE, f"missing {name}: {marker}"
+
+assert "kBoneLocalPoseOffset=0x70" in NATIVE_HELPER, (
+    "missing binary-proven local pose state offset"
+)
 
 
 forbidden = {
@@ -59,10 +65,27 @@ forbidden = {
         "kDrawAttachmentCallsiteRva=0x9B36A18",
     "Trident absolute-position reflection": "matrix[12]=-matrix[12]",
     "obsolete combined Trident transform": "mirrorToOffhandAndFlipPole(",
+    "v0.2.49 Bow composed-matrix offset": "offsetBowRight(",
+    "v0.2.49 Trident composed-matrix rotation":
+        "rotateTridentPoleHeadUp(",
+    "manual composed-matrix cache overwrite":
+        "writeValue<OffhandBlockRenderPatch::Matrix64>(",
+    "v0.2.49 Bow marker": "[BowTppRightOffset]",
+    "v0.2.49 Trident marker": "[TridentFppPoleRotation]",
 }
 
 for name, marker in forbidden.items():
     assert marker not in SOURCE, f"stale or unsafe {name}: {marker}"
+
+
+compose_start = SOURCE.index("void composeAttachmentBoneMatrixDetour(")
+compose_end = SOURCE.index("using FirstPersonDataDrivenFn=", compose_start)
+compose_body = SOURCE[compose_start:compose_end]
+override_index = compose_body.index("ScopedLocalPoseOverride localPoseOverride(")
+original_index = compose_body.rindex("original(boneState,pivot,matrix);")
+assert override_index < original_index, (
+    "local attachment pose must be overridden before F147ED0 composition"
+)
 
 
 print(f"native attachment source contract passed: {len(required)} required, "

@@ -3,7 +3,10 @@
 #include <array>
 #include <cassert>
 #include <cmath>
+#include <cstddef>
 #include <cstdint>
+#include <cstring>
+#include <limits>
 
 namespace fix = levioffhand::render::native_attachment_fix;
 
@@ -71,45 +74,11 @@ namespace {
         );
     }
 
-    void testBowPoseOffsetScope() {
-        static_assert(fix::kBowTppRightOffset==0.20F);
-        assert(fix::shouldOffsetBowPose(true, 6, false));
-        assert(!fix::shouldOffsetBowPose(true, 5, false));
-        assert(!fix::shouldOffsetBowPose(true, 6, true));
-        assert(!fix::shouldOffsetBowPose(false, 6, false));
-    }
-
-    void testBowPoseOffset() {
-        // The renderer's semantic horizontal axis is matrix column 1.  Point
-        // that local axis along world +X so the expected screen-right shift
-        // is unambiguous and cannot accidentally regress to column 0/depth.
-        std::array<float, 16> matrix{
-             0.0F, -2.0F,  0.0F,  0.0F,
-             3.0F,  0.0F,  0.0F,  0.0F,
-             0.0F,  0.0F,  4.0F,  0.0F,
-             5.0F,  6.0F,  7.0F,  1.0F
-        };
-
-        fix::offsetBowRight(
-            matrix,
-            fix::kBowTppRightOffset
-        );
-
-        const std::array<float, 16> expected{
-             0.0F, -2.0F,  0.0F,  0.0F,
-             3.0F,  0.0F,  0.0F,  0.0F,
-             0.0F,  0.0F,  4.0F,  0.0F,
-             5.2F,  6.0F,  7.0F,  1.0F
-        };
-
-        for(std::size_t index=0;index<matrix.size();++index) {
-            assert(std::fabs(matrix[index]-expected[index])<1.0e-6F);
-        }
-
-        std::array<float, 16> degenerate{};
-        degenerate[12]=1.0F;
-        fix::offsetBowRight(degenerate,0.20F);
-        assert(degenerate[12]==1.0F);
+    void testBowLocalPoseScope() {
+        assert(fix::shouldFixBowLocalPose(true, 6, false));
+        assert(!fix::shouldFixBowLocalPose(true, 5, false));
+        assert(!fix::shouldFixBowLocalPose(true, 6, true));
+        assert(!fix::shouldFixBowLocalPose(false, 6, false));
     }
 
     void testTridentPoseScope() {
@@ -118,30 +87,122 @@ namespace {
         assert(!fix::shouldRemapTridentOwnerBone(true, 6, false));
         assert(!fix::shouldRemapTridentOwnerBone(false, 6, true));
 
-        assert(fix::shouldFixTridentPose(true, 6, true));
-        assert(!fix::shouldFixTridentPose(true, 5, true));
-        assert(!fix::shouldFixTridentPose(true, 6, false));
-        assert(!fix::shouldFixTridentPose(false, 6, true));
+        assert(fix::shouldFixTridentLocalPose(true, 6, true));
+        assert(!fix::shouldFixTridentLocalPose(true, 5, true));
+        assert(!fix::shouldFixTridentLocalPose(true, 6, false));
+        assert(!fix::shouldFixTridentLocalPose(false, 6, true));
     }
 
-    void testTridentMatrixCorrection() {
-        std::array<float, 16> matrix{
-             1.0F,  2.0F,  3.0F,  4.0F,
-             5.0F,  6.0F,  7.0F,  8.0F,
-             9.0F, 10.0F, 11.0F, 12.0F,
-            13.0F, 14.0F, 15.0F, 16.0F
+    void testBowLocalPoseMirrorsOnlyHorizontalPosition() {
+        fix::LocalAttachmentPose pose{
+            {-7.0F, -3.0F, -2.0F},
+            {152.0F, -9.0F, 25.0F}
         };
 
-        fix::rotateTridentPoleHeadUp(matrix);
+        assert(fix::mirrorBowLocalPose(pose));
 
-        const std::array<float, 16> expected{
-            -1.0F, -2.0F, -3.0F, -4.0F,
-             -5.0F, -6.0F, -7.0F, -8.0F,
-              9.0F, 10.0F, 11.0F, 12.0F,
-             13.0F, 14.0F, 15.0F, 16.0F
+        const fix::LocalAttachmentPose expected{
+            {7.0F, -3.0F, -2.0F},
+            {152.0F, -9.0F, 25.0F}
+        };
+        assert(pose == expected);
+    }
+
+    void testTridentLocalPoseMirrorsPositionAndTurnsPole() {
+        fix::LocalAttachmentPose pose{
+            {-7.0F, -3.0F, -2.0F},
+            {152.0F, -9.0F, 25.0F}
         };
 
-        assert(matrix == expected);
+        assert(fix::mirrorAndRotateTridentLocalPose(pose));
+
+        const fix::LocalAttachmentPose expected{
+            {7.0F, -3.0F, -2.0F},
+            {152.0F, -9.0F, 205.0F}
+        };
+        assert(pose == expected);
+    }
+
+    void testInvalidLocalPoseIsNotMutated() {
+        fix::LocalAttachmentPose pose{
+            {std::numeric_limits<float>::infinity(), 2.0F, 3.0F},
+            {4.0F, 5.0F, 6.0F}
+        };
+        const auto original=pose;
+
+        assert(!fix::mirrorBowLocalPose(pose));
+        assert(pose == original);
+        assert(!fix::mirrorAndRotateTridentLocalPose(pose));
+        assert(pose == original);
+    }
+
+    void testScopedLocalPoseOverrideRestoresBoneState() {
+        std::array<
+            std::byte,
+            fix::kBoneLocalPoseOffset+sizeof(fix::LocalAttachmentPose)
+        > boneState{};
+        const fix::LocalAttachmentPose original{
+            {-4.0F, 2.0F, 3.0F},
+            {10.0F, 20.0F, 30.0F}
+        };
+        std::memcpy(
+            boneState.data()+fix::kBoneLocalPoseOffset,
+            &original,
+            sizeof(original)
+        );
+
+        {
+            fix::ScopedLocalPoseOverride override(
+                boneState.data(),
+                &fix::mirrorBowLocalPose
+            );
+            assert(override.active());
+
+            fix::LocalAttachmentPose during{};
+            std::memcpy(
+                &during,
+                boneState.data()+fix::kBoneLocalPoseOffset,
+                sizeof(during)
+            );
+            assert(during.position[0] == 4.0F);
+            assert(during.position[1] == 2.0F);
+            assert(during.rotation[2] == 30.0F);
+        }
+
+        fix::LocalAttachmentPose restored{};
+        std::memcpy(
+            &restored,
+            boneState.data()+fix::kBoneLocalPoseOffset,
+            sizeof(restored)
+        );
+        assert(restored == original);
+    }
+
+    void testInactiveLocalPoseOverrideLeavesBoneStateUntouched() {
+        std::array<
+            std::byte,
+            fix::kBoneLocalPoseOffset+sizeof(fix::LocalAttachmentPose)
+        > boneState{};
+        const fix::LocalAttachmentPose original{
+            {1.0F, 2.0F, 3.0F},
+            {4.0F, 5.0F, 6.0F}
+        };
+        std::memcpy(
+            boneState.data()+fix::kBoneLocalPoseOffset,
+            &original,
+            sizeof(original)
+        );
+
+        fix::ScopedLocalPoseOverride override(boneState.data(),nullptr);
+        assert(!override.active());
+
+        fix::LocalAttachmentPose unchanged{};
+        std::memcpy(
+            &unchanged,
+            boneState.data()+fix::kBoneLocalPoseOffset,
+            sizeof(unchanged)
+        );
+        assert(unchanged == original);
     }
 }
 
@@ -149,8 +210,11 @@ int main() {
     testKnownSlotHashes();
     testBowBindingScope();
     testEffectiveOffhandDrawCallsite();
-    testBowPoseOffsetScope();
-    testBowPoseOffset();
+    testBowLocalPoseScope();
     testTridentPoseScope();
-    testTridentMatrixCorrection();
+    testBowLocalPoseMirrorsOnlyHorizontalPosition();
+    testTridentLocalPoseMirrorsPositionAndTurnsPole();
+    testInvalidLocalPoseIsNotMutated();
+    testScopedLocalPoseOverrideRestoresBoneState();
+    testInactiveLocalPoseOverrideLeavesBoneStateUntouched();
 }

@@ -85,9 +85,31 @@ def main() -> None:
             expected
         ), f"entry fingerprint changed at 0x{address:X}"
 
+    local_pose_reads = {
+        0xF147EEC: "0204476d",  # LDP D2,D1,[X0,#0x70]: position
+        0xF147FF0: "01c047fc",  # LDUR D1,[X0,#0x7C]: rotation x/y
+        0xF147FF4: "024048fc",  # LDUR D2,[X0,#0x84]: rotation z
+    }
+    for address, expected in local_pose_reads.items():
+        assert load_virtual_bytes(binary, address, 4) == bytes.fromhex(
+            expected
+        ), f"local-pose field read changed at 0x{address:X}"
+
+    composed_matrix_stores = {
+        0xF148478: "018001ad",
+        0xF14847C: "028c02ad",
+        0xF1484A0: "018001ad",
+        0xF1484A4: "028c02ad",
+    }
+    for address, expected in composed_matrix_stores.items():
+        assert load_virtual_bytes(binary, address, 4) == bytes.fromhex(
+            expected
+        ), f"composed-matrix cache store changed at 0x{address:X}"
+
     print(
         "native attachment binary contract passed: "
-        "1 slot, 9 branches, 4 entry fingerprints"
+        "1 slot, 9 branches, 4 entry fingerprints, "
+        "3 local-pose reads, 4 composed-matrix stores"
     )
 
 
