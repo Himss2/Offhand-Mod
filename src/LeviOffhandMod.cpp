@@ -96,10 +96,10 @@ public:
             "Bow FPP fixed: generic FIRSTPERSON_LEFT with native DataDriven Bow masked"
         );
         context.logger().info(
-            "Bow TPP v0.2.51: local X mirrored plus 0.20 extra-left offset"
+            "Bow TPP v0.2.52: native owner matrix preserved; 0.20 semantic-right offset"
         );
         context.logger().info(
-            "Trident FPP v0.2.51: native 3D cache recomposition and binding diagnostics active"
+            "Trident FPP v0.2.52: native owner matrix preserved; pole rotation is post-compose"
         );
         context.logger().info(
             "Decorated Pot/Copper calibration frozen as default values"
