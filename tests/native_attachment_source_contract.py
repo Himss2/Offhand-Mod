@@ -35,16 +35,14 @@ required = {
     "Trident FPP binding marker": "[TridentFppBoneBinding]",
     "Bow TPP draw depth": "gBowTppAttachmentDepth",
     "Bow pose scope": "shouldFixBowLocalPose(",
-    "scoped local pose override": "ScopedLocalPoseOverride localPoseOverride(",
-    "Bow calibrated local pose correction": "mirrorAndOffsetBowLocalPose",
-    "Bow local pose marker": "[BowTppLocalPose]",
+    "Bow post-compose visual-right correction": "offsetBowRight(",
+    "Bow post-compose marker": "[BowTppRightOffset]",
     "Trident exact scope": "shouldFixTridentLocalPose(",
     "Trident pole guard": "kPoleBoneHash",
-    "Trident local pose correction": "mirrorAndRotateTridentLocalPose",
-    "Trident local pose marker": "[TridentFppLocalPose]",
+    "Trident post-compose rotation": "rotateTridentPoleHeadUp(",
+    "Trident post-compose marker": "[TridentFppPoleRotation]",
     "Trident native prepare probe": "[TridentFppPrepareProbe]",
     "Trident owner binding probe": "[TridentFppBindingProbe]",
-    "Trident pole pose probe": "[TridentFppPolePose]",
     "Trident composed matrix probe": "[TridentFppPoleMatrix]",
     "bounded native probe budget": "consumeProbeBudget(",
     "FPP Bow mask retained": "BowFppWeakItemMask bowMask",
@@ -76,13 +74,8 @@ forbidden = {
         "kDrawAttachmentCallsiteRva=0x9B36A18",
     "Trident absolute-position reflection": "matrix[12]=-matrix[12]",
     "obsolete combined Trident transform": "mirrorToOffhandAndFlipPole(",
-    "v0.2.49 Bow composed-matrix offset": "offsetBowRight(",
-    "v0.2.49 Trident composed-matrix rotation":
-        "rotateTridentPoleHeadUp(",
     "manual composed-matrix cache overwrite":
         "writeValue<OffhandBlockRenderPatch::Matrix64>(",
-    "v0.2.49 Bow marker": "[BowTppRightOffset]",
-    "v0.2.49 Trident marker": "[TridentFppPoleRotation]",
     "v0.2.50 mirror-only Bow helper": "mirrorBowLocalPose",
 }
 
@@ -93,10 +86,17 @@ for name, marker in forbidden.items():
 compose_start = SOURCE.index("void composeAttachmentBoneMatrixDetour(")
 compose_end = SOURCE.index("using FirstPersonDataDrivenFn=", compose_start)
 compose_body = SOURCE[compose_start:compose_end]
-override_index = compose_body.index("ScopedLocalPoseOverride localPoseOverride(")
 original_index = compose_body.rindex("original(boneState,pivot,matrix);")
-assert override_index < original_index, (
-    "local attachment pose must be overridden before F147ED0 composition"
+bow_index = compose_body.index("offsetBowRight(")
+trident_index = compose_body.index("rotateTridentPoleHeadUp(")
+assert original_index < bow_index, (
+    "Bow correction must preserve the native cached owner matrix and run after F147ED0"
+)
+assert original_index < trident_index, (
+    "Trident rotation must preserve the native cached owner matrix and run after F147ED0"
+)
+assert "ScopedLocalPoseOverride localPoseOverride(" not in compose_body, (
+    "attachment compose must not invalidate +0xDE and discard the native owner binding"
 )
 
 

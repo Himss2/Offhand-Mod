@@ -169,6 +169,55 @@ namespace {
         assert(pose == expected);
     }
 
+
+    void testBowMatrixOffsetMovesTowardVisualRight() {
+        std::array<float,16> matrix{
+            1.0F,0.0F,0.0F,0.0F,
+            0.0F,3.0F,4.0F,0.0F,
+            0.0F,0.0F,1.0F,0.0F,
+            10.0F,20.0F,30.0F,1.0F
+        };
+
+        assert(fix::offsetBowRight(matrix.data(),0.20F));
+        assert(std::fabs(matrix[12]-10.0F)<1.0e-6F);
+        assert(std::fabs(matrix[13]-20.12F)<1.0e-6F);
+        assert(std::fabs(matrix[14]-30.16F)<1.0e-6F);
+    }
+
+    void testBowMatrixOffsetRejectsDegenerateHorizontalBasis() {
+        std::array<float,16> matrix{};
+        matrix[15]=1.0F;
+        const auto original=matrix;
+
+        assert(!fix::offsetBowRight(matrix.data(),0.20F));
+        assert(matrix==original);
+    }
+
+    void testTridentMatrixRotationPreservesNativeOwnerTranslation() {
+        std::array<float,16> matrix{
+            1.0F,2.0F,3.0F,0.0F,
+            4.0F,5.0F,6.0F,0.0F,
+            7.0F,8.0F,9.0F,0.0F,
+            10.0F,11.0F,12.0F,1.0F
+        };
+
+        assert(fix::rotateTridentPoleHeadUp(matrix.data()));
+
+        const std::array<float,16> expected{
+            -1.0F,-2.0F,-3.0F,-0.0F,
+            -4.0F,-5.0F,-6.0F,-0.0F,
+             7.0F, 8.0F, 9.0F, 0.0F,
+            10.0F,11.0F,12.0F,1.0F
+        };
+
+        for(std::size_t i=0;i<matrix.size();++i) {
+            assert(std::fabs(matrix[i]-expected[i])<1.0e-6F);
+        }
+        assert(matrix[12]==10.0F);
+        assert(matrix[13]==11.0F);
+        assert(matrix[14]==12.0F);
+    }
+
     void testInvalidLocalPoseIsNotMutated() {
         fix::LocalAttachmentPose pose{
             {std::numeric_limits<float>::infinity(), 2.0F, 3.0F},
@@ -326,6 +375,9 @@ int main() {
     testOwnerBoneHashClassificationForNativeProbe();
     testProbeBudgetStopsLogSpamAtLimit();
     testTridentLocalPoseMirrorsPositionAndTurnsPole();
+    testBowMatrixOffsetMovesTowardVisualRight();
+    testBowMatrixOffsetRejectsDegenerateHorizontalBasis();
+    testTridentMatrixRotationPreservesNativeOwnerTranslation();
     testInvalidLocalPoseIsNotMutated();
     testScopedLocalPoseOverrideRestoresBoneState();
     testScopedOverrideForcesRecomposeAndRestoresNativeCache();
