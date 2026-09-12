@@ -1,6 +1,7 @@
 #pragma once
 
 #include <array>
+#include <atomic>
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
@@ -17,57 +18,13 @@ namespace levioffhand::render::native_attachment_fix {
     inline constexpr std::size_t kBoneComposedMatrixOffset=0x30;
     inline constexpr std::size_t kBoneComposedMatrixSize=64;
     inline constexpr std::size_t kBoneLocalPoseOffset=0x70;
+    inline constexpr std::size_t kBoneBindingModeOffset=0xDC;
     inline constexpr std::size_t kBoneMatrixCachedOffset=0xDE;
-    inline constexpr float kBowTppExtraLeftOffset=0.20F;
-    inline constexpr float kBowTppRightOffset=0.20F;
-
-    [[nodiscard]]
-    inline bool offsetBowRight(
-        float* matrix,
-        float distance=kBowTppRightOffset
-    ) noexcept {
-        if(!matrix || !std::isfinite(distance)) {
-            return false;
-        }
-
-        const float x=matrix[4];
-        const float y=matrix[5];
-        const float z=matrix[6];
-        const float lengthSquared=x*x+y*y+z*z;
-        if(!std::isfinite(lengthSquared) || lengthSquared<=1.0e-8F) {
-            return false;
-        }
-
-        const float inverseLength=1.0F/std::sqrt(lengthSquared);
-        matrix[12]+=x*inverseLength*distance;
-        matrix[13]+=y*inverseLength*distance;
-        matrix[14]+=z*inverseLength*distance;
-        return
-            std::isfinite(matrix[12])
-            && std::isfinite(matrix[13])
-            && std::isfinite(matrix[14]);
-    }
-
-    [[nodiscard]]
-    inline bool rotateTridentPoleHeadUp(float* matrix) noexcept {
-        if(!matrix) {
-            return false;
-        }
-
-        for(std::size_t index=0;index<16;++index) {
-            if(!std::isfinite(matrix[index])) {
-                return false;
-            }
-        }
-
-        // Post-multiply the native attachment matrix by Rz(180deg).
-        // Only basis columns 0 and 1 change sign; translation column 3
-        // remains byte-for-byte anchored to Minecraft's owner-bone matrix.
-        for(std::size_t index=0;index<8;++index) {
-            matrix[index]=-matrix[index];
-        }
-        return true;
-    }
+    inline constexpr std::uintptr_t kBindingModeFirstReadCallsiteRva=
+        0x9B37780;
+    inline constexpr std::uintptr_t kBindingModeSecondReadCallsiteRva=
+        0x9B377D8;
+    inline constexpr float kBowTppExtraLeftOffset=0.10F;
 
     struct LocalAttachmentPose {
         std::array<float,3> position{};
@@ -117,19 +74,6 @@ namespace levioffhand::render::native_attachment_fix {
         pose.position[0]=
             mirroredX
             + std::copysign(kBowTppExtraLeftOffset,mirroredX);
-        return true;
-    }
-
-    [[nodiscard]]
-    inline bool mirrorAndRotateTridentLocalPose(
-        LocalAttachmentPose& pose
-    ) noexcept {
-        if(!validLocalPose(pose)) {
-            return false;
-        }
-
-        pose.position[0]=-pose.position[0];
-        pose.rotation[2]+=180.0F;
         return true;
     }
 
@@ -239,6 +183,166 @@ namespace levioffhand::render::native_attachment_fix {
     inline constexpr std::uint64_t kPoleBoneHash=
         fnv1("pole");
 
+    [[nodiscard]]
+    constexpr bool isRightOwnerBoneHash(
+        std::uint64_t hash
+    ) noexcept {
+        return
+            hash==kRightItemLowerHash
+            || hash==kRightItemCamelHash;
+    }
+
+    [[nodiscard]]
+    constexpr bool shouldForceTridentBindingResolve(
+        bool isTrident,
+        std::uint32_t slot,
+        bool isFirstPerson,
+        std::uintptr_t callsiteRva,
+        std::uint64_t sourceHash,
+        std::uint8_t nativeMode,
+        bool alreadyResolved
+    ) noexcept {
+        return
+            isTrident
+            && slot==kOffhandSlot
+            && isFirstPerson
+            && callsiteRva==kBindingModeFirstReadCallsiteRva
+            && isRightOwnerBoneHash(sourceHash)
+            && nativeMode!=0
+            && !alreadyResolved;
+    }
+
+    template<std::size_t Capacity>
+    class ResolvedBindingCache final {
+        static_assert(Capacity>0);
+
+    public:
+        void clear() noexcept {
+            mEntries.fill(nullptr);
+            mNextReplacement=0;
+        }
+
+        [[nodiscard]]
+        bool synchronize(std::uint64_t generation) noexcept {
+            if(mGeneration==generation) {
+                return false;
+            }
+
+            clear();
+            mGeneration=generation;
+            return true;
+        }
+
+        [[nodiscard]]
+        bool contains(const void* bindingState) const noexcept {
+            if(!bindingState) {
+                return false;
+            }
+
+            for(const void* resolved:mEntries) {
+                if(resolved==bindingState) {
+                    return true;
+                }
+            }
+
+            return false;
+        }
+
+        [[nodiscard]]
+        bool recordResolution(
+            const void* bindingState,
+            bool resolved
+        ) noexcept {
+            if(!resolved || !bindingState) {
+                return false;
+            }
+
+            if(contains(bindingState)) {
+                return true;
+            }
+
+            for(const void*& entry:mEntries) {
+                if(!entry) {
+                    entry=bindingState;
+                    return true;
+                }
+            }
+
+            mEntries[mNextReplacement]=bindingState;
+            mNextReplacement=(mNextReplacement+1)%Capacity;
+            return true;
+        }
+
+    private:
+        std::array<const void*,Capacity> mEntries{};
+        std::size_t mNextReplacement=0;
+        std::uint64_t mGeneration=0;
+    };
+
+    // Reentrant reader admission for a published trampoline set. Closing the
+    // gate rejects new threads, while nested calls on an already-admitted
+    // thread remain valid until the outermost guard releases its reader.
+    class ScopedHookRead final {
+    public:
+        ScopedHookRead(
+            std::atomic_bool& ready,
+            std::atomic_uint32_t& activeReaders
+        ) noexcept {
+            if(sDepth!=0) {
+                if(sActiveReaders!=&activeReaders) {
+                    return;
+                }
+
+                ++sDepth;
+                mEntered=true;
+                return;
+            }
+
+            if(!ready.load(std::memory_order_seq_cst)) {
+                return;
+            }
+
+            activeReaders.fetch_add(1,std::memory_order_seq_cst);
+            if(!ready.load(std::memory_order_seq_cst)) {
+                activeReaders.fetch_sub(1,std::memory_order_seq_cst);
+                return;
+            }
+
+            sActiveReaders=&activeReaders;
+            sDepth=1;
+            mEntered=true;
+        }
+
+        ~ScopedHookRead() {
+            if(!mEntered) {
+                return;
+            }
+
+            --sDepth;
+            if(sDepth==0) {
+                auto* activeReaders=sActiveReaders;
+                sActiveReaders=nullptr;
+                activeReaders->fetch_sub(1,std::memory_order_seq_cst);
+            }
+        }
+
+        ScopedHookRead(const ScopedHookRead&)=delete;
+        ScopedHookRead& operator=(const ScopedHookRead&)=delete;
+        ScopedHookRead(ScopedHookRead&&)=delete;
+        ScopedHookRead& operator=(ScopedHookRead&&)=delete;
+
+        [[nodiscard]]
+        bool entered() const noexcept {
+            return mEntered;
+        }
+
+    private:
+        inline static thread_local std::atomic_uint32_t*
+            sActiveReaders=nullptr;
+        inline static thread_local std::uint32_t sDepth=0;
+        bool mEntered=false;
+    };
+
     enum class OwnerBoneHashKind:std::uint8_t {
         RightItemLower,
         RightItemCamel,
@@ -287,24 +391,28 @@ namespace levioffhand::render::native_attachment_fix {
     constexpr bool shouldRemapBowOwnerBone(
         bool isBow,
         std::uint32_t slot,
-        bool isFirstPerson
+        bool isFirstPerson,
+        bool hooksReady
     ) noexcept {
         return
             isBow
             && slot==kOffhandSlot
-            && !isFirstPerson;
+            && !isFirstPerson
+            && hooksReady;
     }
 
     [[nodiscard]]
     constexpr bool shouldRemapTridentOwnerBone(
         bool isTrident,
         std::uint32_t slot,
-        bool isFirstPerson
+        bool isFirstPerson,
+        bool hooksReady
     ) noexcept {
         return
             isTrident
             && slot==kOffhandSlot
-            && isFirstPerson;
+            && isFirstPerson
+            && hooksReady;
     }
 
     [[nodiscard]]
@@ -344,18 +452,6 @@ namespace levioffhand::render::native_attachment_fix {
         }
 
         return false;
-    }
-
-    [[nodiscard]]
-    constexpr bool shouldFixTridentLocalPose(
-        bool isTrident,
-        std::uint32_t slot,
-        bool isFirstPerson
-    ) noexcept {
-        return
-            isTrident
-            && slot==kOffhandSlot
-            && isFirstPerson;
     }
 
 }

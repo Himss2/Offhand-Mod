@@ -9,6 +9,7 @@
 #include <cstring>
 #include <dlfcn.h>
 #include <memory>
+#include <thread>
 #include <pl/memory/Hook.hpp>
 #include <pl/memory/Signature.hpp>
 
@@ -36,10 +37,14 @@ namespace levioffhand::render {
 
         // Native attachment pipeline recovered from libminecraftpe.so 1.26.45.1:
         //   9B36A80 prepares one attachment and its slot/view context.
+        //   F147CB0 returns the cached owner-binding mode at state +0xDC.
         //   AF3A1E4 resolves a name-bound attachment bone against the owner.
         //   9B3A228 draws one attachment stack/slot.
         //   F147ED0 composes each attachment bone matrix.
         constexpr std::uintptr_t kPrepareAttachmentRva=0x9B36A80;
+        constexpr std::uintptr_t kAttachmentBindingModeRva=0xF147CB0;
+        constexpr std::uintptr_t kAttachmentBindingModeFirstCallsiteRva=0x9B37780;
+        constexpr std::uintptr_t kAttachmentBindingModeSecondCallsiteRva=0x9B377D8;
         constexpr std::uintptr_t kResolveOwnerBoneByNameRva=0xAF3A1E4;
         constexpr std::uintptr_t kResolveOwnerBoneFirstCallsiteRva=0x9B3779C;
         constexpr std::uintptr_t kResolveOwnerBoneSecondCallsiteRva=0x9B37814;
@@ -51,6 +56,18 @@ namespace levioffhand::render {
             0xFD,0x7B,0xBA,0xA9,0xFC,0x6F,0x01,0xA9,
             0xFA,0x67,0x02,0xA9,0xF8,0x5F,0x03,0xA9
         };
+        constexpr std::array<std::uint8_t,8>
+            kAttachmentBindingModeFingerprint{
+                0x00,0x70,0x43,0x39,0xC0,0x03,0x5F,0xD6
+            };
+        static_assert(
+            kAttachmentBindingModeFirstCallsiteRva
+            == native_attachment_fix::kBindingModeFirstReadCallsiteRva
+        );
+        static_assert(
+            kAttachmentBindingModeSecondCallsiteRva
+            == native_attachment_fix::kBindingModeSecondReadCallsiteRva
+        );
         constexpr std::array<std::uint8_t,16> kResolveOwnerBoneByNameFingerprint{
             0xFF,0x43,0x02,0xD1,0xFD,0x7B,0x03,0xA9,
             0xFC,0x6F,0x04,0xA9,0xFA,0x67,0x05,0xA9
@@ -282,10 +299,17 @@ namespace levioffhand::render {
 
         std::unique_ptr<pl::memory::HookHandle> gPrepareAttachmentHook;
         void* gPrepareAttachmentOriginal=nullptr;
+        std::atomic<void*> gPrepareAttachmentOriginalPublished{nullptr};
         std::uintptr_t gPrepareAttachmentTarget=0;
+
+        std::unique_ptr<pl::memory::HookHandle> gAttachmentBindingModeHook;
+        void* gAttachmentBindingModeOriginal=nullptr;
+        std::atomic<void*> gAttachmentBindingModeOriginalPublished{nullptr};
+        std::uintptr_t gAttachmentBindingModeTarget=0;
 
         std::unique_ptr<pl::memory::HookHandle> gResolveOwnerBoneByNameHook;
         void* gResolveOwnerBoneByNameOriginal=nullptr;
+        std::atomic<void*> gResolveOwnerBoneByNameOriginalPublished{nullptr};
         std::uintptr_t gResolveOwnerBoneByNameTarget=0;
 
         std::unique_ptr<pl::memory::HookHandle> gDrawAttachmentHook;
@@ -300,14 +324,24 @@ namespace levioffhand::render {
         thread_local std::uint32_t gTridentFppBindingDepth=0;
         thread_local std::uint32_t gFirstPersonDataDrivenDepth=0;
         thread_local std::uint32_t gBowTppAttachmentDepth=0;
-        thread_local std::uint32_t gTridentFppAttachmentDepth=0;
+        constexpr std::size_t kResolvedTridentBindingBoneCapacity=8;
+        std::atomic<std::uint64_t> gTridentFppBindingGeneration{1};
+        // Mutation readiness is separate from trampoline lifetime. Teardown
+        // closes mutation first, then reader admission; a reentrant prepare
+        // transaction may still forward nested mode/resolver calls safely.
+        std::atomic_bool gNativeAttachmentHooksReady{false};
+        std::atomic_bool gNativeAttachmentTrampolinesAvailable{false};
+        std::atomic_uint32_t gActiveTridentFppBindingScopes{0};
+        std::atomic_uint32_t gActiveNativeAttachmentHookReaders{0};
+        thread_local native_attachment_fix::ResolvedBindingCache<
+            kResolvedTridentBindingBoneCapacity
+        > gResolvedTridentFppBindingBones{};
         thread_local bool gBowTppBindingLogged=false;
         thread_local bool gTridentFppBindingLogged=false;
+        thread_local bool gTridentFppBindingCacheLogged=false;
         thread_local bool gBowTppLocalPoseLogged=false;
-        thread_local bool gTridentFppLocalPoseLogged=false;
         thread_local bool gTridentFppPrepareProbeLogged=false;
         thread_local std::uint32_t gTridentFppBindingProbeCount=0;
-        thread_local bool gTridentFppPoleProbeLogged=false;
 
         struct BindingPrefix {
             std::int32_t ownerBoneIndex{-1};
@@ -318,6 +352,39 @@ namespace levioffhand::render {
         static_assert(sizeof(BindingPrefix)==16);
         static_assert(offsetof(BindingPrefix,ownerGeometryIndex)==4);
         static_assert(offsetof(BindingPrefix,nameHash)==8);
+
+        void invalidateTridentFppBindingGeneration() noexcept {
+            gTridentFppBindingGeneration.fetch_add(
+                1,
+                std::memory_order_acq_rel
+            );
+        }
+
+        void synchronizeTridentFppBindingGeneration() noexcept {
+            const std::uint64_t generation=
+                gTridentFppBindingGeneration.load(
+                    std::memory_order_acquire
+                );
+
+            if(!gResolvedTridentFppBindingBones.synchronize(generation)) {
+                return;
+            }
+
+            gTridentFppBindingLogged=false;
+            gTridentFppBindingCacheLogged=false;
+            gTridentFppPrepareProbeLogged=false;
+            gTridentFppBindingProbeCount=0;
+        }
+
+        void waitForNativeAttachmentHookReaders() noexcept {
+            while(
+                gActiveNativeAttachmentHookReaders.load(
+                    std::memory_order_seq_cst
+                )!=0
+            ) {
+                std::this_thread::yield();
+            }
+        }
 
         std::unique_ptr<
             pl::memory::HookHandle
@@ -364,6 +431,17 @@ namespace levioffhand::render {
                 static_cast<std::byte*>(base)+offset,
                 &value,
                 sizeof(T)
+            );
+        }
+
+        [[nodiscard]]
+        std::uint8_t nativeBindingModeDirect(
+            const void* bindingState
+        ) noexcept {
+            return readValue<std::uint8_t>(
+                bindingState,
+                native_attachment_fix::kBoneBindingModeOffset,
+                0
             );
         }
 
@@ -1138,8 +1216,18 @@ namespace levioffhand::render {
             bool isFirstPerson,
             bool enabled
         ) noexcept {
+            native_attachment_fix::ScopedHookRead readGuard(
+                gNativeAttachmentTrampolinesAvailable,
+                gActiveNativeAttachmentHookReaders
+            );
+            if(!readGuard.entered()) {
+                return;
+            }
+
             const auto original=reinterpret_cast<PrepareAttachmentFn>(
-                gPrepareAttachmentOriginal
+                gPrepareAttachmentOriginalPublished.load(
+                    std::memory_order_acquire
+                )
             );
             if(!original) {
                 return;
@@ -1152,6 +1240,7 @@ namespace levioffhand::render {
             );
             const bool featureEnabled=
                 OffhandBlockRenderPatch::instance().featureEnabled();
+            synchronizeTridentFppBindingGeneration();
             const bool isBow=
                 featureEnabled
                 && stack
@@ -1160,11 +1249,26 @@ namespace levioffhand::render {
                 featureEnabled
                 && stack
                 && stackMatchesId(stack,kTridentIdRva);
+            if(
+                slot==native_attachment_fix::kOffhandSlot
+                && (
+                    !featureEnabled
+                    || (
+                        gFirstPersonDataDrivenDepth!=0
+                        && !isTrident
+                    )
+                )
+            ) {
+                gResolvedTridentFppBindingBones.clear();
+            }
             const bool remapBowOwnerBone=
                 native_attachment_fix::shouldRemapBowOwnerBone(
                     isBow,
                     slot,
-                    isFirstPerson
+                    isFirstPerson,
+                    gNativeAttachmentHooksReady.load(
+                        std::memory_order_acquire
+                    )
                 );
             // The native bool is not a reliable FPP discriminator for this
             // attachment.  ADE9E9C is, and its depth is already exact-scoped.
@@ -1172,7 +1276,10 @@ namespace levioffhand::render {
                 native_attachment_fix::shouldRemapTridentOwnerBone(
                     isTrident,
                     slot,
-                    gFirstPersonDataDrivenDepth!=0
+                    gFirstPersonDataDrivenDepth!=0,
+                    gNativeAttachmentHooksReady.load(
+                        std::memory_order_acquire
+                    )
                 );
 
             if(remapBowOwnerBone) {
@@ -1180,6 +1287,10 @@ namespace levioffhand::render {
             }
 
             if(remapTridentOwnerBone) {
+                gActiveTridentFppBindingScopes.fetch_add(
+                    1,
+                    std::memory_order_acq_rel
+                );
                 ++gTridentFppBindingDepth;
 
                 if(!gTridentFppPrepareProbeLogged) {
@@ -1216,6 +1327,114 @@ namespace levioffhand::render {
             ) {
                 --gTridentFppBindingDepth;
             }
+
+            if(remapTridentOwnerBone) {
+                gActiveTridentFppBindingScopes.fetch_sub(
+                    1,
+                    std::memory_order_acq_rel
+                );
+            }
+        }
+
+        using AttachmentBindingModeFn=std::uint8_t(*)(const void*);
+
+        std::uint8_t attachmentBindingModeDetour(
+            const void* bindingState
+        ) noexcept {
+            const std::uint8_t directMode=
+                nativeBindingModeDirect(bindingState);
+            if(!bindingState) {
+                return directMode;
+            }
+
+            native_attachment_fix::ScopedHookRead readGuard(
+                gNativeAttachmentTrampolinesAvailable,
+                gActiveNativeAttachmentHookReaders
+            );
+            if(!readGuard.entered()) {
+                return directMode;
+            }
+
+            const auto original=reinterpret_cast<AttachmentBindingModeFn>(
+                gAttachmentBindingModeOriginalPublished.load(
+                    std::memory_order_acquire
+                )
+            );
+            if(!original) {
+                return directMode;
+            }
+
+            const std::uint8_t nativeMode=original(bindingState);
+            if(
+                gActiveTridentFppBindingScopes.load(
+                    std::memory_order_acquire
+                )==0
+                || !gNativeAttachmentHooksReady.load(
+                    std::memory_order_acquire
+                )
+            ) {
+                return nativeMode;
+            }
+
+            if(
+                gTridentFppBindingDepth==0
+                || gFirstPersonDataDrivenDepth==0
+                || !OffhandBlockRenderPatch::instance().featureEnabled()
+            ) {
+                return nativeMode;
+            }
+
+            synchronizeTridentFppBindingGeneration();
+
+            const std::uintptr_t returnAddress=
+                reinterpret_cast<std::uintptr_t>(
+                    __builtin_return_address(0)
+                );
+            if(
+                !isExactMinecraftCallsite(
+                    returnAddress,
+                    kAttachmentBindingModeFirstCallsiteRva
+                )
+            ) {
+                return nativeMode;
+            }
+
+            constexpr std::uintptr_t callsiteRva=
+                kAttachmentBindingModeFirstCallsiteRva;
+            const std::uint64_t sourceHash=readValue<std::uint64_t>(
+                bindingState,
+                offsetof(BindingPrefix,nameHash),
+                0
+            );
+            const bool alreadyResolved=
+                gResolvedTridentFppBindingBones.contains(bindingState);
+            const bool forceResolve=
+                native_attachment_fix::shouldForceTridentBindingResolve(
+                    true,
+                    native_attachment_fix::kOffhandSlot,
+                    true,
+                    callsiteRva,
+                    sourceHash,
+                    nativeMode,
+                    alreadyResolved
+                );
+
+            if(!forceResolve) {
+                return nativeMode;
+            }
+
+            if(!gTridentFppBindingCacheLogged) {
+                gTridentFppBindingCacheLogged=true;
+                __android_log_print(
+                    ANDROID_LOG_INFO,
+                    kLogTag,
+                    "[TridentFppBindingCacheReset] slot6 rightitem "
+                    "mode=%u -> unresolved at first read",
+                    static_cast<unsigned>(nativeMode)
+                );
+            }
+
+            return 0;
         }
 
         using ResolveOwnerBoneByNameFn=bool(*)(
@@ -1229,8 +1448,18 @@ namespace levioffhand::render {
             const void* ownerGeometry,
             void* bindingState
         ) noexcept {
+            native_attachment_fix::ScopedHookRead readGuard(
+                gNativeAttachmentTrampolinesAvailable,
+                gActiveNativeAttachmentHookReaders
+            );
+            if(!readGuard.entered()) {
+                return false;
+            }
+
             const auto original=reinterpret_cast<ResolveOwnerBoneByNameFn>(
-                gResolveOwnerBoneByNameOriginal
+                gResolveOwnerBoneByNameOriginalPublished.load(
+                    std::memory_order_acquire
+                )
             );
             if(!original) {
                 return false;
@@ -1253,10 +1482,17 @@ namespace levioffhand::render {
                     kResolveOwnerBoneSecondCallsiteRva
                 );
 
-            const bool remapBowOwnerBone=gBowTppBindingDepth!=0;
+            const bool mutationReady=
+                gNativeAttachmentHooksReady.load(
+                    std::memory_order_acquire
+                );
+            const bool remapBowOwnerBone=
+                mutationReady
+                && gBowTppBindingDepth!=0;
             const bool remapTridentOwnerBone=
                 !remapBowOwnerBone
-                && gTridentFppBindingDepth!=0;
+                && gTridentFppBindingDepth!=0
+                && mutationReady;
             const bool featureEnabled=
                 OffhandBlockRenderPatch::instance().featureEnabled();
             const BindingPrefix sourceBinding=
@@ -1294,6 +1530,16 @@ namespace levioffhand::render {
                             sizeof(std::int32_t),
                             candidate.ownerGeometryIndex
                         );
+
+                        if(remapTridentOwnerBone) {
+                            static_cast<void>(
+                                gResolvedTridentFppBindingBones.
+                                    recordResolution(
+                                        bindingState,
+                                        true
+                                    )
+                            );
+                        }
 
                         if(
                             remapBowOwnerBone
@@ -1412,12 +1658,11 @@ namespace levioffhand::render {
                 OffhandBlockRenderPatch::instance().featureEnabled();
             const bool isBow=
                 featureEnabled
+                && gNativeAttachmentHooksReady.load(
+                    std::memory_order_acquire
+                )
                 && stack
                 && stackMatchesId(stack,kBowIdRva);
-            const bool isTrident=
-                featureEnabled
-                && stack
-                && stackMatchesId(stack,kTridentIdRva);
             const bool isFirstPerson=
                 gFirstPersonDataDrivenDepth!=0;
             const std::uintptr_t callsiteRva=minecraftCallsiteRva(
@@ -1436,20 +1681,8 @@ namespace levioffhand::render {
                     slot,
                     isFirstPerson
                 );
-            const bool fixPose=
-                effectiveOffhandDraw
-                && native_attachment_fix::shouldFixTridentLocalPose(
-                    isTrident,
-                    slot,
-                    isFirstPerson
-                );
-
             if(offsetBow) {
                 ++gBowTppAttachmentDepth;
-            }
-
-            if(fixPose) {
-                ++gTridentFppAttachmentDepth;
             }
 
             original(self,stack,slotPointer,parentContext,actor);
@@ -1458,9 +1691,6 @@ namespace levioffhand::render {
                 --gBowTppAttachmentDepth;
             }
 
-            if(fixPose && gTridentFppAttachmentDepth!=0) {
-                --gTridentFppAttachmentDepth;
-            }
         }
 
         using ComposeAttachmentBoneMatrixFn=void(*)(
@@ -1502,6 +1732,7 @@ namespace levioffhand::render {
                 8,
                 0
             );
+
             const bool offsetBowRoot=
                 gBowTppAttachmentDepth!=0
                 && (
@@ -1513,89 +1744,57 @@ namespace levioffhand::render {
                     ==
                     native_attachment_fix::kRightItemCamelHash
                 );
-            const bool fixTridentRoot=
-                gTridentFppAttachmentDepth!=0
-                && boneNameHash==native_attachment_fix::kPoleBoneHash;
+            if(!offsetBowRoot) {
+                original(boneState,pivot,matrix);
+                return;
+            }
 
-            // Keep Minecraft's native +0xDE cached owner-bone matrix intact.
-            // For an owner-bound attachment F147ED0 may seed the output from +0x30;
-            // invalidating that cache discards the native hand-anchor seed.  Apply the
-            // bounded visual correction to the returned matrix instead.
+            const auto localPoseBefore=
+                readValue<native_attachment_fix::LocalAttachmentPose>(
+                    boneState,
+                    native_attachment_fix::kBoneLocalPoseOffset,
+                    {}
+                );
+
+            // F147ED0 consumes the animated local pose at +0x70 only when its
+            // +0xDE matrix-cache flag is clear. The scoped override snapshots
+            // the pose, cached matrix, and flag; invalidates the cache for this
+            // call; then restores all native state after the corrected output
+            // matrix has been returned. Child bones still inherit that output,
+            // while later perspectives/actors cannot inherit the temporary
+            // pose or cache.
+            native_attachment_fix::ScopedLocalPoseOverride localPoseOverride(
+                boneState,
+                &native_attachment_fix::mirrorAndOffsetBowLocalPose
+            );
+
             original(boneState,pivot,matrix);
 
-            if(offsetBowRoot) {
-                const float beforeX=matrix->value[12];
-                const float beforeY=matrix->value[13];
-                const float beforeZ=matrix->value[14];
-                if(
-                    native_attachment_fix::offsetBowRight(
-                        matrix->value,
-                        native_attachment_fix::kBowTppRightOffset
+            if(
+                offsetBowRoot
+                && localPoseOverride.active()
+                && !gBowTppLocalPoseLogged
+            ) {
+                gBowTppLocalPoseLogged=true;
+                auto corrected=localPoseBefore;
+                static_cast<void>(
+                    native_attachment_fix::mirrorAndOffsetBowLocalPose(
+                        corrected
                     )
-                    && !gBowTppLocalPoseLogged
-                ) {
-                    gBowTppLocalPoseLogged=true;
-                    __android_log_print(
-                        ANDROID_LOG_INFO,
-                        kLogTag,
-                        "[BowTppRightOffset] slot6 native Bow T=(%.3f,%.3f,%.3f) "
-                        "-> (%.3f,%.3f,%.3f) by %.2f semantic-right",
-                        static_cast<double>(beforeX),
-                        static_cast<double>(beforeY),
-                        static_cast<double>(beforeZ),
-                        static_cast<double>(matrix->value[12]),
-                        static_cast<double>(matrix->value[13]),
-                        static_cast<double>(matrix->value[14]),
-                        static_cast<double>(
-                            native_attachment_fix::kBowTppRightOffset
-                        )
-                    );
-                }
-            }
-
-            if(fixTridentRoot) {
-                const std::array<float,3> nativeTranslation{
-                    matrix->value[12],
-                    matrix->value[13],
-                    matrix->value[14]
-                };
-                const std::uint8_t cacheFlag=readValue<std::uint8_t>(
-                    boneState,
-                    native_attachment_fix::kBoneMatrixCachedOffset,
-                    0
                 );
-                const bool rotated=
-                    native_attachment_fix::rotateTridentPoleHeadUp(
-                        matrix->value
-                    );
-
-                if(rotated && !gTridentFppLocalPoseLogged) {
-                    gTridentFppLocalPoseLogged=true;
-                    __android_log_print(
-                        ANDROID_LOG_INFO,
-                        kLogTag,
-                        "[TridentFppPoleRotation] slot6 native pole rotated "
-                        "180deg around local Z; owner translation preserved"
-                    );
-                }
-
-                if(rotated && !gTridentFppPoleProbeLogged) {
-                    gTridentFppPoleProbeLogged=true;
-                    __android_log_print(
-                        ANDROID_LOG_INFO,
-                        kLogTag,
-                        "[TridentFppPoleMatrix] nativeT=(%.3f,%.3f,%.3f) "
-                        "finalT=(%.3f,%.3f,%.3f) cache=%u",
-                        static_cast<double>(nativeTranslation[0]),
-                        static_cast<double>(nativeTranslation[1]),
-                        static_cast<double>(nativeTranslation[2]),
-                        static_cast<double>(matrix->value[12]),
-                        static_cast<double>(matrix->value[13]),
-                        static_cast<double>(matrix->value[14]),
-                        static_cast<unsigned>(cacheFlag)
-                    );
-                }
+                __android_log_print(
+                    ANDROID_LOG_INFO,
+                    kLogTag,
+                    "[BowTppLocalPose] slot6 rightitem localX %.3f -> "
+                    "%.3f (mirror plus %.2f extra left)",
+                    static_cast<double>(localPoseBefore.position[0]),
+                    static_cast<double>(corrected.position[0]),
+                    static_cast<double>(
+                        native_attachment_fix::kBowTppExtraLeftOffset
+                    )
+                );
             }
+
         }
 
         using FirstPersonDataDrivenFn=
@@ -2845,6 +3044,11 @@ namespace levioffhand::render {
                 +
                 kPrepareAttachmentRva;
 
+            gAttachmentBindingModeTarget=
+                base
+                +
+                kAttachmentBindingModeRva;
+
             gResolveOwnerBoneByNameTarget=
                 base
                 +
@@ -2921,6 +3125,8 @@ namespace levioffhand::render {
             ||
             !belongsToMinecraft(gPrepareAttachmentTarget)
             ||
+            !belongsToMinecraft(gAttachmentBindingModeTarget)
+            ||
             !belongsToMinecraft(gResolveOwnerBoneByNameTarget)
             ||
             !belongsToMinecraft(gDrawAttachmentTarget)
@@ -2930,6 +3136,11 @@ namespace levioffhand::render {
             !matchesFingerprint(
                 gPrepareAttachmentTarget,
                 kPrepareAttachmentFingerprint
+            )
+            ||
+            !matchesFingerprint(
+                gAttachmentBindingModeTarget,
+                kAttachmentBindingModeFingerprint
             )
             ||
             !matchesFingerprint(
@@ -2974,7 +3185,20 @@ namespace levioffhand::render {
         gHandEquipPredicateOriginal=nullptr;
         gFirstPersonDataDrivenOriginal=nullptr;
         gPrepareAttachmentOriginal=nullptr;
+        gPrepareAttachmentOriginalPublished.store(
+            nullptr,
+            std::memory_order_release
+        );
+        gAttachmentBindingModeOriginal=nullptr;
+        gAttachmentBindingModeOriginalPublished.store(
+            nullptr,
+            std::memory_order_release
+        );
         gResolveOwnerBoneByNameOriginal=nullptr;
+        gResolveOwnerBoneByNameOriginalPublished.store(
+            nullptr,
+            std::memory_order_release
+        );
         gDrawAttachmentOriginal=nullptr;
         gComposeAttachmentBoneMatrixOriginal=nullptr;
         gFinalOffhandMatrixOriginal=nullptr;
@@ -2985,14 +3209,13 @@ namespace levioffhand::render {
         gTridentFppBindingDepth=0;
         gFirstPersonDataDrivenDepth=0;
         gBowTppAttachmentDepth=0;
-        gTridentFppAttachmentDepth=0;
+        gResolvedTridentFppBindingBones.clear();
         gBowTppBindingLogged=false;
         gTridentFppBindingLogged=false;
+        gTridentFppBindingCacheLogged=false;
         gBowTppLocalPoseLogged=false;
-        gTridentFppLocalPoseLogged=false;
         gTridentFppPrepareProbeLogged=false;
         gTridentFppBindingProbeCount=0;
-        gTridentFppPoleProbeLogged=false;
 
         gCurrentToolFamily=
             ToolFamily::None;
@@ -3207,6 +3430,11 @@ namespace levioffhand::render {
             return false;
         }
 
+        gPrepareAttachmentOriginalPublished.store(
+            gPrepareAttachmentOriginal,
+            std::memory_order_release
+        );
+
         gResolveOwnerBoneByNameHook=
             std::make_unique<pl::memory::HookHandle>(
                 reinterpret_cast<void*>(gResolveOwnerBoneByNameTarget),
@@ -3224,6 +3452,41 @@ namespace levioffhand::render {
             uninstall(context);
             return false;
         }
+
+        gResolveOwnerBoneByNameOriginalPublished.store(
+            gResolveOwnerBoneByNameOriginal,
+            std::memory_order_release
+        );
+
+        // Install the cache gate only after the left-owner resolver is live.
+        // The reverse uninstall order prevents a concurrent prepare from
+        // being forced into the unmodified right-owner resolver.
+        gAttachmentBindingModeHook=
+            std::make_unique<pl::memory::HookHandle>(
+                reinterpret_cast<void*>(gAttachmentBindingModeTarget),
+                reinterpret_cast<void*>(&attachmentBindingModeDetour),
+                &gAttachmentBindingModeOriginal,
+                pl::memory::HookPriority::Normal
+            );
+
+        if(
+            !gAttachmentBindingModeHook
+            || !gAttachmentBindingModeHook->installed()
+            || !gAttachmentBindingModeOriginal
+        ) {
+            logger.error("native attachment binding-mode hook failed");
+            uninstall(context);
+            return false;
+        }
+
+        gAttachmentBindingModeOriginalPublished.store(
+            gAttachmentBindingModeOriginal,
+            std::memory_order_release
+        );
+        gNativeAttachmentTrampolinesAvailable.store(
+            true,
+            std::memory_order_seq_cst
+        );
 
         gDrawAttachmentHook=
             std::make_unique<pl::memory::HookHandle>(
@@ -3371,6 +3634,12 @@ namespace levioffhand::render {
             std::memory_order_release
         );
 
+        invalidateTridentFppBindingGeneration();
+        gNativeAttachmentHooksReady.store(
+            true,
+            std::memory_order_seq_cst
+        );
+
         logger.info(
             "Offhand visual active"
         );
@@ -3426,7 +3695,7 @@ namespace levioffhand::render {
 
         logger.info(
             "Trident fix active: generic item-form "
-            "suppressed; native FPP owner remapped left + pole Z180"
+            "suppressed; cached FPP binding reopened then remapped left"
         );
 
         return true;
@@ -3439,6 +3708,52 @@ namespace levioffhand::render {
         pl::mod::ModContext& context
     ) noexcept {
 
+        gNativeAttachmentHooksReady.store(
+            false,
+            std::memory_order_seq_cst
+        );
+        gNativeAttachmentTrampolinesAvailable.store(
+            false,
+            std::memory_order_seq_cst
+        );
+        waitForNativeAttachmentHookReaders();
+        gAttachmentBindingModeOriginalPublished.store(
+            nullptr,
+            std::memory_order_release
+        );
+        gResolveOwnerBoneByNameOriginalPublished.store(
+            nullptr,
+            std::memory_order_release
+        );
+        gPrepareAttachmentOriginalPublished.store(
+            nullptr,
+            std::memory_order_release
+        );
+        invalidateTridentFppBindingGeneration();
+
+        // Remove the closed entry hooks immediately after admitted readers
+        // drain, minimizing the interval in which a brand-new native caller
+        // would see the safe no-op/direct fallback.
+        if(gAttachmentBindingModeHook) {
+            gAttachmentBindingModeHook->reset();
+            gAttachmentBindingModeHook.reset();
+        }
+        gAttachmentBindingModeOriginal=nullptr;
+        gAttachmentBindingModeTarget=0;
+
+        if(gResolveOwnerBoneByNameHook) {
+            gResolveOwnerBoneByNameHook->reset();
+            gResolveOwnerBoneByNameHook.reset();
+        }
+        gResolveOwnerBoneByNameOriginal=nullptr;
+        gResolveOwnerBoneByNameTarget=0;
+
+        if(gPrepareAttachmentHook) {
+            gPrepareAttachmentHook->reset();
+            gPrepareAttachmentHook.reset();
+        }
+        gPrepareAttachmentOriginal=nullptr;
+        gPrepareAttachmentTarget=0;
 
         if(
             gHandEquipPredicateHook
@@ -3467,20 +3782,6 @@ namespace levioffhand::render {
         }
         gDrawAttachmentOriginal=nullptr;
         gDrawAttachmentTarget=0;
-
-        if(gResolveOwnerBoneByNameHook) {
-            gResolveOwnerBoneByNameHook->reset();
-            gResolveOwnerBoneByNameHook.reset();
-        }
-        gResolveOwnerBoneByNameOriginal=nullptr;
-        gResolveOwnerBoneByNameTarget=0;
-
-        if(gPrepareAttachmentHook) {
-            gPrepareAttachmentHook->reset();
-            gPrepareAttachmentHook.reset();
-        }
-        gPrepareAttachmentOriginal=nullptr;
-        gPrepareAttachmentTarget=0;
 
         if(gFirstPersonDataDrivenHook) {
             gFirstPersonDataDrivenHook->reset();
@@ -3587,14 +3888,13 @@ namespace levioffhand::render {
         gTridentFppBindingDepth=0;
         gFirstPersonDataDrivenDepth=0;
         gBowTppAttachmentDepth=0;
-        gTridentFppAttachmentDepth=0;
+        gResolvedTridentFppBindingBones.clear();
         gBowTppBindingLogged=false;
         gTridentFppBindingLogged=false;
+        gTridentFppBindingCacheLogged=false;
         gBowTppLocalPoseLogged=false;
-        gTridentFppLocalPoseLogged=false;
         gTridentFppPrepareProbeLogged=false;
         gTridentFppBindingProbeCount=0;
-        gTridentFppPoleProbeLogged=false;
 
 
         mRenderOffhandOriginal=nullptr;
@@ -3786,6 +4086,7 @@ namespace levioffhand::render {
         bool enabled
     ) noexcept {
 
+        invalidateTridentFppBindingGeneration();
         mFeatureEnabled.store(
             enabled,
             std::memory_order_release
@@ -3811,14 +4112,13 @@ namespace levioffhand::render {
         gTridentFppBindingDepth=0;
         gFirstPersonDataDrivenDepth=0;
         gBowTppAttachmentDepth=0;
-        gTridentFppAttachmentDepth=0;
+        gResolvedTridentFppBindingBones.clear();
         gBowTppBindingLogged=false;
         gTridentFppBindingLogged=false;
+        gTridentFppBindingCacheLogged=false;
         gBowTppLocalPoseLogged=false;
-        gTridentFppLocalPoseLogged=false;
         gTridentFppPrepareProbeLogged=false;
         gTridentFppBindingProbeCount=0;
-        gTridentFppPoleProbeLogged=false;
 
         __android_log_print(
             ANDROID_LOG_INFO,
@@ -3889,6 +4189,11 @@ namespace levioffhand::render {
             gPrepareAttachmentHook
             &&
             gPrepareAttachmentHook->installed()
+            &&
+
+            gAttachmentBindingModeHook
+            &&
+            gAttachmentBindingModeHook->installed()
             &&
 
             gResolveOwnerBoneByNameHook
@@ -4688,7 +4993,8 @@ namespace levioffhand::render {
 
         /*
          * Keep the duplicate generic item form suppressed. The visible native
-         * slot-6 attachment is corrected at its FPP pole-bone matrix instead.
+         * slot-6 attachment is corrected by reopening and remapping its native
+         * FPP owner-bone binding instead.
          */
         if(
             toolFamily
