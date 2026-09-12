@@ -1502,7 +1502,6 @@ namespace levioffhand::render {
                 8,
                 0
             );
-
             const bool offsetBowRoot=
                 gBowTppAttachmentDepth!=0
                 && (
@@ -1517,143 +1516,85 @@ namespace levioffhand::render {
             const bool fixTridentRoot=
                 gTridentFppAttachmentDepth!=0
                 && boneNameHash==native_attachment_fix::kPoleBoneHash;
-            native_attachment_fix::LocalAttachmentPose localPoseBefore{};
-            std::uint8_t cacheFlagBefore=0;
 
-            if(offsetBowRoot || fixTridentRoot) {
-                localPoseBefore=
-                    readValue<native_attachment_fix::LocalAttachmentPose>(
-                        boneState,
-                        native_attachment_fix::kBoneLocalPoseOffset,
-                        {}
+            // Keep Minecraft's native +0xDE cached owner-bone matrix intact.
+            // For an owner-bound attachment F147ED0 may seed the output from +0x30;
+            // invalidating that cache discards the native hand-anchor seed.  Apply the
+            // bounded visual correction to the returned matrix instead.
+            original(boneState,pivot,matrix);
+
+            if(offsetBowRoot) {
+                const float beforeX=matrix->value[12];
+                const float beforeY=matrix->value[13];
+                const float beforeZ=matrix->value[14];
+                if(
+                    native_attachment_fix::offsetBowRight(
+                        matrix->value,
+                        native_attachment_fix::kBowTppRightOffset
+                    )
+                    && !gBowTppLocalPoseLogged
+                ) {
+                    gBowTppLocalPoseLogged=true;
+                    __android_log_print(
+                        ANDROID_LOG_INFO,
+                        kLogTag,
+                        "[BowTppRightOffset] slot6 native Bow T=(%.3f,%.3f,%.3f) "
+                        "-> (%.3f,%.3f,%.3f) by %.2f semantic-right",
+                        static_cast<double>(beforeX),
+                        static_cast<double>(beforeY),
+                        static_cast<double>(beforeZ),
+                        static_cast<double>(matrix->value[12]),
+                        static_cast<double>(matrix->value[13]),
+                        static_cast<double>(matrix->value[14]),
+                        static_cast<double>(
+                            native_attachment_fix::kBowTppRightOffset
+                        )
                     );
-                cacheFlagBefore=readValue<std::uint8_t>(
+                }
+            }
+
+            if(fixTridentRoot) {
+                const std::array<float,3> nativeTranslation{
+                    matrix->value[12],
+                    matrix->value[13],
+                    matrix->value[14]
+                };
+                const std::uint8_t cacheFlag=readValue<std::uint8_t>(
                     boneState,
                     native_attachment_fix::kBoneMatrixCachedOffset,
                     0
                 );
-            }
+                const bool rotated=
+                    native_attachment_fix::rotateTridentPoleHeadUp(
+                        matrix->value
+                    );
 
-            native_attachment_fix::LocalPoseMutator localPoseMutator=nullptr;
-            if(offsetBowRoot) {
-                localPoseMutator=
-                    &native_attachment_fix::mirrorAndOffsetBowLocalPose;
-            } else if(fixTridentRoot) {
-                localPoseMutator=
-                    &native_attachment_fix::mirrorAndRotateTridentLocalPose;
-            }
+                if(rotated && !gTridentFppLocalPoseLogged) {
+                    gTridentFppLocalPoseLogged=true;
+                    __android_log_print(
+                        ANDROID_LOG_INFO,
+                        kLogTag,
+                        "[TridentFppPoleRotation] slot6 native pole rotated "
+                        "180deg around local Z; owner translation preserved"
+                    );
+                }
 
-            // F147ED0 consumes the animated local pose at +0x70 only when its
-            // +0xDE matrix-cache flag is clear. The scoped override snapshots
-            // the pose, cached matrix, and flag; invalidates the cache for this
-            // call; then restores all native state after the corrected output
-            // matrix has been returned. Child bones still inherit that output,
-            // while later perspectives/actors cannot inherit the temporary
-            // pose or cache.
-            native_attachment_fix::ScopedLocalPoseOverride localPoseOverride(
-                boneState,
-                localPoseMutator
-            );
-
-            original(boneState,pivot,matrix);
-
-            if(
-                offsetBowRoot
-                && localPoseOverride.active()
-                && !gBowTppLocalPoseLogged
-            ) {
-                gBowTppLocalPoseLogged=true;
-                auto corrected=localPoseBefore;
-                static_cast<void>(
-                    native_attachment_fix::mirrorAndOffsetBowLocalPose(
-                        corrected
-                    )
-                );
-                __android_log_print(
-                    ANDROID_LOG_INFO,
-                    kLogTag,
-                    "[BowTppLocalPose] slot6 rightitem localX %.3f -> "
-                    "%.3f (mirror plus %.2f extra left)",
-                    static_cast<double>(localPoseBefore.position[0]),
-                    static_cast<double>(corrected.position[0]),
-                    static_cast<double>(
-                        native_attachment_fix::kBowTppExtraLeftOffset
-                    )
-                );
-            }
-
-            if(
-                fixTridentRoot
-                && localPoseOverride.active()
-                && !gTridentFppLocalPoseLogged
-            ) {
-                gTridentFppLocalPoseLogged=true;
-                __android_log_print(
-                    ANDROID_LOG_INFO,
-                    kLogTag,
-                    "[TridentFppLocalPose] slot6 pole local position.x "
-                    "mirrored and rotation.z advanced 180 degrees"
-                );
-            }
-
-            if(
-                fixTridentRoot
-                && localPoseOverride.active()
-                && !gTridentFppPoleProbeLogged
-            ) {
-                gTridentFppPoleProbeLogged=true;
-                auto corrected=localPoseBefore;
-                static_cast<void>(
-                    native_attachment_fix::mirrorAndRotateTridentLocalPose(
-                        corrected
-                    )
-                );
-
-                const std::array<float,3> localScale{
-                    readValue<float>(boneState,0x88,1.0F),
-                    readValue<float>(boneState,0x8C,1.0F),
-                    readValue<float>(boneState,0x90,1.0F)
-                };
-                const bool hasParentMatrix=
-                    readValue<const void*>(boneState,0xB8,nullptr)!=nullptr;
-                const auto transformMode=
-                    readValue<std::uint8_t>(boneState,0xDD,0);
-                const auto cacheFlagDuring=
-                    readValue<std::uint8_t>(boneState,0xDE,0);
-
-                __android_log_print(
-                    ANDROID_LOG_INFO,
-                    kLogTag,
-                    "[TridentFppPolePose] XYZ=(%.3f,%.3f,%.3f) "
-                    "R=(%.2f,%.2f,%.2f) -> X=%.3f RZ=%.2f "
-                    "S=(%.3f,%.3f,%.3f)",
-                    static_cast<double>(localPoseBefore.position[0]),
-                    static_cast<double>(localPoseBefore.position[1]),
-                    static_cast<double>(localPoseBefore.position[2]),
-                    static_cast<double>(localPoseBefore.rotation[0]),
-                    static_cast<double>(localPoseBefore.rotation[1]),
-                    static_cast<double>(localPoseBefore.rotation[2]),
-                    static_cast<double>(corrected.position[0]),
-                    static_cast<double>(corrected.rotation[2]),
-                    static_cast<double>(localScale[0]),
-                    static_cast<double>(localScale[1]),
-                    static_cast<double>(localScale[2])
-                );
-                __android_log_print(
-                    ANDROID_LOG_INFO,
-                    kLogTag,
-                    "[TridentFppPoleMatrix] T=(%.3f,%.3f,%.3f) "
-                    "W=%.3f parent=%d mode=%u cacheBefore=%u "
-                    "cacheDuring=%u",
-                    static_cast<double>(matrix->value[12]),
-                    static_cast<double>(matrix->value[13]),
-                    static_cast<double>(matrix->value[14]),
-                    static_cast<double>(matrix->value[15]),
-                    hasParentMatrix?1:0,
-                    static_cast<unsigned>(transformMode),
-                    static_cast<unsigned>(cacheFlagBefore),
-                    static_cast<unsigned>(cacheFlagDuring)
-                );
+                if(rotated && !gTridentFppPoleProbeLogged) {
+                    gTridentFppPoleProbeLogged=true;
+                    __android_log_print(
+                        ANDROID_LOG_INFO,
+                        kLogTag,
+                        "[TridentFppPoleMatrix] nativeT=(%.3f,%.3f,%.3f) "
+                        "finalT=(%.3f,%.3f,%.3f) cache=%u",
+                        static_cast<double>(nativeTranslation[0]),
+                        static_cast<double>(nativeTranslation[1]),
+                        static_cast<double>(nativeTranslation[2]),
+                        static_cast<double>(matrix->value[12]),
+                        static_cast<double>(matrix->value[13]),
+                        static_cast<double>(matrix->value[14]),
+                        static_cast<unsigned>(cacheFlag)
+                    );
+                }
             }
         }
 

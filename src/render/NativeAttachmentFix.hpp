@@ -19,6 +19,55 @@ namespace levioffhand::render::native_attachment_fix {
     inline constexpr std::size_t kBoneLocalPoseOffset=0x70;
     inline constexpr std::size_t kBoneMatrixCachedOffset=0xDE;
     inline constexpr float kBowTppExtraLeftOffset=0.20F;
+    inline constexpr float kBowTppRightOffset=0.20F;
+
+    [[nodiscard]]
+    inline bool offsetBowRight(
+        float* matrix,
+        float distance=kBowTppRightOffset
+    ) noexcept {
+        if(!matrix || !std::isfinite(distance)) {
+            return false;
+        }
+
+        const float x=matrix[4];
+        const float y=matrix[5];
+        const float z=matrix[6];
+        const float lengthSquared=x*x+y*y+z*z;
+        if(!std::isfinite(lengthSquared) || lengthSquared<=1.0e-8F) {
+            return false;
+        }
+
+        const float inverseLength=1.0F/std::sqrt(lengthSquared);
+        matrix[12]+=x*inverseLength*distance;
+        matrix[13]+=y*inverseLength*distance;
+        matrix[14]+=z*inverseLength*distance;
+        return
+            std::isfinite(matrix[12])
+            && std::isfinite(matrix[13])
+            && std::isfinite(matrix[14]);
+    }
+
+    [[nodiscard]]
+    inline bool rotateTridentPoleHeadUp(float* matrix) noexcept {
+        if(!matrix) {
+            return false;
+        }
+
+        for(std::size_t index=0;index<16;++index) {
+            if(!std::isfinite(matrix[index])) {
+                return false;
+            }
+        }
+
+        // Post-multiply the native attachment matrix by Rz(180deg).
+        // Only basis columns 0 and 1 change sign; translation column 3
+        // remains byte-for-byte anchored to Minecraft's owner-bone matrix.
+        for(std::size_t index=0;index<8;++index) {
+            matrix[index]=-matrix[index];
+        }
+        return true;
+    }
 
     struct LocalAttachmentPose {
         std::array<float,3> position{};
