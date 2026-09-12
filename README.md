@@ -2,29 +2,38 @@
 
 Native Levi Launcher Android mod for Minecraft Bedrock **1.26.45.1**.
 
-## v0.2.50 — Pre-composition local attachment poses
+## v0.2.51 — Bow spacing and native 3D Trident probe
 
-This version keeps arbitrary offhand storage and the existing item/block
-rendering support, then moves the two remaining native attachment corrections
-to the local animated pose that Minecraft actually consumes:
+Device validation of v0.2.50 proved that the Bow TPP owner-bone remap and local
+pose hook both execute. v0.2.51 keeps that path and continues the mirrored
+local-X displacement by another `0.20`, moving the single native Bow farther
+in the same direction regardless of the native X sign.
 
-- Bow in TPP keeps the proven native slot-6 `rightitem` to owner `leftitem`
-  binding, so there is still exactly one Bow in the offhand. Only the root's
-  local animated `position.x` is mirrored before native matrix composition.
-- Trident in FPP now moves sides by resolving its attachment owner from
-  `rightitem` to `leftitem` only inside the exact first-person slot-6 pass. The
-  `pole` root's local `position.x` is mirrored and its local Z rotation is
-  advanced 180 degrees before composition.
+The same validation showed that the Trident `pole` local-pose hook executes in
+FPP, but the expected left-owner binding marker does not appear and the model
+remains invisible. This build intentionally stays **native 3D only**: the
+generic item-form submission remains suppressed, so no 2D fallback or duplicate
+Trident is introduced.
 
-v0.2.49 edited the already-composed output matrix. Device logs proved those
-hooks ran, but the visual pose did not change. v0.2.50 instead temporarily
-edits bone state `+0x70..+0x87`, calls the native composer, and restores the
-original 24 bytes immediately. This prevents animation changes from leaking or
-accumulating across camera, item, actor, and inventory-preview renders.
+Further static tracing found the missing cache boundary: `F147ED0` returns the
+matrix cached at bone state `+0x30` immediately when flag `+0xDE` is set, before
+reading the temporary local pose at `+0x70`. v0.2.51 snapshots the original
+cached matrix and flag, clears `+0xDE` for the target composition, then restores
+the pose, cache, and flag. The corrected output remains available to child
+bones for the current draw without leaking into another actor or perspective.
 
-The Bow FPP mask and the correct Trident TPP path remain in place. The failed
-TPP experiments that enabled a second generic Bow or suppressed the whole
-player preview have been removed.
+To verify that correction and identify any remaining owner-binding issue,
+v0.2.51 records a bounded diagnostic snapshot of:
+
+- the exact FPP attachment preparation scope;
+- each owner-bone resolver call, source hash, left-remap attempt and result;
+- the `pole` local position, rotation and scale before composition;
+- the composed `pole` matrix translation and relevant native state flags.
+
+The probe is limited to four binding messages and one pose/matrix snapshot per
+enable cycle. Toggle the Offhand module off/on to reset it. Bow FPP, Trident
+TPP, mainhand rendering, inventory previews and unrelated items retain their
+existing paths.
 
 All new native RVAs are guarded by exact AArch64 entry fingerprints for this
 Minecraft binary. Installation fails closed when the binary does not match.
@@ -44,19 +53,20 @@ bash ./scripts/build.sh
 The arm64 package is written to:
 
 ```text
-dist/arm64-v8a/levi-offhand-v0.2.50.levipack
+dist/arm64-v8a/levi-offhand-v0.2.51.levipack
 ```
 
 ## Runtime validation
 
 Use the exact Minecraft version above and check:
 
-1. Bow in offhand, TPP: exactly one Bow appears in the left hand.
+1. Bow in offhand, TPP: exactly one Bow appears farther from the body.
 2. Bow removed from offhand: the inventory player preview remains visible.
-3. Trident in offhand, FPP: it appears on the left with its head upward.
-4. Trident in offhand, TPP: its already-correct pose is unchanged.
+3. From a fresh game launch, place Trident in offhand and enter FPP once.
+4. Trident in offhand, TPP: its already-correct pose remains unchanged.
 5. Mainhand items and other players' equipment continue to render normally.
 
-Useful one-time log markers are `[BowTppBoneBinding]`,
-`[BowTppLocalPose]`, `[TridentFppBoneBinding]`, and
-`[TridentFppLocalPose]`.
+Send all lines containing `[TridentFppPrepareProbe]`,
+`[TridentFppBindingProbe]`, `[TridentFppPolePose]`,
+`[TridentFppPoleMatrix]`, and `[TridentFppBoneBinding]`. The absence of one of
+these markers is also evidence and should be reported.
