@@ -15,6 +15,7 @@ g++ \
     -Werror \
     -fsanitize=address,undefined \
     -fno-omit-frame-pointer \
+    -pthread \
     -I"$repo_root/src" \
     "$repo_root/tests/native_attachment_fix_test.cpp" \
     -o "$test_binary"

@@ -2,12 +2,14 @@
 
 #include <algorithm>
 #include <array>
+#include <atomic>
 #include <cassert>
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
 #include <limits>
+#include <thread>
 
 namespace fix = levioffhand::render::native_attachment_fix;
 
@@ -31,10 +33,11 @@ namespace {
     }
 
     void testBowBindingScope() {
-        assert(fix::shouldRemapBowOwnerBone(true, 6, false));
-        assert(!fix::shouldRemapBowOwnerBone(true, 5, false));
-        assert(!fix::shouldRemapBowOwnerBone(true, 6, true));
-        assert(!fix::shouldRemapBowOwnerBone(false, 6, false));
+        assert(fix::shouldRemapBowOwnerBone(true, 6, false, true));
+        assert(!fix::shouldRemapBowOwnerBone(true, 5, false, true));
+        assert(!fix::shouldRemapBowOwnerBone(true, 6, true, true));
+        assert(!fix::shouldRemapBowOwnerBone(false, 6, false, true));
+        assert(!fix::shouldRemapBowOwnerBone(true, 6, false, false));
 
         std::uint64_t mapped = 0;
         assert(fix::mapRightOwnerBoneToLeft(
@@ -82,16 +85,192 @@ namespace {
         assert(!fix::shouldFixBowLocalPose(false, 6, false));
     }
 
-    void testTridentPoseScope() {
-        assert(fix::shouldRemapTridentOwnerBone(true, 6, true));
-        assert(!fix::shouldRemapTridentOwnerBone(true, 5, true));
-        assert(!fix::shouldRemapTridentOwnerBone(true, 6, false));
-        assert(!fix::shouldRemapTridentOwnerBone(false, 6, true));
+    void testTridentBindingScope() {
+        assert(fix::shouldRemapTridentOwnerBone(true, 6, true, true));
+        assert(!fix::shouldRemapTridentOwnerBone(true, 5, true, true));
+        assert(!fix::shouldRemapTridentOwnerBone(true, 6, false, true));
+        assert(!fix::shouldRemapTridentOwnerBone(false, 6, true, true));
+        assert(!fix::shouldRemapTridentOwnerBone(true, 6, true, false));
 
-        assert(fix::shouldFixTridentLocalPose(true, 6, true));
-        assert(!fix::shouldFixTridentLocalPose(true, 5, true));
-        assert(!fix::shouldFixTridentLocalPose(true, 6, false));
-        assert(!fix::shouldFixTridentLocalPose(false, 6, true));
+        static_assert(fix::kBoneBindingModeOffset==0xDC);
+        static_assert(
+            fix::kBindingModeFirstReadCallsiteRva==0x9B37780
+        );
+        static_assert(
+            fix::kBindingModeSecondReadCallsiteRva==0x9B377D8
+        );
+
+        constexpr auto shouldForce=[](
+            bool isTrident,
+            std::uint32_t slot,
+            bool isFirstPerson,
+            std::uintptr_t callsiteRva,
+            std::uint64_t sourceHash,
+            std::uint8_t nativeMode,
+            bool alreadyResolved
+        ) {
+            return fix::shouldForceTridentBindingResolve(
+                isTrident,
+                slot,
+                isFirstPerson,
+                callsiteRva,
+                sourceHash,
+                nativeMode,
+                alreadyResolved
+            );
+        };
+
+        assert(shouldForce(
+            true,6,true,0x9B37780,fix::fnv1("rightitem"),2,false
+        ));
+        assert(shouldForce(
+            true,6,true,0x9B37780,fix::fnv1("rightItem"),1,false
+        ));
+
+        assert(!shouldForce(
+            false,6,true,0x9B37780,fix::fnv1("rightitem"),2,false
+        ));
+        assert(!shouldForce(
+            true,5,true,0x9B37780,fix::fnv1("rightitem"),2,false
+        ));
+        assert(!shouldForce(
+            true,6,false,0x9B37780,fix::fnv1("rightitem"),2,false
+        ));
+        assert(!shouldForce(
+            true,6,true,0x9B377D8,fix::fnv1("rightitem"),2,false
+        ));
+        assert(!shouldForce(
+            true,6,true,0x9B37780,fix::fnv1("leftitem"),2,false
+        ));
+        assert(!shouldForce(
+            true,6,true,0x9B37780,fix::fnv1("pole"),2,false
+        ));
+        assert(!shouldForce(
+            true,6,true,0x9B37780,fix::fnv1("rightitem"),0,false
+        ));
+        assert(!shouldForce(
+            true,6,true,0x9B37780,fix::fnv1("rightitem"),2,true
+        ));
+    }
+
+    void testResolvedBindingCacheLifecycleAndRetry() {
+        fix::ResolvedBindingCache<2> cache;
+        int first=0;
+        int second=0;
+        int third=0;
+
+        assert(cache.synchronize(10));
+        assert(!cache.contains(&first));
+
+        assert(!cache.recordResolution(&first,false));
+        assert(!cache.contains(&first));
+        assert(cache.recordResolution(&first,true));
+        assert(cache.contains(&first));
+
+        cache.clear();
+        assert(!cache.contains(&first));
+        assert(cache.recordResolution(&first,true));
+
+        assert(!cache.synchronize(10));
+        assert(cache.contains(&first));
+        assert(cache.synchronize(11));
+        assert(!cache.contains(&first));
+
+        assert(cache.recordResolution(&first,true));
+        assert(cache.recordResolution(&second,true));
+        assert(cache.recordResolution(&third,true));
+        assert(!cache.contains(&first));
+        assert(cache.contains(&second));
+        assert(cache.contains(&third));
+    }
+
+    void testScopedHookReadPublishesAndReleasesReaders() {
+        std::atomic_bool ready{false};
+        std::atomic_uint32_t activeReaders{0};
+
+        {
+            fix::ScopedHookRead read(ready,activeReaders);
+            assert(!read.entered());
+            assert(activeReaders.load()==0);
+        }
+
+        ready.store(true);
+        {
+            fix::ScopedHookRead read(ready,activeReaders);
+            assert(read.entered());
+            assert(activeReaders.load()==1);
+
+            ready.store(false);
+            assert(activeReaders.load()==1);
+
+            {
+                fix::ScopedHookRead nested(ready,activeReaders);
+                assert(nested.entered());
+                assert(activeReaders.load()==1);
+            }
+
+            assert(activeReaders.load()==1);
+        }
+
+        assert(activeReaders.load()==0);
+
+        fix::ScopedHookRead rejectedAfterClose(ready,activeReaders);
+        assert(!rejectedAfterClose.entered());
+        assert(activeReaders.load()==0);
+    }
+
+    void testScopedHookReadKeepsNestedForwardingDuringConcurrentClose() {
+        std::atomic_bool forwardingAvailable{true};
+        std::atomic_uint32_t activeReaders{0};
+        std::atomic_bool outerEntered{false};
+        std::atomic_bool allowNested{false};
+        std::atomic_bool nestedEntered{false};
+        std::atomic_bool nestedChecked{false};
+        std::atomic_bool releaseNested{false};
+
+        std::thread renderThread([&] {
+            fix::ScopedHookRead outer(
+                forwardingAvailable,
+                activeReaders
+            );
+            assert(outer.entered());
+            outerEntered.store(true,std::memory_order_release);
+
+            while(!allowNested.load(std::memory_order_acquire)) {
+                std::this_thread::yield();
+            }
+
+            fix::ScopedHookRead nested(
+                forwardingAvailable,
+                activeReaders
+            );
+            nestedEntered.store(
+                nested.entered(),
+                std::memory_order_release
+            );
+            nestedChecked.store(true,std::memory_order_release);
+
+            while(!releaseNested.load(std::memory_order_acquire)) {
+                std::this_thread::yield();
+            }
+        });
+
+        while(!outerEntered.load(std::memory_order_acquire)) {
+            std::this_thread::yield();
+        }
+
+        forwardingAvailable.store(false,std::memory_order_seq_cst);
+        allowNested.store(true,std::memory_order_release);
+
+        while(!nestedChecked.load(std::memory_order_acquire)) {
+            std::this_thread::yield();
+        }
+
+        assert(nestedEntered.load(std::memory_order_acquire));
+        assert(activeReaders.load(std::memory_order_seq_cst)==1);
+        releaseNested.store(true,std::memory_order_release);
+        renderThread.join();
+        assert(activeReaders.load(std::memory_order_seq_cst)==0);
     }
 
     void testBowLocalPoseMirrorsAndAddsExtraLeftDistance() {
@@ -103,7 +282,7 @@ namespace {
         assert(fix::mirrorAndOffsetBowLocalPose(pose));
 
         const fix::LocalAttachmentPose expected{
-            {0.70F, -3.0F, -2.0F},
+            {0.60F, -3.0F, -2.0F},
             {152.0F, -9.0F, 25.0F}
         };
         assert(std::fabs(pose.position[0]-expected.position[0])<1.0e-6F);
@@ -117,7 +296,7 @@ namespace {
         };
 
         assert(fix::mirrorAndOffsetBowLocalPose(oppositeSide));
-        assert(std::fabs(oppositeSide.position[0]+0.70F)<1.0e-6F);
+        assert(std::fabs(oppositeSide.position[0]+0.60F)<1.0e-6F);
     }
 
     void testOwnerBoneHashClassificationForNativeProbe() {
@@ -154,70 +333,6 @@ namespace {
         assert(emitted==2);
     }
 
-    void testTridentLocalPoseMirrorsPositionAndTurnsPole() {
-        fix::LocalAttachmentPose pose{
-            {-7.0F, -3.0F, -2.0F},
-            {152.0F, -9.0F, 25.0F}
-        };
-
-        assert(fix::mirrorAndRotateTridentLocalPose(pose));
-
-        const fix::LocalAttachmentPose expected{
-            {7.0F, -3.0F, -2.0F},
-            {152.0F, -9.0F, 205.0F}
-        };
-        assert(pose == expected);
-    }
-
-
-    void testBowMatrixOffsetMovesTowardVisualRight() {
-        std::array<float,16> matrix{
-            1.0F,0.0F,0.0F,0.0F,
-            0.0F,3.0F,4.0F,0.0F,
-            0.0F,0.0F,1.0F,0.0F,
-            10.0F,20.0F,30.0F,1.0F
-        };
-
-        assert(fix::offsetBowRight(matrix.data(),0.20F));
-        assert(std::fabs(matrix[12]-10.0F)<1.0e-6F);
-        assert(std::fabs(matrix[13]-20.12F)<1.0e-6F);
-        assert(std::fabs(matrix[14]-30.16F)<1.0e-6F);
-    }
-
-    void testBowMatrixOffsetRejectsDegenerateHorizontalBasis() {
-        std::array<float,16> matrix{};
-        matrix[15]=1.0F;
-        const auto original=matrix;
-
-        assert(!fix::offsetBowRight(matrix.data(),0.20F));
-        assert(matrix==original);
-    }
-
-    void testTridentMatrixRotationPreservesNativeOwnerTranslation() {
-        std::array<float,16> matrix{
-            1.0F,2.0F,3.0F,0.0F,
-            4.0F,5.0F,6.0F,0.0F,
-            7.0F,8.0F,9.0F,0.0F,
-            10.0F,11.0F,12.0F,1.0F
-        };
-
-        assert(fix::rotateTridentPoleHeadUp(matrix.data()));
-
-        const std::array<float,16> expected{
-            -1.0F,-2.0F,-3.0F,-0.0F,
-            -4.0F,-5.0F,-6.0F,-0.0F,
-             7.0F, 8.0F, 9.0F, 0.0F,
-            10.0F,11.0F,12.0F,1.0F
-        };
-
-        for(std::size_t i=0;i<matrix.size();++i) {
-            assert(std::fabs(matrix[i]-expected[i])<1.0e-6F);
-        }
-        assert(matrix[12]==10.0F);
-        assert(matrix[13]==11.0F);
-        assert(matrix[14]==12.0F);
-    }
-
     void testInvalidLocalPoseIsNotMutated() {
         fix::LocalAttachmentPose pose{
             {std::numeric_limits<float>::infinity(), 2.0F, 3.0F},
@@ -226,8 +341,6 @@ namespace {
         const auto original=pose;
 
         assert(!fix::mirrorAndOffsetBowLocalPose(pose));
-        assert(pose == original);
-        assert(!fix::mirrorAndRotateTridentLocalPose(pose));
         assert(pose == original);
     }
 
@@ -259,7 +372,7 @@ namespace {
                 boneState.data()+fix::kBoneLocalPoseOffset,
                 sizeof(during)
             );
-            assert(std::fabs(during.position[0]-4.20F)<1.0e-6F);
+            assert(std::fabs(during.position[0]-4.10F)<1.0e-6F);
             assert(during.position[1] == 2.0F);
             assert(during.rotation[2] == 30.0F);
         }
@@ -300,7 +413,7 @@ namespace {
         {
             fix::ScopedLocalPoseOverride override(
                 boneState.data(),
-                &fix::mirrorAndRotateTridentLocalPose
+                &fix::mirrorAndOffsetBowLocalPose
             );
             assert(override.active());
             assert(
@@ -370,14 +483,13 @@ int main() {
     testBowBindingScope();
     testEffectiveOffhandDrawCallsite();
     testBowLocalPoseScope();
-    testTridentPoseScope();
+    testTridentBindingScope();
+    testResolvedBindingCacheLifecycleAndRetry();
+    testScopedHookReadPublishesAndReleasesReaders();
+    testScopedHookReadKeepsNestedForwardingDuringConcurrentClose();
     testBowLocalPoseMirrorsAndAddsExtraLeftDistance();
     testOwnerBoneHashClassificationForNativeProbe();
     testProbeBudgetStopsLogSpamAtLimit();
-    testTridentLocalPoseMirrorsPositionAndTurnsPole();
-    testBowMatrixOffsetMovesTowardVisualRight();
-    testBowMatrixOffsetRejectsDegenerateHorizontalBasis();
-    testTridentMatrixRotationPreservesNativeOwnerTranslation();
     testInvalidLocalPoseIsNotMutated();
     testScopedLocalPoseOverrideRestoresBoneState();
     testScopedOverrideForcesRecomposeAndRestoresNativeCache();

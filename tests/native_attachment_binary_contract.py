@@ -70,21 +70,25 @@ def main() -> None:
     assert branch_target(binary, 0xA2C87BC, link=True) == 0x9B3A228
     assert branch_target(binary, 0x9B3779C, link=True) == 0xAF3A1E4
     assert branch_target(binary, 0x9B37814, link=True) == 0xAF3A1E4
+    assert branch_target(binary, 0x9B37780, link=True) == 0xF147CB0
+    assert branch_target(binary, 0x9B377D8, link=True) == 0xF147CB0
     assert branch_target(binary, 0x9B254C8, link=True) == 0xF147ED0
     assert branch_target(binary, 0x9B254F8, link=True) == 0x9B25474
     assert branch_target(binary, 0xADE9E9C, link=True) == 0xA31662C
 
     fingerprints = {
         0x9B36A80: "fd7bbaa9fc6f01a9fa6702a9f85f03a9",
+        0xF147CB0: "00704339c0035fd6",
         0xAF3A1E4: "ff4302d1fd7b03a9fc6f04a9fa6705a9",
         0x9B3A228: "ff0305d1e86b00fdfd7b0ea9fc6f0fa9",
         0xF147ED0: "08784339a8000034008441ad028c42ad",
     }
 
     for address, expected in fingerprints.items():
-        assert load_virtual_bytes(binary, address, 16) == bytes.fromhex(
-            expected
-        ), f"entry fingerprint changed at 0x{address:X}"
+        expected_bytes = bytes.fromhex(expected)
+        assert load_virtual_bytes(
+            binary, address, len(expected_bytes)
+        ) == expected_bytes, f"entry fingerprint changed at 0x{address:X}"
 
     cache_fast_path = {
         0xF147ED0: "08784339",  # LDRB W8,[X0,#0xDE]
@@ -131,7 +135,7 @@ def main() -> None:
 
     print(
         "native attachment binary contract passed: "
-        "1 slot, 10 branches, 4 entry fingerprints, "
+        "1 slot, 12 branches, 5 entry fingerprints, "
         "6 cache-fast-path instructions, 3 local-pose reads, "
         "4 composed-matrix stores, 2 child-matrix forwards"
     )
