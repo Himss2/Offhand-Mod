@@ -30,18 +30,23 @@ required = {
     "Bow exact scope": "shouldRemapBowOwnerBone(",
     "Trident binding scope": "shouldRemapTridentOwnerBone(",
     "Bow owner-bone remap": "mapRightOwnerBoneToLeft(",
-    "safe binding prefix copy": "BindingPrefix candidate=readValue<BindingPrefix>",
+    "safe binding prefix snapshot": "const BindingPrefix sourceBinding=",
     "Trident FPP binding depth": "gTridentFppBindingDepth",
     "Trident FPP binding marker": "[TridentFppBoneBinding]",
     "Bow TPP draw depth": "gBowTppAttachmentDepth",
     "Bow pose scope": "shouldFixBowLocalPose(",
     "scoped local pose override": "ScopedLocalPoseOverride localPoseOverride(",
-    "Bow local pose correction": "mirrorBowLocalPose",
+    "Bow calibrated local pose correction": "mirrorAndOffsetBowLocalPose",
     "Bow local pose marker": "[BowTppLocalPose]",
     "Trident exact scope": "shouldFixTridentLocalPose(",
     "Trident pole guard": "kPoleBoneHash",
     "Trident local pose correction": "mirrorAndRotateTridentLocalPose",
     "Trident local pose marker": "[TridentFppLocalPose]",
+    "Trident native prepare probe": "[TridentFppPrepareProbe]",
+    "Trident owner binding probe": "[TridentFppBindingProbe]",
+    "Trident pole pose probe": "[TridentFppPolePose]",
+    "Trident composed matrix probe": "[TridentFppPoleMatrix]",
+    "bounded native probe budget": "consumeProbeBudget(",
     "FPP Bow mask retained": "BowFppWeakItemMask bowMask",
     "native Trident retained": "suppress generic item-form submission",
 }
@@ -51,6 +56,12 @@ for name, marker in required.items():
 
 assert "kBoneLocalPoseOffset=0x70" in NATIVE_HELPER, (
     "missing binary-proven local pose state offset"
+)
+assert "kBoneComposedMatrixOffset=0x30" in NATIVE_HELPER, (
+    "missing binary-proven composed-matrix cache offset"
+)
+assert "kBoneMatrixCachedOffset=0xDE" in NATIVE_HELPER, (
+    "missing binary-proven matrix-cache flag offset"
 )
 
 
@@ -72,6 +83,7 @@ forbidden = {
         "writeValue<OffhandBlockRenderPatch::Matrix64>(",
     "v0.2.49 Bow marker": "[BowTppRightOffset]",
     "v0.2.49 Trident marker": "[TridentFppPoleRotation]",
+    "v0.2.50 mirror-only Bow helper": "mirrorBowLocalPose",
 }
 
 for name, marker in forbidden.items():

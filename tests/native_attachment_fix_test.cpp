@@ -1,5 +1,6 @@
 #include "render/NativeAttachmentFix.hpp"
 
+#include <algorithm>
 #include <array>
 #include <cassert>
 #include <cmath>
@@ -93,19 +94,64 @@ namespace {
         assert(!fix::shouldFixTridentLocalPose(false, 6, true));
     }
 
-    void testBowLocalPoseMirrorsOnlyHorizontalPosition() {
+    void testBowLocalPoseMirrorsAndAddsExtraLeftDistance() {
         fix::LocalAttachmentPose pose{
-            {-7.0F, -3.0F, -2.0F},
+            {-0.50F, -3.0F, -2.0F},
             {152.0F, -9.0F, 25.0F}
         };
 
-        assert(fix::mirrorBowLocalPose(pose));
+        assert(fix::mirrorAndOffsetBowLocalPose(pose));
 
         const fix::LocalAttachmentPose expected{
-            {7.0F, -3.0F, -2.0F},
+            {0.70F, -3.0F, -2.0F},
             {152.0F, -9.0F, 25.0F}
         };
-        assert(pose == expected);
+        assert(std::fabs(pose.position[0]-expected.position[0])<1.0e-6F);
+        assert(pose.position[1] == expected.position[1]);
+        assert(pose.position[2] == expected.position[2]);
+        assert(pose.rotation == expected.rotation);
+
+        fix::LocalAttachmentPose oppositeSide{
+            {0.50F, -3.0F, -2.0F},
+            {152.0F, -9.0F, 25.0F}
+        };
+
+        assert(fix::mirrorAndOffsetBowLocalPose(oppositeSide));
+        assert(std::fabs(oppositeSide.position[0]+0.70F)<1.0e-6F);
+    }
+
+    void testOwnerBoneHashClassificationForNativeProbe() {
+        assert(
+            fix::classifyOwnerBoneHash(fix::fnv1("rightitem"))
+            == fix::OwnerBoneHashKind::RightItemLower
+        );
+        assert(
+            fix::classifyOwnerBoneHash(fix::fnv1("rightItem"))
+            == fix::OwnerBoneHashKind::RightItemCamel
+        );
+        assert(
+            fix::classifyOwnerBoneHash(fix::fnv1("leftitem"))
+            == fix::OwnerBoneHashKind::LeftItemLower
+        );
+        assert(
+            fix::classifyOwnerBoneHash(fix::fnv1("leftItem"))
+            == fix::OwnerBoneHashKind::LeftItemCamel
+        );
+        assert(
+            fix::classifyOwnerBoneHash(fix::fnv1("pole"))
+            == fix::OwnerBoneHashKind::Other
+        );
+    }
+
+    void testProbeBudgetStopsLogSpamAtLimit() {
+        std::uint32_t emitted=0;
+
+        assert(fix::consumeProbeBudget(emitted,2));
+        assert(emitted==1);
+        assert(fix::consumeProbeBudget(emitted,2));
+        assert(emitted==2);
+        assert(!fix::consumeProbeBudget(emitted,2));
+        assert(emitted==2);
     }
 
     void testTridentLocalPoseMirrorsPositionAndTurnsPole() {
@@ -130,7 +176,7 @@ namespace {
         };
         const auto original=pose;
 
-        assert(!fix::mirrorBowLocalPose(pose));
+        assert(!fix::mirrorAndOffsetBowLocalPose(pose));
         assert(pose == original);
         assert(!fix::mirrorAndRotateTridentLocalPose(pose));
         assert(pose == original);
@@ -139,7 +185,7 @@ namespace {
     void testScopedLocalPoseOverrideRestoresBoneState() {
         std::array<
             std::byte,
-            fix::kBoneLocalPoseOffset+sizeof(fix::LocalAttachmentPose)
+            fix::kBoneMatrixCachedOffset+1
         > boneState{};
         const fix::LocalAttachmentPose original{
             {-4.0F, 2.0F, 3.0F},
@@ -154,7 +200,7 @@ namespace {
         {
             fix::ScopedLocalPoseOverride override(
                 boneState.data(),
-                &fix::mirrorBowLocalPose
+                &fix::mirrorAndOffsetBowLocalPose
             );
             assert(override.active());
 
@@ -164,7 +210,7 @@ namespace {
                 boneState.data()+fix::kBoneLocalPoseOffset,
                 sizeof(during)
             );
-            assert(during.position[0] == 4.0F);
+            assert(std::fabs(during.position[0]-4.20F)<1.0e-6F);
             assert(during.position[1] == 2.0F);
             assert(during.rotation[2] == 30.0F);
         }
@@ -178,10 +224,74 @@ namespace {
         assert(restored == original);
     }
 
+    void testScopedOverrideForcesRecomposeAndRestoresNativeCache() {
+        std::array<
+            std::byte,
+            fix::kBoneMatrixCachedOffset+1
+        > boneState{};
+        const fix::LocalAttachmentPose originalPose{
+            {-2.0F, 4.0F, 6.0F},
+            {10.0F, 20.0F, 30.0F}
+        };
+        std::array<std::byte,fix::kBoneComposedMatrixSize> originalCache{};
+        std::fill(originalCache.begin(),originalCache.end(),std::byte{0x2A});
+
+        std::memcpy(
+            boneState.data()+fix::kBoneLocalPoseOffset,
+            &originalPose,
+            sizeof(originalPose)
+        );
+        std::memcpy(
+            boneState.data()+fix::kBoneComposedMatrixOffset,
+            originalCache.data(),
+            originalCache.size()
+        );
+        boneState[fix::kBoneMatrixCachedOffset]=std::byte{1};
+
+        {
+            fix::ScopedLocalPoseOverride override(
+                boneState.data(),
+                &fix::mirrorAndRotateTridentLocalPose
+            );
+            assert(override.active());
+            assert(
+                boneState[fix::kBoneMatrixCachedOffset]
+                == std::byte{0}
+            );
+
+            std::fill(
+                boneState.begin()+fix::kBoneComposedMatrixOffset,
+                boneState.begin()+fix::kBoneComposedMatrixOffset
+                    + fix::kBoneComposedMatrixSize,
+                std::byte{0x5A}
+            );
+            boneState[fix::kBoneMatrixCachedOffset]=std::byte{1};
+        }
+
+        fix::LocalAttachmentPose restoredPose{};
+        std::memcpy(
+            &restoredPose,
+            boneState.data()+fix::kBoneLocalPoseOffset,
+            sizeof(restoredPose)
+        );
+        assert(restoredPose==originalPose);
+        assert(
+            std::equal(
+                originalCache.begin(),
+                originalCache.end(),
+                boneState.begin()+fix::kBoneComposedMatrixOffset
+            )
+        );
+        assert(
+            boneState[fix::kBoneMatrixCachedOffset]
+            == std::byte{1}
+        );
+    }
+
     void testInactiveLocalPoseOverrideLeavesBoneStateUntouched() {
         std::array<
             std::byte,
-            fix::kBoneLocalPoseOffset+sizeof(fix::LocalAttachmentPose)
+            fix::kBoneMatrixCachedOffset+1
         > boneState{};
         const fix::LocalAttachmentPose original{
             {1.0F, 2.0F, 3.0F},
@@ -212,9 +322,12 @@ int main() {
     testEffectiveOffhandDrawCallsite();
     testBowLocalPoseScope();
     testTridentPoseScope();
-    testBowLocalPoseMirrorsOnlyHorizontalPosition();
+    testBowLocalPoseMirrorsAndAddsExtraLeftDistance();
+    testOwnerBoneHashClassificationForNativeProbe();
+    testProbeBudgetStopsLogSpamAtLimit();
     testTridentLocalPoseMirrorsPositionAndTurnsPole();
     testInvalidLocalPoseIsNotMutated();
     testScopedLocalPoseOverrideRestoresBoneState();
+    testScopedOverrideForcesRecomposeAndRestoresNativeCache();
     testInactiveLocalPoseOverrideLeavesBoneStateUntouched();
 }

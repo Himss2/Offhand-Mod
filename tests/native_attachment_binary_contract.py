@@ -71,6 +71,7 @@ def main() -> None:
     assert branch_target(binary, 0x9B3779C, link=True) == 0xAF3A1E4
     assert branch_target(binary, 0x9B37814, link=True) == 0xAF3A1E4
     assert branch_target(binary, 0x9B254C8, link=True) == 0xF147ED0
+    assert branch_target(binary, 0x9B254F8, link=True) == 0x9B25474
     assert branch_target(binary, 0xADE9E9C, link=True) == 0xA31662C
 
     fingerprints = {
@@ -84,6 +85,28 @@ def main() -> None:
         assert load_virtual_bytes(binary, address, 16) == bytes.fromhex(
             expected
         ), f"entry fingerprint changed at 0x{address:X}"
+
+    cache_fast_path = {
+        0xF147ED0: "08784339",  # LDRB W8,[X0,#0xDE]
+        0xF147ED4: "a8000034",  # CBZ W8,0xF147EE8
+        0xF147ED8: "008441ad",  # LDP Q0,Q1,[X0,#0x30]
+        0xF147EDC: "028c42ad",  # LDP Q2,Q3,[X0,#0x50]
+        0xF147EE0: "400400ad",  # STP Q0,Q1,[X2]
+        0xF147EE4: "420c01ad",  # STP Q2,Q3,[X2,#0x20]
+    }
+    for address, expected in cache_fast_path.items():
+        assert load_virtual_bytes(binary, address, 4) == bytes.fromhex(
+            expected
+        ), f"matrix-cache fast path changed at 0x{address:X}"
+
+    child_matrix_forwarding = {
+        0x9B254E8: "e20f41ad",  # LDP Q2,Q3,[SP,#0x20]
+        0x9B254F0: "e00740ad",  # LDP Q0,Q1,[SP]
+    }
+    for address, expected in child_matrix_forwarding.items():
+        assert load_virtual_bytes(binary, address, 4) == bytes.fromhex(
+            expected
+        ), f"child-matrix forwarding changed at 0x{address:X}"
 
     local_pose_reads = {
         0xF147EEC: "0204476d",  # LDP D2,D1,[X0,#0x70]: position
@@ -108,8 +131,9 @@ def main() -> None:
 
     print(
         "native attachment binary contract passed: "
-        "1 slot, 9 branches, 4 entry fingerprints, "
-        "3 local-pose reads, 4 composed-matrix stores"
+        "1 slot, 10 branches, 4 entry fingerprints, "
+        "6 cache-fast-path instructions, 3 local-pose reads, "
+        "4 composed-matrix stores, 2 child-matrix forwards"
     )
 
 
