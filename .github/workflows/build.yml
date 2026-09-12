@@ -48,6 +48,12 @@ jobs:
             zip
 
 
+      - name: Run native attachment tests
+        run: |
+
+          bash tests/run_native_attachment_fix_tests.sh
+
+
       - name: Build
         env:
 
