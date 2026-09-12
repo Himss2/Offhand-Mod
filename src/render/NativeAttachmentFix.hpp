@@ -14,7 +14,11 @@ namespace levioffhand::render::native_attachment_fix {
         0x9B36370;
     inline constexpr std::uintptr_t kV2AttachmentDrawCallsiteRva=
         0xA2C87BC;
+    inline constexpr std::size_t kBoneComposedMatrixOffset=0x30;
+    inline constexpr std::size_t kBoneComposedMatrixSize=64;
     inline constexpr std::size_t kBoneLocalPoseOffset=0x70;
+    inline constexpr std::size_t kBoneMatrixCachedOffset=0xDE;
+    inline constexpr float kBowTppExtraLeftOffset=0.20F;
 
     struct LocalAttachmentPose {
         std::array<float,3> position{};
@@ -53,14 +57,17 @@ namespace levioffhand::render::native_attachment_fix {
     }
 
     [[nodiscard]]
-    inline bool mirrorBowLocalPose(
+    inline bool mirrorAndOffsetBowLocalPose(
         LocalAttachmentPose& pose
     ) noexcept {
         if(!validLocalPose(pose)) {
             return false;
         }
 
-        pose.position[0]=-pose.position[0];
+        const float mirroredX=-pose.position[0];
+        pose.position[0]=
+            mirroredX
+            + std::copysign(kBowTppExtraLeftOffset,mirroredX);
         return true;
     }
 
@@ -98,13 +105,40 @@ namespace levioffhand::render::native_attachment_fix {
                 return;
             }
 
+            mBoneState=static_cast<std::byte*>(boneState);
+            std::memcpy(
+                mOriginalComposedMatrix.data(),
+                mBoneState+kBoneComposedMatrixOffset,
+                mOriginalComposedMatrix.size()
+            );
+            std::memcpy(
+                &mOriginalCacheFlag,
+                mBoneState+kBoneMatrixCachedOffset,
+                sizeof(mOriginalCacheFlag)
+            );
             std::memcpy(mTarget,&corrected,sizeof(corrected));
+            const std::uint8_t cacheInvalid=0;
+            std::memcpy(
+                mBoneState+kBoneMatrixCachedOffset,
+                &cacheInvalid,
+                sizeof(cacheInvalid)
+            );
             mActive=true;
         }
 
         ~ScopedLocalPoseOverride() {
             if(mActive) {
                 std::memcpy(mTarget,&mOriginal,sizeof(mOriginal));
+                std::memcpy(
+                    mBoneState+kBoneComposedMatrixOffset,
+                    mOriginalComposedMatrix.data(),
+                    mOriginalComposedMatrix.size()
+                );
+                std::memcpy(
+                    mBoneState+kBoneMatrixCachedOffset,
+                    &mOriginalCacheFlag,
+                    sizeof(mOriginalCacheFlag)
+                );
             }
         }
 
@@ -121,8 +155,12 @@ namespace levioffhand::render::native_attachment_fix {
         }
 
     private:
+        std::byte* mBoneState=nullptr;
         std::byte* mTarget=nullptr;
         LocalAttachmentPose mOriginal{};
+        std::array<std::byte,kBoneComposedMatrixSize>
+            mOriginalComposedMatrix{};
+        std::uint8_t mOriginalCacheFlag=0;
         bool mActive=false;
     };
 
@@ -151,6 +189,50 @@ namespace levioffhand::render::native_attachment_fix {
         fnv1("leftItem");
     inline constexpr std::uint64_t kPoleBoneHash=
         fnv1("pole");
+
+    enum class OwnerBoneHashKind:std::uint8_t {
+        RightItemLower,
+        RightItemCamel,
+        LeftItemLower,
+        LeftItemCamel,
+        Other
+    };
+
+    [[nodiscard]]
+    constexpr OwnerBoneHashKind classifyOwnerBoneHash(
+        std::uint64_t hash
+    ) noexcept {
+        if(hash==kRightItemLowerHash) {
+            return OwnerBoneHashKind::RightItemLower;
+        }
+
+        if(hash==kRightItemCamelHash) {
+            return OwnerBoneHashKind::RightItemCamel;
+        }
+
+        if(hash==kLeftItemLowerHash) {
+            return OwnerBoneHashKind::LeftItemLower;
+        }
+
+        if(hash==kLeftItemCamelHash) {
+            return OwnerBoneHashKind::LeftItemCamel;
+        }
+
+        return OwnerBoneHashKind::Other;
+    }
+
+    [[nodiscard]]
+    constexpr bool consumeProbeBudget(
+        std::uint32_t& emitted,
+        std::uint32_t limit
+    ) noexcept {
+        if(emitted>=limit) {
+            return false;
+        }
+
+        ++emitted;
+        return true;
+    }
 
     [[nodiscard]]
     constexpr bool shouldRemapBowOwnerBone(
