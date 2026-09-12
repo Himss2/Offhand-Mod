@@ -2,41 +2,35 @@
 
 Native Levi Launcher Android mod for Minecraft Bedrock **1.26.45.1**.
 
-## v0.2.51 — Bow spacing and native 3D Trident probe
+## v0.2.52 — Bow inward correction and Trident native-matrix fix
 
-Device validation of v0.2.50 proved that the Bow TPP owner-bone remap and local
-pose hook both execute. v0.2.51 keeps that path and continues the mirrored
-local-X displacement by another `0.20`, moving the single native Bow farther
-in the same direction regardless of the native X sign.
+This revision is intentionally limited to the two remaining attachment bugs on
+Minecraft Bedrock **1.26.45.1**.
 
-The same validation showed that the Trident `pole` local-pose hook executes in
-FPP, but the expected left-owner binding marker does not appear and the model
-remains invisible. This build intentionally stays **native 3D only**: the
-generic item-form submission remains suppressed, so no 2D fallback or duplicate
-Trident is introduced.
+For Bow TPP, v0.2.51 mirrored the attachment local X and then added another
+`0.20`, which moved the Bow farther to the visual left. v0.2.52 removes that
+production local-pose override. Minecraft first composes the native slot-6 Bow
+attachment, then the mod moves the returned matrix `0.20F` along the normalized
+semantic-horizontal column 1. This is the previously device-calibrated
+**visual-right / toward-body** direction and keeps the existing owner-bone
+`rightitem` -> `leftitem` remap.
 
-Further static tracing found the missing cache boundary: `F147ED0` returns the
-matrix cached at bone state `+0x30` immediately when flag `+0xDE` is set, before
-reading the temporary local pose at `+0x70`. v0.2.51 snapshots the original
-cached matrix and flag, clears `+0xDE` for the target composition, then restores
-the pose, cache, and flag. The corrected output remains available to child
-bones for the current draw without leaking into another actor or perspective.
+For Trident FPP, static tracing of `F147ED0` shows that when bone-state flag
+`+0xDE` is set, Minecraft first copies the cached composed matrix at `+0x30`
+into the output matrix. v0.2.51 cleared that flag to force the temporary local
+`pole` pose to be recomposed, which bypassed that native cached matrix seed; it
+also mirrored the pole's local X. Both operations can detach the 3D model from
+its native hand placement. v0.2.52 no longer clears `+0xDE`, rewrites `+0x70`,
+or touches `+0x30` for the Trident. It lets Minecraft produce the native 3D
+attachment matrix first, then applies only a local-Z 180-degree orientation
+correction to the returned `pole` matrix while preserving
+`matrix[12..14]` exactly. The generic item-form remains suppressed, so this is
+still **native 3D only** with no 2D fallback.
 
-To verify that correction and identify any remaining owner-binding issue,
-v0.2.51 records a bounded diagnostic snapshot of:
-
-- the exact FPP attachment preparation scope;
-- each owner-bone resolver call, source hash, left-remap attempt and result;
-- the `pole` local position, rotation and scale before composition;
-- the composed `pole` matrix translation and relevant native state flags.
-
-The probe is limited to four binding messages and one pose/matrix snapshot per
-enable cycle. Toggle the Offhand module off/on to reset it. Bow FPP, Trident
-TPP, mainhand rendering, inventory previews and unrelated items retain their
-existing paths.
-
-All new native RVAs are guarded by exact AArch64 entry fingerprints for this
-Minecraft binary. Installation fails closed when the binary does not match.
+The exact FPP/TPP scopes, slot-6 guards, owner-bone resolver probe, and binary
+fingerprints remain restricted to the target binary. Bow FPP, Trident TPP,
+mainhand rendering, inventory previews, and unrelated item families are not
+changed.
 
 Target Build ID:
 
@@ -53,20 +47,18 @@ bash ./scripts/build.sh
 The arm64 package is written to:
 
 ```text
-dist/arm64-v8a/levi-offhand-v0.2.51.levipack
+dist/arm64-v8a/levi-offhand-v0.2.52.levipack
 ```
 
 ## Runtime validation
 
-Use the exact Minecraft version above and check:
+Use the exact Minecraft version above and check only these two regression targets:
 
-1. Bow in offhand, TPP: exactly one Bow appears farther from the body.
-2. Bow removed from offhand: the inventory player preview remains visible.
-3. From a fresh game launch, place Trident in offhand and enter FPP once.
-4. Trident in offhand, TPP: its already-correct pose remains unchanged.
-5. Mainhand items and other players' equipment continue to render normally.
+1. Bow in offhand, TPP: exactly one native Bow appears and is shifted right, toward the player body, relative to v0.2.51.
+2. Trident in offhand, FPP: the native 3D Trident is visible; its attachment translation remains native while the pole orientation is turned 180 degrees.
+3. Trident in offhand, TPP and Bow in FPP remain unchanged.
+4. Mainhand and unrelated item rendering remain unchanged.
 
-Send all lines containing `[TridentFppPrepareProbe]`,
-`[TridentFppBindingProbe]`, `[TridentFppPolePose]`,
-`[TridentFppPoleMatrix]`, and `[TridentFppBoneBinding]`. The absence of one of
-these markers is also evidence and should be reported.
+For Trident diagnostics, capture `[TridentFppPrepareProbe]`,
+`[TridentFppBindingProbe]`, `[TridentFppBoneBinding]`,
+`[TridentFppPoleRotation]`, and `[TridentFppPoleMatrix]`.
