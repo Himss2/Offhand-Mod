@@ -43,8 +43,6 @@ required = {
     "safe binding prefix snapshot": "const BindingPrefix sourceBinding=",
     "Trident FPP binding depth": "gTridentFppBindingDepth",
     "Trident binding mode hook": "attachmentBindingModeDetour(",
-    "Trident binding cache predicate":
-        "shouldForceTridentBindingResolve(",
     "resolved bone state guard": "gResolvedTridentFppBindingBone",
     "cross-thread binding generation": "gTridentFppBindingGeneration",
     "native attachment ready gate": "gNativeAttachmentHooksReady",
@@ -67,13 +65,10 @@ required = {
     "Trident owner binding probe": "[TridentFppBindingProbe]",
     "bounded native probe budget": "consumeProbeBudget(",
     "FPP Bow mask retained": "BowFppWeakItemMask bowMask",
-    "v0.2.55 route diagnostic gate": "kReferenceRouteDiagnostic=true",
+    "v0.2.56 Bow route gate": "kReferenceRouteDiagnostic=true",
     "Bow/FishingRod route marker": "[BowFishingRodTppRoute]",
     "Bow native route suppression": "[BowFishingRodTppNativeSuppress]",
-    "Trident native route suppression": "[TridentShieldFppNativeSuppress]",
-    "Trident/Shield route marker": "[TridentShieldFppRoute]",
-    "Shield reference marker": "[ShieldFppReference]",
-}
+            }
 
 for name, marker in required.items():
     assert marker in SOURCE, f"missing {name}: {marker}"
@@ -116,6 +111,8 @@ assert "bash tests/run_native_attachment_fix_tests.sh" in WORKFLOW, (
 
 
 forbidden = {
+    "v0.2.55 Trident native suppression": "[TridentShieldFppNativeSuppress]",
+    "v0.2.55 Trident Shield route": "[TridentShieldFppRoute]",
     "renderItem diagnostic": "[ToolTppAttachableProbe]",
     "attachable cache diagnostic": "[BowTppAttachableCache]",
     "humanoid mislabel diagnostic": "[HumanoidHandSlotProbe]",
@@ -149,50 +146,30 @@ draw_end = SOURCE.index("using ComposeAttachmentBoneMatrixFn=", draw_start)
 draw_body = SOURCE[draw_start:draw_end]
 assert "kReferenceRouteDiagnostic" in draw_body
 assert "suppressBowNative" in draw_body
-assert "suppressTridentNative" in draw_body
+assert "suppressTridentNative" not in draw_body
+assert "[TridentFppNative3D] native slot6 attachment retained" in draw_body
 assert draw_body.index("suppressBowNative") < draw_body.index("original(self,stack,slotPointer,parentContext,actor);")
-assert draw_body.index("suppressTridentNative") < draw_body.index("original(self,stack,slotPointer,parentContext,actor);")
 
 prepare_start_diag = SOURCE.index("void prepareAttachmentDetour(")
 prepare_end_diag = SOURCE.index("using AttachmentBindingModeFn=", prepare_start_diag)
 prepare_diag = SOURCE[prepare_start_diag:prepare_end_diag]
-assert "!kReferenceRouteDiagnostic" in prepare_diag, (
-    "owner-bone remap must be disabled during the reference-route diagnostic"
+trident_decl = prepare_diag[prepare_diag.index("const bool remapTridentOwnerBone="):]
+trident_decl = trident_decl[:trident_decl.index(";") + 1]
+assert "!kReferenceRouteDiagnostic" not in trident_decl, (
+    "Trident owner-bone remap must remain active in v0.2.56"
 )
 
 
 mode_start = SOURCE.index("std::uint8_t attachmentBindingModeDetour(")
 mode_end = SOURCE.index("using ResolveOwnerBoneByNameFn=", mode_start)
 mode_body = SOURCE[mode_start:mode_end]
-direct_index = mode_body.index("nativeBindingModeDirect(bindingState)")
-reader_index = mode_body.index("ScopedHookRead readGuard(")
-published_index = mode_body.index(
-    "gAttachmentBindingModeOriginalPublished.load("
+assert "ScopedHookRead readGuard(" in mode_body
+assert "gAttachmentBindingModeOriginalPublished.load(" in mode_body
+assert "return original(bindingState);" in mode_body, (
+    "binding-mode hook must forward native state unchanged in v0.2.56"
 )
-active_index = mode_body.index("gActiveTridentFppBindingScopes.load(")
-scope_index = mode_body.index("gTridentFppBindingDepth==0")
-callsite_index = mode_body.index("isExactMinecraftCallsite(")
-hash_index = mode_body.index("const std::uint64_t sourceHash=")
-assert direct_index < reader_index < published_index < active_index < scope_index, (
-    "binding-mode hook must acquire its published chained original safely, "
-    "then reject inactive Trident scope before touching thread-local state"
-)
-assert mode_body.index("gNativeAttachmentHooksReady.load(") < (
-    mode_body.index("synchronizeTridentFppBindingGeneration();")
-), "mode cache mutation must stop when lifecycle readiness closes"
-assert scope_index < callsite_index < hash_index, (
-    "global binding-mode hook must reject non-Trident scopes before "
-    "callsite/hash work"
-)
-assert "minecraftCallsiteRva(" not in mode_body, (
-    "exact first-callsite binding gate must not pay for dladdr on its hot path"
-)
-assert "gAttachmentBindingModeOriginal\n" not in mode_body, (
-    "binding-mode detour must not race the unpublished raw trampoline pointer"
-)
-assert mode_body.index("featureEnabled()") < mode_body.index(
-    "synchronizeTridentFppBindingGeneration();"
-), "mode detour must acquire feature state before synchronizing generation"
+assert "shouldForceTridentBindingResolve(" not in mode_body
+assert "[TridentFppBindingCacheReset]" not in mode_body
 
 
 prepare_start = SOURCE.index("void prepareAttachmentDetour(")

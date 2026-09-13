@@ -6,7 +6,6 @@ repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 test_binary="${TMPDIR:-/tmp}/levi-offhand-native-attachment-fix-test"
 
 python3 "$repo_root/tests/native_attachment_source_contract.py"
-python3 "$repo_root/tests/v0255_reference_route_contract.py"
 
 g++ \
     -std=c++20 \
@@ -31,3 +30,5 @@ else
     printf '%s\n' \
         "native attachment binary contract skipped: LEVI_MCPE_LIBRARY unset"
 fi
+
+python3 tests/v0256_native3d_contract.py
