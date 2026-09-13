@@ -34,6 +34,7 @@ void onModuleToggle(
     );
 }
 
+
 } // namespace
 
 class LeviOffhandMod final {
@@ -70,7 +71,7 @@ public:
                 .modId(context.id())
                 .description(
                     "Arbitrary offhand storage/rendering. "
-                    "Tool transforms use frozen native calibration values."
+                    "v0.2.55 Bow/FishingRod + Trident/Shield diagnostic."
                 )
                 .defaultEnabled(true)
                 .hideInHudEditor(true)
@@ -90,16 +91,16 @@ public:
 
         context.logger().info("Levi Offhand registered in Mod Menu");
         context.logger().info(
-            "Tool calibration frozen: Bow/Crossbow/FishingRod; Spear native"
+            "Tool calibration frozen; v0.2.55 reference-route diagnostic active"
         );
         context.logger().info(
             "Bow FPP fixed: generic FIRSTPERSON_LEFT with native DataDriven Bow masked"
         );
         context.logger().info(
-            "Bow TPP v0.2.52: local X mirrored plus 0.10 extra-left offset"
+            "Bow TPP v0.2.55: Fishing Rod-style generic LEFT route diagnostic"
         );
         context.logger().info(
-            "Trident FPP v0.2.52: cached right-owner binding reopened and resolved left"
+            "Trident FPP v0.2.55: Shield-style generic offhand route diagnostic"
         );
         context.logger().info(
             "Decorated Pot/Copper calibration frozen as default values"
