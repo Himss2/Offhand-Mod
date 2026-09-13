@@ -1,5 +1,6 @@
 #pragma once
 
+#include <algorithm>
 #include <array>
 #include <atomic>
 #include <cmath>
@@ -24,7 +25,9 @@ namespace levioffhand::render::native_attachment_fix {
         0x9B37780;
     inline constexpr std::uintptr_t kBindingModeSecondReadCallsiteRva=
         0x9B377D8;
-    inline constexpr float kBowTppExtraLeftOffset=0.10F;
+    inline constexpr float kBowTppHorizontalMin=0.10F;
+    inline constexpr float kBowTppHorizontalMax=0.20F;
+    inline constexpr float kBowTppHorizontalDefault=0.10F;
 
     struct LocalAttachmentPose {
         std::array<float,3> position{};
@@ -63,8 +66,24 @@ namespace levioffhand::render::native_attachment_fix {
     }
 
     [[nodiscard]]
+    inline float normalizeBowTppHorizontalOffset(
+        float value
+    ) noexcept {
+        if(!std::isfinite(value)) {
+            return kBowTppHorizontalDefault;
+        }
+
+        return std::clamp(
+            value,
+            kBowTppHorizontalMin,
+            kBowTppHorizontalMax
+        );
+    }
+
+    [[nodiscard]]
     inline bool mirrorAndOffsetBowLocalPose(
-        LocalAttachmentPose& pose
+        LocalAttachmentPose& pose,
+        float horizontalOffset
     ) noexcept {
         if(!validLocalPose(pose)) {
             return false;
@@ -73,7 +92,23 @@ namespace levioffhand::render::native_attachment_fix {
         const float mirroredX=-pose.position[0];
         pose.position[0]=
             mirroredX
-            + std::copysign(kBowTppExtraLeftOffset,mirroredX);
+            + std::copysign(
+                normalizeBowTppHorizontalOffset(horizontalOffset),
+                mirroredX
+            );
+        return true;
+    }
+
+    [[nodiscard]]
+    inline bool mirrorAndRotateTridentLocalPose(
+        LocalAttachmentPose& pose
+    ) noexcept {
+        if(!validLocalPose(pose)) {
+            return false;
+        }
+
+        pose.position[0]=-pose.position[0];
+        pose.rotation[2]+=180.0F;
         return true;
     }
 
@@ -434,6 +469,18 @@ namespace levioffhand::render::native_attachment_fix {
             isBow
             && slot==kOffhandSlot
             && !isFirstPerson;
+    }
+
+    [[nodiscard]]
+    constexpr bool shouldFixTridentLocalPose(
+        bool isTrident,
+        std::uint32_t slot,
+        bool isFirstPerson
+    ) noexcept {
+        return
+            isTrident
+            && slot==kOffhandSlot
+            && isFirstPerson;
     }
 
     [[nodiscard]]
