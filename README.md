@@ -2,39 +2,23 @@
 
 Native Levi Launcher Android mod for Minecraft Bedrock **1.26.45.1**.
 
-## v0.2.59 — crash-safe Trident native binding + one-session visual calibration
+## v0.2.61 — attachment-context probe
 
-v0.2.58 crashed with `SIGILL` at `0xEEAB3B4`. The tombstone proves the fault is
-immediately after the tiny helper at `0xEEAB3AC`. That helper is only two AArch64
-instructions (`ADD x0,x0,#8; RET`), so installing a normal inline hook there
-necessarily overwrites into the next native routine. v0.2.59 removes that hook
-completely.
+This is a diagnostic branch based on the stable v0.2.59 storage baseline. It does **not** use the v0.2.60 global `mAllowOffHand` constructor policy, so the known crafting-result-to-offhand regression is not part of this test.
 
-Fresh static RE of the supplied Minecraft 1.26.45.1 binary also shows the hook was
-unnecessary. Mojang's native `query.item_slot_to_bone_name` implementation already
-maps the slot-name hash `off_hand` (`0x5D4C22812BA3AF8C`) to the owner-bone hash
-`leftitem` (`0x1CF3FDCBB0AB92F7`). Therefore Trident keeps the vanilla mode-3 Molang
-binding and native 3D attachment path. The generic 2D fallback remains suppressed.
+The purpose is to compare Minecraft's native attachment context for Shield, Bow, and Trident before applying another visual fix. For those target attachment passes, previous Bow/Trident owner-binding, local-pose, final-matrix calibration, pole rotation, and temporary slider adjustments are bypassed. The legacy DataDriven depth is still observed only as a comparison signal; native `prepareAttachment(..., isFirstPerson, ...)` is the authoritative perspective field being logged.
 
-The visible Trident still needs the first-person animation shifted across the
-screen, so v0.2.59 exposes a temporary `Trident FPP Horizontal (TEMP)` slider
-(-1.5..1.5, default +0.875). Only the composed Trident pole X translation is
-changed; native Y/Z are preserved. The existing post-compose Z+180 head/tail
-correction remains active.
+Expected diagnostic markers:
 
-Bow TPP keeps the v0.2.58 `Bow TPP Tilt (TEMP)` slider. Its grip translation is
-preserved while semantic Rot-Z is adjusted, so the final Bow angle can also be
-locked during the same game session.
+- `[AttachmentContextPrepare]` — family, slot 5/6, native `isFirstPerson`, old DataDriven scope, actor/stack identity.
+- `[AttachmentContextBinding]` — native binding mode/name hash and name-resolver result where that path is used.
+- `[AttachmentContextDraw]` — draw callsite plus the prepare context correlated to the same actor/stack/slot.
+- `[AttachmentContextBone]` — unmodified Bow `rightitem` or Trident `pole` matrix after Minecraft composes it.
+- Existing `[ShieldFppReference]` logs remain useful if Shield takes the generic offhand renderer instead of the attachment path.
 
-Decisive markers:
+### Device test
 
-- `[BowTppTiltSlider] semanticRotZ=...`
-- `[BowTppGripPivot] semanticRotZDelta=... translationPreserved=1`
-- `[TridentFppNativeBinding] off_hand->leftitem verified statically`
-- `[TridentFppHorizontalSlider] delta=...`
-- `[TridentFppHorizontal] nativeX=... delta=... finalX=...`
-- `[TridentFppPoleRotation] postComposeZ180 ...`
-- `[TridentFppNative3D]` confirms the native 3D route remains active
+From a fresh launch, capture logs while viewing each case separately: Shield offhand FPP, Shield offhand TPP, Bow offhand FPP, Bow offhand TPP, Trident offhand FPP, Trident offhand TPP, then open inventory/paperdoll with Bow and Trident in offhand. Do not expect v0.2.61 to visually fix Bow/Trident; this build is intended to reveal the first native context where their path differs from Shield.
 
 ## Build
 
@@ -47,19 +31,5 @@ bash ./scripts/build.sh
 Output:
 
 ```text
-dist/arm64-v8a/levi-offhand-v0.2.59.levipack
+dist/arm64-v8a/levi-offhand-v0.2.61.levipack
 ```
-
-## Runtime validation
-
-Use Minecraft **1.26.45.1**.
-
-1. Start from a fresh game launch and verify there is no crash when Trident is
-   placed in offhand.
-2. Bow TPP: adjust `Bow TPP Tilt (TEMP)` until the upper limb is straight while
-   the grip stays in the accepted v0.2.55 position. Report the final number.
-3. Trident FPP: adjust only `Trident FPP Horizontal (TEMP)` until the native 3D
-   model sits on the left/offhand side. Report the final number. If its head is
-   still inverted, capture `[TridentFppPoleRotation]` as well.
-4. Regression: Bow FPP, Trident TPP, mainhand tools, inventory preview and
-   unrelated offhand items must remain unchanged.

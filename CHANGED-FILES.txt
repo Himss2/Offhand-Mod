@@ -1,13 +1,9 @@
+.github/workflows/build.yml
 README.md
 manifest.json
-tests/v0258_expression_bow_contract.py
-tests/native_attachment_binary_contract.py
-tests/run_native_attachment_fix_tests.sh
-tests/native_attachment_fix_test.cpp
-tests/native_attachment_source_contract.py
 scripts/build.sh
 src/LeviOffhandMod.cpp
-src/render/OffhandBlockRenderPatch.hpp
 src/render/OffhandBlockRenderPatch.cpp
-src/render/NativeAttachmentFix.hpp
-.github/workflows/build.yml
+tests/native_attachment_source_contract.py
+tests/run_native_attachment_fix_tests.sh
+tests/v0261_attachment_context_probe_contract.py
