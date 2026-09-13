@@ -1,0 +1,24 @@
+Levi Offhand v0.2.55 diagnostic
+Target: Minecraft Bedrock 1.26.45.1
+
+Bow TPP reference: Fishing Rod
+- suppress exact native Bow slot-6 TPP attachment draw
+- force exact A32F030 / slot-34 Bow attachable check false
+- generic LEFT RenderItem path remains, matching the Fishing Rod renderer class
+
+Trident FPP reference: Shield
+- suppress exact native Trident slot-6 FPP attachment draw
+- do not suppress Trident generic renderObject submission
+- old owner-bone/local-pose corrections are gated off during this diagnostic
+
+Capture logs:
+[BowFishingRodTppRoute]
+[BowFishingRodTppNativeSuppress]
+[ShieldFppReference]
+[TridentShieldFppRoute]
+[TridentShieldFppNativeSuppress]
+
+Build status in this ChatGPT runtime:
+- host source contracts: PASS
+- host C++ syntax check: PASS
+- Android .levipack: NOT BUILT because Android NDK 28.2.13676358 is not installed in this runtime.

@@ -1,14 +1,10 @@
 {
   "type": "preload-native",
-  "name": "Better Inventory",
-  "author": "Better Inventory Team",
-  "version": "0.2.0",
-  "description": "Chest sorting for LeviLauncher with bundled JSON UI and Mod Menu integration.",
-  "entry": "libbetter_inventory.so",
+  "name": "Levi Offhand",
+  "author": "Himss2",
+  "version": "0.2.55",
+  "entry": "liblevi_offhand.so",
   "minecraft_versions": [
-    "1.26.45*"
-  ],
-  "overwrite_folders": [
-    "resources"
+    "1.26.45.1"
   ]
 }

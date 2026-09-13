@@ -2,38 +2,47 @@
 
 Native Levi Launcher Android mod for Minecraft Bedrock **1.26.45.1**.
 
-## v0.2.52 — native 3D Trident binding and Bow midpoint
+## v0.2.55 — Bow/Fishing Rod + Trident/Shield routing diagnostic
 
-v0.2.52 corrects the cache boundary used for Trident FPP. The missing model was
-not caused by the composed-matrix flag at bone state `+0xDE`: the native owner
-resolver was being skipped earlier because binding mode `+0xDC` was already
-cached. The mod now exposes that mode as unresolved only at the first native
-read (`0x9B37780 -> 0xF147CB0`) for Trident, slot 6, exact FPP scope, and a
-`rightitem`/`rightItem` target. Minecraft's existing resolver then binds the
-native attachment to `leftitem`/`leftItem`.
+This build intentionally tests the renderer layer rather than adding another
+offset or rotation. The v0.2.53 Bow/Trident owner-binding and local-pose
+corrections are gated off for the two diagnostic targets so they cannot hide the
+route difference we are trying to measure.
 
-A successful resolution is remembered for that bone state, so it is not
-repeated every frame. The second mode read, Trident TPP, mainhand, inventory
-preview, other actors, and other items retain the native result. Manual Trident
-`pole` position/rotation changes have been removed; the model remains
-**native 3D only**, and generic 2D item-form submission stays suppressed.
+### Bow TPP → Fishing Rod reference
 
-The resolved-state cache is bounded and generation-based. Install, uninstall,
-and Mod Menu enable/disable changes advance an atomic generation; each render
-thread clears its local entries on the next native prepare. The binding-mode
-override remains disabled until every cooperating native hook is installed.
-Prepare, mode, and resolver trampolines are published atomically behind a
-separate lifetime gate. Teardown stops new readers, lets an already-admitted
-prepare transaction finish its nested native calls, and only then releases the
-trampolines. The two-instruction mode getter uses its fingerprint-proven direct
-`+0xDC` load only while native forwarding is closed.
+At the exact HumanoidAdditional offhand `RenderItem` call (`0xA32F030`, slot
+`34`), Fishing Rod naturally continues through the generic LEFT item renderer.
+Bow normally stops when `ADDEA08` observes its enabled attachable. v0.2.55
+forces that attachable check false only for this exact Bow TPP transaction and
+suppresses the separate native Bow slot-6 TPP attachment draw. The result is one
+Bow candidate on the same generic LEFT renderer class used by Fishing Rod.
 
-Bow TPP keeps its proven native owner-bone/local-pose path, with the extra
-mirrored-X displacement set to `0.10`: the midpoint between v0.2.50 (`0.00`,
-not far enough) and v0.2.51 (`0.20`, too far).
+Useful logs:
 
-All new native RVAs are guarded by exact AArch64 entry fingerprints for this
-Minecraft binary. Installation fails closed when the binary does not match.
+- `[BowFishingRodTppRoute]` — compare Bow and Fishing Rod at slot 34.
+- `[BowFishingRodTppNativeSuppress]` — confirms the native Bow slot-6 TPP
+  attachment was removed, preventing a duplicate.
+
+### Trident FPP → Shield reference
+
+Shield is kept as the known-good native offhand reference. v0.2.55 suppresses
+only the native Trident slot-6 attachment inside the exact first-person
+DataDriven scope, then allows the generic `renderOffhandItem` / `renderObject`
+submission that previous builds intentionally discarded. No `pole` local-X
+mirror, Z+180 correction, owner-bone remap, or composed-matrix rewrite is
+applied during this diagnostic.
+
+Useful logs:
+
+- `[TridentShieldFppNativeSuppress]` — native FPP Trident attachment suppressed.
+- `[TridentShieldFppRoute]` — Trident entered / submitted through the generic
+  offhand layer.
+- `[ShieldFppReference]` — shows which of those same checkpoints Shield reaches.
+
+This is a **diagnostic build**, not a claim that the final Bow/Trident transforms
+are solved. Its purpose is to prove whether the stable reference items and the
+broken target items differ at the renderer-selection layer.
 
 Target Build ID:
 
@@ -50,21 +59,26 @@ bash ./scripts/build.sh
 The arm64 package is written to:
 
 ```text
-dist/arm64-v8a/levi-offhand-v0.2.52.levipack
+dist/arm64-v8a/levi-offhand-v0.2.55.levipack
 ```
 
 ## Runtime validation
 
-Use the exact Minecraft version above and check:
+Use Minecraft **1.26.45.1** and test in this order:
 
-1. Bow in offhand, TPP: exactly one Bow appears between the v0.2.50 and
-   v0.2.51 positions.
-2. Bow removed from offhand: the inventory player preview remains visible.
-3. From a fresh game launch, place Trident in offhand and enter FPP once.
-4. Trident in offhand, TPP: its already-correct pose remains unchanged.
-5. Mainhand items and other players' equipment continue to render normally.
+1. Put **Fishing Rod** in offhand, switch to TPP, then capture the single
+   `[BowFishingRodTppRoute] family=FishingRod ...` line.
+2. Replace it with **Bow** while staying in TPP. Check whether exactly one Bow
+   now sits on the same left-hand side / anchor class as Fishing Rod. Capture
+   `[BowFishingRodTppRoute] family=Bow ...` and
+   `[BowFishingRodTppNativeSuppress]`.
+3. Switch to FPP and place **Shield** in offhand. Capture every
+   `[ShieldFppReference]` line.
+4. Replace Shield with **Trident**. Record whether a Trident model appears at
+   all and whether it is 2D or 3D, then capture every `[TridentShieldFppRoute]`
+   and `[TridentShieldFppNativeSuppress]` line.
+5. Confirm Bow FPP, Trident TPP, mainhand items, inventory preview, and unrelated
+   offhand items remain unchanged.
 
-On first Trident FPP entry, the useful success sequence is
-`[TridentFppPrepareProbe]`, `[TridentFppBindingCacheReset]`, then
-`[TridentFppBoneBinding]`. Send those lines plus any
-`[TridentFppBindingProbe]` lines if the model is still absent.
+The most important comparison is not the numeric position yet. It is whether
+Bow reaches the Fishing Rod route and whether Trident reaches the Shield route.
