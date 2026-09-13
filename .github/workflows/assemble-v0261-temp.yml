@@ -1,0 +1,39 @@
+name: Assemble v0.2.61 staged archive
+
+on:
+  push:
+    branches:
+      - test/v0.2.61-attachment-context-probe
+    paths:
+      - ".github/workflows/assemble-v0261-temp.yml"
+
+permissions:
+  contents: write
+
+jobs:
+  assemble:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout staging branch
+        uses: actions/checkout@v4
+        with:
+          ref: test/v0.2.61-attachment-context-probe
+
+      - name: Reassemble and verify archive
+        shell: bash
+        run: |
+          set -euo pipefail
+          cat .tmp-v0261/archive/part-*.b64 | base64 -d > /tmp/v0261.zip
+          echo "10756c714415a9225556a034e71c0ae12b141e50604b04835499a0156da33394  /tmp/v0261.zip" | sha256sum -c -
+          unzip -o /tmp/v0261.zip -d .
+          test "$(git hash-object src/render/OffhandBlockRenderPatch.cpp)" = "3a05f510022d50aa34a12aeccdff49c8d93a3ffe"
+
+      - name: Commit extracted files
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add README.md manifest.json CHANGED-FILES.txt scripts/build.sh src/LeviOffhandMod.cpp src/render/OffhandBlockRenderPatch.cpp tests/native_attachment_source_contract.py tests/run_native_attachment_fix_tests.sh tests/v0261_attachment_context_probe_contract.py .github/workflows/build.yml
+          git commit -m "Assemble v0.2.61 attachment-context probe files"
+          git push origin HEAD:test/v0.2.61-attachment-context-probe
