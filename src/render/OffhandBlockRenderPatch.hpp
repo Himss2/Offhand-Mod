@@ -68,6 +68,12 @@ public:
         ToolCalibrationFamily family
     ) const noexcept;
 
+    // Kept for source/ABI parity with the v0.2.53 Bow TPP calibration path.
+    // v0.2.55 diagnostic routing does not expose this as a Mod Menu control,
+    // but the out-of-line implementation still exists and must be declared.
+    void setBowTppHorizontalOffset(float value) noexcept;
+    [[nodiscard]] float bowTppHorizontalOffset() const noexcept;
+
 private:
     OffhandBlockRenderPatch() = default;
 
