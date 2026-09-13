@@ -68,7 +68,7 @@ jobs:
         run: |
 
           unzip -l \
-            dist/arm64-v8a/levi-offhand-v0.2.56.levipack
+            dist/arm64-v8a/levi-offhand-v0.2.57.levipack
 
           file \
             build/android-arm64-v8a-Release/out/arm64-v8a/liblevi_offhand.so
@@ -79,10 +79,10 @@ jobs:
 
         with:
 
-          name: levi-offhand-arm64-v0.2.56
+          name: levi-offhand-arm64-v0.2.57
 
           path: >-
-            dist/arm64-v8a/levi-offhand-v0.2.56.levipack
+            dist/arm64-v8a/levi-offhand-v0.2.57.levipack
 
 
       - name: Publish tagged release
@@ -93,4 +93,4 @@ jobs:
         with:
 
           files: >-
-            dist/arm64-v8a/levi-offhand-v0.2.56.levipack
+            dist/arm64-v8a/levi-offhand-v0.2.57.levipack
