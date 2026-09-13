@@ -71,7 +71,7 @@ public:
                 .modId(context.id())
                 .description(
                     "Arbitrary offhand storage/rendering. "
-                    "v0.2.55 Bow/FishingRod + Trident/Shield diagnostic."
+                    "v0.2.56 Bow TPP tilt + native Trident 3D."
                 )
                 .defaultEnabled(true)
                 .hideInHudEditor(true)
@@ -91,16 +91,16 @@ public:
 
         context.logger().info("Levi Offhand registered in Mod Menu");
         context.logger().info(
-            "Tool calibration frozen; v0.2.55 reference-route diagnostic active"
+            "v0.2.56 Bow TPP grip-pivot + native Trident 3D active"
         );
         context.logger().info(
             "Bow FPP fixed: generic FIRSTPERSON_LEFT with native DataDriven Bow masked"
         );
         context.logger().info(
-            "Bow TPP v0.2.55: Fishing Rod-style generic LEFT route diagnostic"
+            "Bow TPP v0.2.56: generic LEFT route; grip fixed, upper tilt corrected"
         );
         context.logger().info(
-            "Trident FPP v0.2.55: Shield-style generic offhand route diagnostic"
+            "Trident FPP v0.2.56: native 3D retained; owner rightitem -> leftitem only"
         );
         context.logger().info(
             "Decorated Pot/Copper calibration frozen as default values"
