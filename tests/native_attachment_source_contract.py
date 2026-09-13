@@ -145,7 +145,14 @@ assert "kReferenceRouteDiagnostic" in draw_body
 assert "suppressBowNative" in draw_body
 assert "suppressTridentNative" not in draw_body
 assert "[TridentFppNative3D] native slot6 attachment retained" in draw_body
-assert draw_body.index("suppressBowNative") < draw_body.index("original(self,stack,slotPointer,parentContext,actor);")
+if "constexpr bool kAttachmentContextProbe=true;" in SOURCE:
+    assert draw_body.index("AttachmentProbeDrawScope") < draw_body.index(
+        "suppressBowNative"
+    ), "probe must observe native draw before legacy Bow suppression"
+else:
+    assert draw_body.index("suppressBowNative") < draw_body.index(
+        "original(self,stack,slotPointer,parentContext,actor);"
+    )
 
 prepare_start_diag = SOURCE.index("void prepareAttachmentDetour(")
 prepare_end_diag = SOURCE.index("using AttachmentBindingModeFn=", prepare_start_diag)
@@ -293,7 +300,12 @@ assert "[TridentFppHorizontal]" in SOURCE
 # Bow TPP visible lean is a screen-plane rotation: semantic Rot Z -> native Rx.
 assert "[BowTppGripPivot] semanticRotZDelta=" in SOURCE
 assert "setBowTppTiltDegrees(" in SOURCE
-assert "kBowTppTiltKey" in MOD_SOURCE
-assert '"Bow TPP Tilt (TEMP)"' in MOD_SOURCE
+if "constexpr bool kAttachmentContextProbe=true;" in SOURCE:
+    assert "kBowTppTiltKey" not in MOD_SOURCE
+    assert '"Bow TPP Tilt (TEMP)"' not in MOD_SOURCE
+    assert '"Trident FPP Horizontal (TEMP)"' not in MOD_SOURCE
+else:
+    assert "kBowTppTiltKey" in MOD_SOURCE
+    assert '"Bow TPP Tilt (TEMP)"' in MOD_SOURCE
 print(f"native attachment source contract passed: {len(required)} required, "
       f"{len(forbidden)} forbidden")
