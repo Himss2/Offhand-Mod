@@ -68,9 +68,11 @@ public:
         ToolCalibrationFamily family
     ) const noexcept;
 
-    // v0.2.58 one-session Bow TPP screen-plane calibration.
+    // Temporary one-session visual calibration controls.
     void setBowTppTiltDegrees(float value) noexcept;
     [[nodiscard]] float bowTppTiltDegrees() const noexcept;
+    void setTridentFppHorizontalOffset(float value) noexcept;
+    [[nodiscard]] float tridentFppHorizontalOffset() const noexcept;
 
     // Kept for source/ABI parity with the v0.2.53 Bow TPP calibration path.
     // v0.2.55 diagnostic routing does not expose this as a Mod Menu control,

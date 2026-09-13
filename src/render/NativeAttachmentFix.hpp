@@ -230,6 +230,22 @@ namespace levioffhand::render::native_attachment_fix {
         return std::clamp(value,kBowTppTiltMin,kBowTppTiltMax);
     }
 
+    inline constexpr float kTridentFppHorizontalMin=-1.5F;
+    inline constexpr float kTridentFppHorizontalMax=1.5F;
+    inline constexpr float kTridentFppHorizontalDefault=0.875F;
+
+    [[nodiscard]]
+    inline float normalizeTridentFppHorizontalOffset(float value) noexcept {
+        if(!std::isfinite(value)) {
+            return kTridentFppHorizontalDefault;
+        }
+        return std::clamp(
+            value,
+            kTridentFppHorizontalMin,
+            kTridentFppHorizontalMax
+        );
+    }
+
     // Trident's official geometry uses the expression binding
     // q.item_slot_to_bone_name(c.item_slot).  Inside the exact slot-6 FPP
     // expression-binding callsite, the desired owner is always leftItem.
