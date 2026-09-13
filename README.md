@@ -2,47 +2,52 @@
 
 Native Levi Launcher Android mod for Minecraft Bedrock **1.26.45.1**.
 
-## v0.2.55 — Bow/Fishing Rod + Trident/Shield routing diagnostic
+## v0.2.56 — Bow TPP tilt + native Trident 3D
 
-This build intentionally tests the renderer layer rather than adding another
-offset or rotation. The v0.2.53 Bow/Trident owner-binding and local-pose
-corrections are gated off for the two diagnostic targets so they cannot hide the
-route difference we are trying to measure.
+This revision follows the v0.2.55 device diagnostic instead of adding another
+renderer-route experiment.
 
-### Bow TPP → Fishing Rod reference
+### Bow TPP
 
-At the exact HumanoidAdditional offhand `RenderItem` call (`0xA32F030`, slot
-`34`), Fishing Rod naturally continues through the generic LEFT item renderer.
-Bow normally stops when `ADDEA08` observes its enabled attachable. v0.2.55
-forces that attachable check false only for this exact Bow TPP transaction and
-suppresses the separate native Bow slot-6 TPP attachment draw. The result is one
-Bow candidate on the same generic LEFT renderer class used by Fishing Rod.
+Bow keeps the v0.2.55 generic LEFT route that placed the lower/grip area on the
+correct offhand side. The TPP-only final matrix receives one additional
+`+25.20°` semantic-Y tilt correction while its matrix translation is preserved.
+Bow FPP continues to use the existing accepted path.
 
 Useful logs:
 
-- `[BowFishingRodTppRoute]` — compare Bow and Fishing Rod at slot 34.
-- `[BowFishingRodTppNativeSuppress]` — confirms the native Bow slot-6 TPP
-  attachment was removed, preventing a duplicate.
+- `[BowFishingRodTppRoute]` — confirms the Bow/Fishing Rod slot-34 generic LEFT route.
+- `[BowFishingRodTppNativeSuppress]` — confirms the separate native Bow TPP draw is suppressed.
+- `[BowTppGripPivot]` — confirms the v0.2.56 TPP-only tilt correction ran.
 
-### Trident FPP → Shield reference
+### Fishing Rod TPP
 
-Shield is kept as the known-good native offhand reference. v0.2.55 suppresses
-only the native Trident slot-6 attachment inside the exact first-person
-DataDriven scope, then allows the generic `renderOffhandItem` / `renderObject`
-submission that previous builds intentionally discarded. No `pole` local-X
-mirror, Z+180 correction, owner-bone remap, or composed-matrix rewrite is
-applied during this diagnostic.
+Fishing Rod remains the Bow route reference and is lowered by `0.06` along the
+proven semantic Y basis in TPP only.
+
+Useful log:
+
+- `[FishingRodTppLower]` — confirms the small TPP vertical correction ran.
+
+### Trident FPP
+
+The v0.2.55 Shield-style generic route proved that `renderOffhandItem` /
+`renderObject` only produces the 2D Trident item form. v0.2.56 therefore returns
+Trident to Minecraft's native slot-6 DataDriven attachment path and suppresses
+the generic 2D submission.
+
+The only Trident attachment intervention retained is owner-bone remapping from
+`rightitem` to `leftitem` when Minecraft's native resolver naturally runs inside
+the exact FPP slot-6 scope. This revision does **not** force a binding-cache
+re-resolve and does **not** mirror/rotate the `pole`, rewrite its local pose, or
+overwrite the composed attachment matrix.
 
 Useful logs:
 
-- `[TridentShieldFppNativeSuppress]` — native FPP Trident attachment suppressed.
-- `[TridentShieldFppRoute]` — Trident entered / submitted through the generic
-  offhand layer.
-- `[ShieldFppReference]` — shows which of those same checkpoints Shield reaches.
-
-This is a **diagnostic build**, not a claim that the final Bow/Trident transforms
-are solved. Its purpose is to prove whether the stable reference items and the
-broken target items differ at the renderer-selection layer.
+- `[TridentFppPrepareProbe]` — exact native FPP slot-6 preparation scope reached.
+- `[TridentFppBindingProbe]` / `[TridentFppBoneBinding]` — owner-bone resolver activity.
+- `[TridentFppNative3D] native slot6 attachment retained` — native 3D draw retained.
+- `[TridentFppNative3D] suppress generic 2D item form` — 2D fallback suppressed.
 
 Target Build ID:
 
@@ -59,26 +64,18 @@ bash ./scripts/build.sh
 The arm64 package is written to:
 
 ```text
-dist/arm64-v8a/levi-offhand-v0.2.55.levipack
+dist/arm64-v8a/levi-offhand-v0.2.56.levipack
 ```
 
 ## Runtime validation
 
-Use Minecraft **1.26.45.1** and test in this order:
+Use Minecraft **1.26.45.1**. The two decisive checks are:
 
-1. Put **Fishing Rod** in offhand, switch to TPP, then capture the single
-   `[BowFishingRodTppRoute] family=FishingRod ...` line.
-2. Replace it with **Bow** while staying in TPP. Check whether exactly one Bow
-   now sits on the same left-hand side / anchor class as Fishing Rod. Capture
-   `[BowFishingRodTppRoute] family=Bow ...` and
-   `[BowFishingRodTppNativeSuppress]`.
-3. Switch to FPP and place **Shield** in offhand. Capture every
-   `[ShieldFppReference]` line.
-4. Replace Shield with **Trident**. Record whether a Trident model appears at
-   all and whether it is 2D or 3D, then capture every `[TridentShieldFppRoute]`
-   and `[TridentShieldFppNativeSuppress]` line.
-5. Confirm Bow FPP, Trident TPP, mainhand items, inventory preview, and unrelated
-   offhand items remain unchanged.
+1. Bow in offhand TPP: lower/grip position should remain where v0.2.55 placed it,
+   while the upper part should be straighter instead of leaning outward. Fishing
+   Rod should sit slightly lower than v0.2.55.
+2. Trident in offhand FPP after a fresh game launch: report whether the native
+   model is now **3D**, still missing, or appears in the wrong hand/orientation.
 
-The most important comparison is not the numeric position yet. It is whether
-Bow reaches the Fishing Rod route and whether Trident reaches the Shield route.
+Also verify Bow FPP, Trident TPP, mainhand items, inventory preview, and unrelated
+offhand items remain unchanged.
