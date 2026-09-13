@@ -3,8 +3,9 @@ from pathlib import Path
 
 SOURCE = Path("src/render/OffhandBlockRenderPatch.cpp").read_text()
 NATIVE_HELPER = Path("src/render/NativeAttachmentFix.hpp").read_text()
+MOD_SOURCE = Path("src/LeviOffhandMod.cpp").read_text()
 WORKFLOW = Path(".github/workflows/build.yml").read_text()
-PRODUCTION_SOURCE = SOURCE + "\n" + NATIVE_HELPER
+PRODUCTION_SOURCE = SOURCE + "\n" + NATIVE_HELPER + "\n" + MOD_SOURCE
 
 
 required = {
@@ -43,7 +44,6 @@ required = {
     "Trident binding mode hook": "attachmentBindingModeDetour(",
     "Trident binding cache predicate":
         "shouldForceTridentBindingResolve(",
-    "Trident binding cache marker": "[TridentFppBindingCacheReset]",
     "resolved bone state guard": "gResolvedTridentFppBindingBone",
     "cross-thread binding generation": "gTridentFppBindingGeneration",
     "native attachment ready gate": "gNativeAttachmentHooksReady",
@@ -62,17 +62,16 @@ required = {
     "native attachment reader drain":
         "waitForNativeAttachmentHookReaders(",
     "native binding-mode fallback": "nativeBindingModeDirect(",
-    "Trident FPP binding marker": "[TridentFppBoneBinding]",
-    "Bow TPP draw depth": "gBowTppAttachmentDepth",
-    "Bow pose scope": "shouldFixBowLocalPose(",
-    "scoped local pose override": "ScopedLocalPoseOverride localPoseOverride(",
-    "Bow calibrated local pose correction": "mirrorAndOffsetBowLocalPose",
-    "Bow local pose marker": "[BowTppLocalPose]",
     "Trident native prepare probe": "[TridentFppPrepareProbe]",
     "Trident owner binding probe": "[TridentFppBindingProbe]",
     "bounded native probe budget": "consumeProbeBudget(",
     "FPP Bow mask retained": "BowFppWeakItemMask bowMask",
-    "native Trident retained": "suppress generic item-form submission",
+    "v0.2.55 route diagnostic gate": "kReferenceRouteDiagnostic=true",
+    "Bow/FishingRod route marker": "[BowFishingRodTppRoute]",
+    "Bow native route suppression": "[BowFishingRodTppNativeSuppress]",
+    "Trident native route suppression": "[TridentShieldFppNativeSuppress]",
+    "Trident/Shield route marker": "[TridentShieldFppRoute]",
+    "Shield reference marker": "[ShieldFppReference]",
 }
 
 for name, marker in required.items():
@@ -90,8 +89,14 @@ assert "kBoneMatrixCachedOffset=0xDE" in NATIVE_HELPER, (
 assert "kBoneBindingModeOffset=0xDC" in NATIVE_HELPER, (
     "missing binary-proven owner-binding mode offset"
 )
-assert "kBowTppExtraLeftOffset=0.10F" in NATIVE_HELPER, (
-    "Bow TPP midpoint offset is not locked to 0.10"
+assert "kBowTppHorizontalMin=0.10F" in NATIVE_HELPER, (
+    "Bow TPP slider minimum is not locked to the proven 0.10 bound"
+)
+assert "kBowTppHorizontalMax=0.20F" in NATIVE_HELPER, (
+    "Bow TPP slider maximum is not locked to the proven 0.20 bound"
+)
+assert "kBowTppHorizontalDefault=0.10F" in NATIVE_HELPER, (
+    "Bow TPP slider default is not the current 0.10 position"
 )
 assert "class ResolvedBindingCache" in NATIVE_HELPER, (
     "resolved binding cache lifecycle is not independently testable"
@@ -120,10 +125,6 @@ forbidden = {
     "v0.2.49 Bow marker": "[BowTppRightOffset]",
     "v0.2.49 Trident marker": "[TridentFppPoleRotation]",
     "v0.2.50 mirror-only Bow helper": "mirrorBowLocalPose",
-    "manual Trident local-pose helper": "mirrorAndRotateTridentLocalPose",
-    "manual Trident local-pose scope": "shouldFixTridentLocalPose(",
-    "manual Trident attachment depth": "gTridentFppAttachmentDepth",
-    "manual Trident pose marker": "[TridentFppLocalPose]",
     "obsolete Trident pole pose probe": "[TridentFppPolePose]",
     "obsolete Trident pole matrix probe": "[TridentFppPoleMatrix]",
 }
@@ -134,13 +135,20 @@ for name, marker in forbidden.items():
     )
 
 
-compose_start = SOURCE.index("void composeAttachmentBoneMatrixDetour(")
-compose_end = SOURCE.index("using FirstPersonDataDrivenFn=", compose_start)
-compose_body = SOURCE[compose_start:compose_end]
-override_index = compose_body.index("ScopedLocalPoseOverride localPoseOverride(")
-original_index = compose_body.rindex("original(boneState,pivot,matrix);")
-assert override_index < original_index, (
-    "local attachment pose must be overridden before F147ED0 composition"
+draw_start = SOURCE.index("void drawAttachmentDetour(")
+draw_end = SOURCE.index("using ComposeAttachmentBoneMatrixFn=", draw_start)
+draw_body = SOURCE[draw_start:draw_end]
+assert "kReferenceRouteDiagnostic" in draw_body
+assert "suppressBowNative" in draw_body
+assert "suppressTridentNative" in draw_body
+assert draw_body.index("suppressBowNative") < draw_body.index("original(self,stack,slotPointer,parentContext,actor);")
+assert draw_body.index("suppressTridentNative") < draw_body.index("original(self,stack,slotPointer,parentContext,actor);")
+
+prepare_start_diag = SOURCE.index("void prepareAttachmentDetour(")
+prepare_end_diag = SOURCE.index("using AttachmentBindingModeFn=", prepare_start_diag)
+prepare_diag = SOURCE[prepare_start_diag:prepare_end_diag]
+assert "!kReferenceRouteDiagnostic" in prepare_diag, (
+    "owner-bone remap must be disabled during the reference-route diagnostic"
 )
 
 
