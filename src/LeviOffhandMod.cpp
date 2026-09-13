@@ -71,7 +71,7 @@ public:
                 .modId(context.id())
                 .description(
                     "Arbitrary offhand storage/rendering. "
-                    "v0.2.56 Bow TPP tilt + native Trident 3D."
+                    "v0.2.57 Bow TPP route latch + native Trident left binding."
                 )
                 .defaultEnabled(true)
                 .hideInHudEditor(true)
@@ -91,16 +91,16 @@ public:
 
         context.logger().info("Levi Offhand registered in Mod Menu");
         context.logger().info(
-            "v0.2.56 Bow TPP grip-pivot + native Trident 3D active"
+            "v0.2.57 Bow TPP route latch + native Trident left binding active"
         );
         context.logger().info(
             "Bow FPP fixed: generic FIRSTPERSON_LEFT with native DataDriven Bow masked"
         );
         context.logger().info(
-            "Bow TPP v0.2.56: generic LEFT route; grip fixed, upper tilt corrected"
+            "Bow TPP v0.2.57: generic LEFT route latched through final matrix"
         );
         context.logger().info(
-            "Trident FPP v0.2.56: native 3D retained; owner rightitem -> leftitem only"
+            "Trident FPP v0.2.57: native 3D + cached rightitem reopen -> leftitem"
         );
         context.logger().info(
             "Decorated Pot/Copper calibration frozen as default values"
