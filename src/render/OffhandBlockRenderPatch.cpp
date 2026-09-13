@@ -35,7 +35,7 @@ namespace levioffhand::render {
         constexpr std::uintptr_t kFirstPersonDataDrivenCallsiteRva=0xADE9E9C;
         constexpr std::uintptr_t kGetOffhandStackRva=0xEC9D62C;
 
-        // v0.2.56 keeps the v0.2.55 Bow/Fishing-Rod generic LEFT route,
+        // v0.2.57 keeps the v0.2.55 Bow/Fishing-Rod generic LEFT route,
         // but Trident returns to its native slot-6 3D attachment.  Bow TPP gets
         // only a grip-pivot tilt correction and Fishing Rod TPP gets only a
         // small vertical delta; neither correction is shared with FPP.
@@ -324,6 +324,9 @@ namespace levioffhand::render {
         thread_local bool gRenderItemNativeAttachable=false;
         thread_local bool gRenderItemForcedGeneric=false;
         thread_local bool gTppReferenceMatrixApplied=false;
+        thread_local ToolFamily gPendingTppReferenceFamily=ToolFamily::None;
+        thread_local bool gPendingTppReferenceArmed=false;
+        thread_local std::uint32_t gTppReferenceLatchLoggedMask=0;
         thread_local bool gBowTppGripPivotLogged=false;
         thread_local bool gFishingRodTppLowerLogged=false;
         thread_local std::uint32_t gTppReferenceLoggedMask=0;
@@ -1338,6 +1341,13 @@ namespace levioffhand::render {
                 );
             }
 
+            // RenderItem returns before the generic renderOffhandItem path that
+            // owns the final held-item matrix.  Carry the exact TPP family over
+            // that boundary as a one-shot latch instead of relying on this
+            // temporary RenderItem call depth.
+            gPendingTppReferenceFamily=family;
+            gPendingTppReferenceArmed=true;
+
             gRenderItemRouteDepth=oldDepth;
             gRenderItemRouteFamily=oldFamily;
             gRenderItemRouteSlot=oldSlot;
@@ -1561,10 +1571,77 @@ namespace levioffhand::render {
                 return directMode;
             }
 
-            // v0.2.56: preserve Minecraft's native binding/cache mode.  The
-            // only Trident intervention is rightitem -> leftitem if the native
-            // resolver naturally runs inside the exact FPP slot-6 scope.
-            return original(bindingState);
+            const std::uint8_t nativeMode=original(bindingState);
+            if(
+                gActiveTridentFppBindingScopes.load(
+                    std::memory_order_acquire
+                )==0
+                || !gNativeAttachmentHooksReady.load(
+                    std::memory_order_acquire
+                )
+            ) {
+                return nativeMode;
+            }
+
+            if(
+                gTridentFppBindingDepth==0
+                || gFirstPersonDataDrivenDepth==0
+                || !OffhandBlockRenderPatch::instance().featureEnabled()
+            ) {
+                return nativeMode;
+            }
+
+            synchronizeTridentFppBindingGeneration();
+
+            const std::uintptr_t returnAddress=
+                reinterpret_cast<std::uintptr_t>(
+                    __builtin_return_address(0)
+                );
+            if(
+                !isExactMinecraftCallsite(
+                    returnAddress,
+                    kAttachmentBindingModeFirstCallsiteRva
+                )
+            ) {
+                return nativeMode;
+            }
+
+            constexpr std::uintptr_t callsiteRva=
+                kAttachmentBindingModeFirstCallsiteRva;
+            const std::uint64_t sourceHash=readValue<std::uint64_t>(
+                bindingState,
+                offsetof(BindingPrefix,nameHash),
+                0
+            );
+            const bool alreadyResolved=
+                gResolvedTridentFppBindingBones.contains(bindingState);
+            const bool forceResolve=
+                native_attachment_fix::shouldForceTridentBindingResolve(
+                    true,
+                    native_attachment_fix::kOffhandSlot,
+                    true,
+                    callsiteRva,
+                    sourceHash,
+                    nativeMode,
+                    alreadyResolved
+                );
+
+            if(!forceResolve) {
+                return nativeMode;
+            }
+
+            if(!gTridentFppBindingCacheLogged) {
+                gTridentFppBindingCacheLogged=true;
+                __android_log_print(
+                    ANDROID_LOG_INFO,
+                    kLogTag,
+                    "[TridentFppBindingCacheReset] slot6 rightitem "
+                    "mode=%u -> unresolved at first read",
+                    static_cast<unsigned>(nativeMode)
+                );
+            }
+
+            return 0;
         }
 
         using ResolveOwnerBoneByNameFn=bool(*)(
@@ -2131,6 +2208,81 @@ namespace levioffhand::render {
 
             ToolFamily mOldFamily;
             bool mOldApplied;
+        };
+
+        class TppReferenceRenderScope final {
+        public:
+            explicit TppReferenceRenderScope(
+                ToolFamily family
+            ) noexcept
+                :
+                mOldDepth(gRenderItemRouteDepth),
+                mOldFamily(gRenderItemRouteFamily),
+                mOldSlot(gRenderItemRouteSlot),
+                mOldCallsite(gRenderItemRouteCallsiteRva),
+                mOldMatrixApplied(gTppReferenceMatrixApplied)
+            {
+                if(!gPendingTppReferenceArmed) {
+                    return;
+                }
+
+                const ToolFamily pendingFamily=gPendingTppReferenceFamily;
+                gPendingTppReferenceArmed=false;
+                gPendingTppReferenceFamily=ToolFamily::None;
+
+                if(
+                    family!=pendingFamily
+                    || !isTppReferenceFamily(family)
+                ) {
+                    return;
+                }
+
+                mActive=true;
+                gRenderItemRouteDepth=mOldDepth+1;
+                gRenderItemRouteFamily=family;
+                gRenderItemRouteSlot=kOffhandInventorySlot;
+                gRenderItemRouteCallsiteRva=
+                    kThirdPersonOffhandRenderItemCallsiteRva;
+                gTppReferenceMatrixApplied=false;
+
+                const std::uint32_t bit=
+                    family==ToolFamily::Bow ? 1U : 2U;
+                if((gTppReferenceLatchLoggedMask & bit)==0U) {
+                    gTppReferenceLatchLoggedMask|=bit;
+                    __android_log_print(
+                        ANDROID_LOG_INFO,
+                        kLogTag,
+                        "[TppReferenceLatch] family=%s "
+                        "renderOffhand scope armed",
+                        toolFamilyName(family)
+                    );
+                }
+            }
+
+            ~TppReferenceRenderScope() {
+                if(!mActive) {
+                    return;
+                }
+
+                gRenderItemRouteDepth=mOldDepth;
+                gRenderItemRouteFamily=mOldFamily;
+                gRenderItemRouteSlot=mOldSlot;
+                gRenderItemRouteCallsiteRva=mOldCallsite;
+                gTppReferenceMatrixApplied=mOldMatrixApplied;
+            }
+
+            TppReferenceRenderScope(const TppReferenceRenderScope&)=delete;
+            TppReferenceRenderScope& operator=(
+                const TppReferenceRenderScope&
+            )=delete;
+
+        private:
+            std::uint32_t mOldDepth=0;
+            ToolFamily mOldFamily=ToolFamily::None;
+            std::uint32_t mOldSlot=0;
+            std::uintptr_t mOldCallsite=0;
+            bool mOldMatrixApplied=false;
+            bool mActive=false;
         };
 
         using HandEquipPredicateFn=
@@ -3059,7 +3211,7 @@ namespace levioffhand::render {
                 calibration
             );
 
-            // v0.2.56 TPP-only correction must run AFTER the accepted generic
+            // v0.2.57 TPP-only correction must run AFTER the accepted generic
             // calibration.  Applying it earlier rotates the basis used by the
             // calibration's XYZ offsets and moves the already-correct grip.
             if(
@@ -3507,6 +3659,9 @@ namespace levioffhand::render {
         gRenderItemAttachableCheckSeen=false;
         gRenderItemNativeAttachable=false;
         gRenderItemForcedGeneric=false;
+        gPendingTppReferenceFamily=ToolFamily::None;
+        gPendingTppReferenceArmed=false;
+        gTppReferenceLatchLoggedMask=0;
         gTppReferenceLoggedMask=0;
         gBowTppNativeSuppressLogged=false;
         gTridentFppNativeSuppressLogged=false;
@@ -4014,12 +4169,12 @@ namespace levioffhand::render {
         );
 
         logger.info(
-            "v0.2.56 Bow TPP: generic LEFT route + grip-pivot tilt; "
+            "v0.2.57 Bow TPP: generic LEFT route + grip-pivot tilt; "
             "native slot6 Bow draw suppressed"
         );
 
         logger.info(
-            "v0.2.56 Trident FPP: native slot6 3D attachment retained; "
+            "v0.2.57 Trident FPP: native slot6 3D attachment retained; "
             "generic 2D item form suppressed"
         );
 
@@ -4228,6 +4383,9 @@ namespace levioffhand::render {
         gRenderItemAttachableCheckSeen=false;
         gRenderItemNativeAttachable=false;
         gRenderItemForcedGeneric=false;
+        gPendingTppReferenceFamily=ToolFamily::None;
+        gPendingTppReferenceArmed=false;
+        gTppReferenceLatchLoggedMask=0;
         gTppReferenceLoggedMask=0;
         gBowTppNativeSuppressLogged=false;
         gTridentFppNativeSuppressLogged=false;
@@ -4500,6 +4658,9 @@ namespace levioffhand::render {
         gRenderItemAttachableCheckSeen=false;
         gRenderItemNativeAttachable=false;
         gRenderItemForcedGeneric=false;
+        gPendingTppReferenceFamily=ToolFamily::None;
+        gPendingTppReferenceArmed=false;
+        gTppReferenceLatchLoggedMask=0;
         gTppReferenceLoggedMask=0;
         gBowTppNativeSuppressLogged=false;
         gTridentFppNativeSuppressLogged=false;
@@ -4692,6 +4853,11 @@ namespace levioffhand::render {
             )
             :
             ToolFamily::None;
+
+        TppReferenceRenderScope
+            tppReferenceRenderScope(
+                toolFamily
+            );
 
         ToolRenderScope
             toolRenderScope(
@@ -5432,7 +5598,7 @@ namespace levioffhand::render {
             );
 
         /*
-         * v0.2.56: the visible Trident must come only from Minecraft's native
+         * v0.2.57: the visible Trident must come only from Minecraft's native
          * slot-6 DataDriven attachment.  Suppress the duplicate generic item
          * form here; this is the 2D sprite observed in v0.2.55.
          */
