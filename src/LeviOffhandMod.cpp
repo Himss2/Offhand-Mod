@@ -17,6 +17,7 @@ namespace {
 constexpr char kModuleId[]="levi_offhand.offhand";
 constexpr char kLogTag[]="Levi Offhand";
 constexpr char kBowTppTiltKey[]="bow_tpp_tilt";
+constexpr char kTridentFppHorizontalKey[]="trident_fpp_horizontal";
 
 using Patch=render::OffhandBlockRenderPatch;
 
@@ -44,7 +45,13 @@ void onModuleConfigChanged(
     std::string_view key,
     std::string_view value
 ) {
-    if(moduleId!=kModuleId || key!=kBowTppTiltKey) {
+    if(
+        moduleId!=kModuleId
+        || (
+            key!=kBowTppTiltKey
+            && key!=kTridentFppHorizontalKey
+        )
+    ) {
         return;
     }
 
@@ -61,12 +68,19 @@ void onModuleConfigChanged(
         __android_log_print(
             ANDROID_LOG_WARN,
             kLogTag,
-            "[BowTppTiltSlider] rejected invalid value"
+            "[OffhandCalibration] rejected invalid value for %.*s",
+            static_cast<int>(key.size()),
+            key.data()
         );
         return;
     }
 
-    Patch::instance().setBowTppTiltDegrees(parsedValue);
+    if(key==kBowTppTiltKey) {
+        Patch::instance().setBowTppTiltDegrees(parsedValue);
+        return;
+    }
+
+    Patch::instance().setTridentFppHorizontalOffset(parsedValue);
 }
 
 
@@ -106,7 +120,7 @@ public:
                 .modId(context.id())
                 .description(
                     "Arbitrary offhand storage/rendering. "
-                    "v0.2.58 Bow TPP live tilt + native Trident expression binding."
+                    "v0.2.59 crash-safe Bow/Trident live calibration."
                 )
                 .defaultEnabled(true)
                 .hideInHudEditor(true)
@@ -119,6 +133,14 @@ public:
                     "-25.20",
                     "-45.00",
                     "45.00"
+                )
+                .config(
+                    kTridentFppHorizontalKey,
+                    "Trident FPP Horizontal (TEMP)",
+                    pl::modmenu::ConfigType::SliderFloat,
+                    "0.875",
+                    "-1.500",
+                    "1.500"
                 )
                 .registerModule();
 
@@ -135,16 +157,16 @@ public:
 
         context.logger().info("Levi Offhand registered in Mod Menu");
         context.logger().info(
-            "v0.2.58 Bow TPP Rot-Z calibration + Trident expression-left binding active"
+            "v0.2.59 crash-safe Bow Rot-Z + native-left Trident calibration active"
         );
         context.logger().info(
             "Bow FPP fixed: generic FIRSTPERSON_LEFT with native DataDriven Bow masked"
         );
         context.logger().info(
-            "Bow TPP v0.2.58: generic LEFT route + live semantic Rot-Z tilt"
+            "Bow TPP v0.2.59: generic LEFT route + live semantic Rot-Z tilt"
         );
         context.logger().info(
-            "Trident FPP v0.2.58: native mode-3 expression forced to leftItem + pole Z180"
+            "Trident FPP v0.2.59: native off_hand->leftitem + pole Z180 + live horizontal"
         );
         context.logger().info(
             "Decorated Pot/Copper calibration frozen as default values"
