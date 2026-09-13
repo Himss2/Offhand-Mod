@@ -3,6 +3,7 @@ from pathlib import Path
 
 SOURCE = Path("src/render/OffhandBlockRenderPatch.cpp").read_text()
 NATIVE_HELPER = Path("src/render/NativeAttachmentFix.hpp").read_text()
+PATCH_HEADER = Path("src/render/OffhandBlockRenderPatch.hpp").read_text()
 MOD_SOURCE = Path("src/LeviOffhandMod.cpp").read_text()
 WORKFLOW = Path(".github/workflows/build.yml").read_text()
 PRODUCTION_SOURCE = SOURCE + "\n" + NATIVE_HELPER + "\n" + MOD_SOURCE
@@ -76,6 +77,14 @@ required = {
 
 for name, marker in required.items():
     assert marker in SOURCE, f"missing {name}: {marker}"
+
+assert "void setBowTppHorizontalOffset(float value) noexcept;" in PATCH_HEADER, (
+    "Bow TPP offset setter implementation has no class declaration"
+)
+assert "[[nodiscard]] float bowTppHorizontalOffset() const noexcept;" in PATCH_HEADER, (
+    "Bow TPP offset getter implementation has no class declaration"
+)
+
 
 assert "kBoneLocalPoseOffset=0x70" in NATIVE_HELPER, (
     "missing binary-proven local pose state offset"
