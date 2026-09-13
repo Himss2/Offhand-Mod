@@ -65,7 +65,7 @@ required = {
     "Trident owner binding probe": "[TridentFppBindingProbe]",
     "bounded native probe budget": "consumeProbeBudget(",
     "FPP Bow mask retained": "BowFppWeakItemMask bowMask",
-    "v0.2.56 Bow route gate": "kReferenceRouteDiagnostic=true",
+    "v0.2.57 Bow route gate": "kReferenceRouteDiagnostic=true",
     "Bow/FishingRod route marker": "[BowFishingRodTppRoute]",
     "Bow native route suppression": "[BowFishingRodTppNativeSuppress]",
             }
@@ -156,7 +156,7 @@ prepare_diag = SOURCE[prepare_start_diag:prepare_end_diag]
 trident_decl = prepare_diag[prepare_diag.index("const bool remapTridentOwnerBone="):]
 trident_decl = trident_decl[:trident_decl.index(";") + 1]
 assert "!kReferenceRouteDiagnostic" not in trident_decl, (
-    "Trident owner-bone remap must remain active in v0.2.56"
+    "Trident owner-bone remap must remain active in v0.2.57"
 )
 
 
@@ -165,11 +165,16 @@ mode_end = SOURCE.index("using ResolveOwnerBoneByNameFn=", mode_start)
 mode_body = SOURCE[mode_start:mode_end]
 assert "ScopedHookRead readGuard(" in mode_body
 assert "gAttachmentBindingModeOriginalPublished.load(" in mode_body
-assert "return original(bindingState);" in mode_body, (
-    "binding-mode hook must forward native state unchanged in v0.2.56"
+assert "shouldForceTridentBindingResolve(" in mode_body, (
+    "Trident cached rightitem binding is not reopened in v0.2.57"
 )
-assert "shouldForceTridentBindingResolve(" not in mode_body
-assert "[TridentFppBindingCacheReset]" not in mode_body
+assert "[TridentFppBindingCacheReset]" in mode_body, (
+    "Trident binding-cache reopen marker missing"
+)
+assert "gResolvedTridentFppBindingBones.contains(bindingState)" in mode_body
+assert "return 0;" in mode_body, (
+    "first cached rightitem mode is not reported unresolved"
+)
 
 
 prepare_start = SOURCE.index("void prepareAttachmentDetour(")
