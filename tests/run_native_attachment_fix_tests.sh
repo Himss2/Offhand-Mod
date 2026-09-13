@@ -31,4 +31,4 @@ else
         "native attachment binary contract skipped: LEVI_MCPE_LIBRARY unset"
 fi
 
-python3 tests/v0257_latch_trident_binding_contract.py
+python3 tests/v0258_expression_bow_contract.py

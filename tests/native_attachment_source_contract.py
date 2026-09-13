@@ -65,7 +65,7 @@ required = {
     "Trident owner binding probe": "[TridentFppBindingProbe]",
     "bounded native probe budget": "consumeProbeBudget(",
     "FPP Bow mask retained": "BowFppWeakItemMask bowMask",
-    "v0.2.57 Bow route gate": "kReferenceRouteDiagnostic=true",
+    "v0.2.58 Bow route gate": "kReferenceRouteDiagnostic=true",
     "Bow/FishingRod route marker": "[BowFishingRodTppRoute]",
     "Bow native route suppression": "[BowFishingRodTppNativeSuppress]",
             }
@@ -124,12 +124,9 @@ forbidden = {
     "Trident absolute-position reflection": "matrix[12]=-matrix[12]",
     "obsolete combined Trident transform": "mirrorToOffhandAndFlipPole(",
     "v0.2.49 Bow composed-matrix offset": "offsetBowRight(",
-    "v0.2.49 Trident composed-matrix rotation":
-        "rotateTridentPoleHeadUp(",
     "manual composed-matrix cache overwrite":
         "writeValue<OffhandBlockRenderPatch::Matrix64>(",
     "v0.2.49 Bow marker": "[BowTppRightOffset]",
-    "v0.2.49 Trident marker": "[TridentFppPoleRotation]",
     "v0.2.50 mirror-only Bow helper": "mirrorBowLocalPose",
     "obsolete Trident pole pose probe": "[TridentFppPolePose]",
     "obsolete Trident pole matrix probe": "[TridentFppPoleMatrix]",
@@ -156,7 +153,7 @@ prepare_diag = SOURCE[prepare_start_diag:prepare_end_diag]
 trident_decl = prepare_diag[prepare_diag.index("const bool remapTridentOwnerBone="):]
 trident_decl = trident_decl[:trident_decl.index(";") + 1]
 assert "!kReferenceRouteDiagnostic" not in trident_decl, (
-    "Trident owner-bone remap must remain active in v0.2.57"
+    "legacy name-binding scope remains installed but v0.2.58 uses expression binding"
 )
 
 
@@ -165,16 +162,8 @@ mode_end = SOURCE.index("using ResolveOwnerBoneByNameFn=", mode_start)
 mode_body = SOURCE[mode_start:mode_end]
 assert "ScopedHookRead readGuard(" in mode_body
 assert "gAttachmentBindingModeOriginalPublished.load(" in mode_body
-assert "shouldForceTridentBindingResolve(" in mode_body, (
-    "Trident cached rightitem binding is not reopened in v0.2.57"
-)
-assert "[TridentFppBindingCacheReset]" in mode_body, (
-    "Trident binding-cache reopen marker missing"
-)
-assert "gResolvedTridentFppBindingBones.contains(bindingState)" in mode_body
-assert "return 0;" in mode_body, (
-    "first cached rightitem mode is not reported unresolved"
-)
+
+# v0.2.58 no longer depends on name-bound rightitem cache reopening.
 
 
 prepare_start = SOURCE.index("void prepareAttachmentDetour(")
@@ -271,6 +260,9 @@ installed_body = SOURCE[installed_start:installed_end]
 assert "gAttachmentBindingModeHook" in installed_body, (
     "installed() must include the mandatory binding-mode hook"
 )
+assert "gMolangHashedStringViewHook" in installed_body, (
+    "installed() must include the mandatory Trident expression-binding hook"
+)
 
 feature_start = SOURCE.index("OffhandBlockRenderPatch::\n    setFeatureEnabled(")
 feature_end = SOURCE.index("OffhandBlockRenderPatch::\n    featureEnabled()", feature_start)
@@ -283,5 +275,23 @@ assert feature_body.index("invalidateTridentFppBindingGeneration();") < (
 ), "generation must publish before the new feature state"
 
 
+
+# v0.2.58: native Trident uses Molang expression binding mode 3.
+assert "kMolangHashedStringViewFingerprint" in SOURCE
+assert "kLeftItemCamelHash" in NATIVE_HELPER
+assert "tridentOffhandExpressionOwnerHash" in NATIVE_HELPER
+assert "rotateTridentPoleHeadUp" in NATIVE_HELPER
+assert "kMolangHashedStringViewRva=0xEEAB3AC" in SOURCE
+assert "kTridentExpressionBindingCallsiteRva=0x9B37BD4" in SOURCE
+assert "molangHashedStringViewDetour(" in SOURCE
+assert "[TridentFppExpressionBinding]" in SOURCE
+assert "tridentOffhandExpressionOwnerHash(" in SOURCE
+assert "[TridentFppPoleRotation]" in SOURCE
+
+# Bow TPP visible lean is a screen-plane rotation: semantic Rot Z -> native Rx.
+assert "[BowTppGripPivot] semanticRotZDelta=" in SOURCE
+assert "setBowTppTiltDegrees(" in SOURCE
+assert "kBowTppTiltKey" in MOD_SOURCE
+assert '"Bow TPP Tilt (TEMP)"' in MOD_SOURCE
 print(f"native attachment source contract passed: {len(required)} required, "
       f"{len(forbidden)} forbidden")

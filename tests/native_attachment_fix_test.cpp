@@ -393,6 +393,45 @@ namespace {
         assert(emitted==2);
     }
 
+
+    void testBowTppTiltClamp() {
+        assert(std::fabs(fix::normalizeBowTppTiltDegrees(-60.0F)+45.0F)<1.0e-6F);
+        assert(std::fabs(fix::normalizeBowTppTiltDegrees(60.0F)-45.0F)<1.0e-6F);
+        assert(std::fabs(fix::normalizeBowTppTiltDegrees(-25.2F)+25.2F)<1.0e-6F);
+    }
+
+    void testTridentPostComposeRotationPreservesTranslation() {
+        std::array<float,16> matrix{
+            1.0F,2.0F,3.0F,4.0F,
+            5.0F,6.0F,7.0F,8.0F,
+            9.0F,10.0F,11.0F,12.0F,
+            13.0F,14.0F,15.0F,16.0F
+        };
+        assert(fix::rotateTridentPoleHeadUp(matrix.data()));
+        assert(matrix[0]==-1.0F);
+        assert(matrix[7]==-8.0F);
+        assert(matrix[8]==9.0F);
+        assert(matrix[12]==13.0F);
+        assert(matrix[13]==14.0F);
+        assert(matrix[14]==15.0F);
+    }
+
+    void testTridentExpressionBindingMapsRightOwnerToLeftItem() {
+        assert(
+            fix::tridentOffhandExpressionOwnerHash(
+                fix::kRightItemCamelHash
+            )==fix::kLeftItemCamelHash
+        );
+        assert(
+            fix::tridentOffhandExpressionOwnerHash(
+                fix::kRightItemLowerHash
+            )==fix::kLeftItemCamelHash
+        );
+        assert(
+            fix::tridentOffhandExpressionOwnerHash(0x1234ULL)==fix::kLeftItemCamelHash
+        );
+    }
+
     void testInvalidLocalPoseIsNotMutated() {
         fix::LocalAttachmentPose pose{
             {std::numeric_limits<float>::infinity(), 2.0F, 3.0F},
@@ -555,6 +594,9 @@ int main() {
     testTridentLocalPoseMovesLeftAndTurnsHeadUp();
     testOwnerBoneHashClassificationForNativeProbe();
     testProbeBudgetStopsLogSpamAtLimit();
+    testBowTppTiltClamp();
+    testTridentPostComposeRotationPreservesTranslation();
+    testTridentExpressionBindingMapsRightOwnerToLeftItem();
     testInvalidLocalPoseIsNotMutated();
     testScopedLocalPoseOverrideRestoresBoneState();
     testScopedOverrideForcesRecomposeAndRestoresNativeCache();
