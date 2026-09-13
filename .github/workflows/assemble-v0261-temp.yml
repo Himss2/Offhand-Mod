@@ -6,6 +6,10 @@ on:
       - main
     types:
       - opened
+      - synchronize
+    paths:
+      - ".tmp-v0261/archive/**"
+      - ".github/workflows/assemble-v0261-temp.yml"
 
 permissions:
   contents: write
