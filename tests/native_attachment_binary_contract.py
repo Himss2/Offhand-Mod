@@ -92,6 +92,20 @@ def main() -> None:
             binary, address, len(expected_bytes)
         ) == expected_bytes, f"entry fingerprint changed at 0x{address:X}"
 
+    # v0.2.59 static proof for query.item_slot_to_bone_name: the native
+    # function compares the evaluated slot hash with off_hand, then materializes
+    # the lowercase leftitem hash. This means no expression-result hook is needed.
+    assert load_virtual_bytes(binary, 0xEE89174, 28).hex() == (
+        "88f195d2010040f973c205916874a5f22850c4f288a9ebf23f0008eb"
+    ), "native off_hand hash compare changed"
+    assert load_virtual_bytes(binary, 0xEE89190, 4).hex() == "20080054"
+    assert load_virtual_bytes(binary, 0xEE89294, 32).hex() == (
+        "00e4006fe15e92d2080080126115b6f2e80300b961b9dff2619ee3f2e083803c"
+    ), "native off_hand -> leftitem materialization changed"
+    assert load_virtual_bytes(binary, 0xEEAB3AC, 12).hex() == (
+        "00200091c0035fd6085040b9"
+    ), "tiny accessor / adjacent routine boundary changed"
+
     cache_fast_path = {
         0xF147ED0: "08784339",  # LDRB W8,[X0,#0xDE]
         0xF147ED4: "a8000034",  # CBZ W8,0xF147EE8
@@ -137,7 +151,7 @@ def main() -> None:
 
     print(
         "native attachment binary contract passed: "
-        "1 slot, 13 branches, 6 entry fingerprints, "
+        "1 slot, 14 branches, 6 entry fingerprints, native off_hand->leftitem, "
         "6 cache-fast-path instructions, 3 local-pose reads, "
         "4 composed-matrix stores, 2 child-matrix forwards"
     )

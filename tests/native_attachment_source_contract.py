@@ -65,7 +65,7 @@ required = {
     "Trident owner binding probe": "[TridentFppBindingProbe]",
     "bounded native probe budget": "consumeProbeBudget(",
     "FPP Bow mask retained": "BowFppWeakItemMask bowMask",
-    "v0.2.58 Bow route gate": "kReferenceRouteDiagnostic=true",
+    "v0.2.59 Bow route gate": "kReferenceRouteDiagnostic=true",
     "Bow/FishingRod route marker": "[BowFishingRodTppRoute]",
     "Bow native route suppression": "[BowFishingRodTppNativeSuppress]",
             }
@@ -153,7 +153,7 @@ prepare_diag = SOURCE[prepare_start_diag:prepare_end_diag]
 trident_decl = prepare_diag[prepare_diag.index("const bool remapTridentOwnerBone="):]
 trident_decl = trident_decl[:trident_decl.index(";") + 1]
 assert "!kReferenceRouteDiagnostic" not in trident_decl, (
-    "legacy name-binding scope remains installed but v0.2.58 uses expression binding"
+    "legacy name-binding scope remains installed for Bow/native compatibility"
 )
 
 
@@ -163,7 +163,7 @@ mode_body = SOURCE[mode_start:mode_end]
 assert "ScopedHookRead readGuard(" in mode_body
 assert "gAttachmentBindingModeOriginalPublished.load(" in mode_body
 
-# v0.2.58 no longer depends on name-bound rightitem cache reopening.
+# Trident mode-3 binding does not depend on name-bound cache reopening.
 
 
 prepare_start = SOURCE.index("void prepareAttachmentDetour(")
@@ -260,8 +260,8 @@ installed_body = SOURCE[installed_start:installed_end]
 assert "gAttachmentBindingModeHook" in installed_body, (
     "installed() must include the mandatory binding-mode hook"
 )
-assert "gMolangHashedStringViewHook" in installed_body, (
-    "installed() must include the mandatory Trident expression-binding hook"
+assert "gMolangHashedStringViewHook" not in installed_body, (
+    "installed() must not include the unsafe 8-byte Molang accessor hook"
 )
 
 feature_start = SOURCE.index("OffhandBlockRenderPatch::\n    setFeatureEnabled(")
@@ -276,17 +276,19 @@ assert feature_body.index("invalidateTridentFppBindingGeneration();") < (
 
 
 
-# v0.2.58: native Trident uses Molang expression binding mode 3.
-assert "kMolangHashedStringViewFingerprint" in SOURCE
-assert "kLeftItemCamelHash" in NATIVE_HELPER
-assert "tridentOffhandExpressionOwnerHash" in NATIVE_HELPER
+# v0.2.59: EEAB3AC is an 8-byte accessor and must never be inline-hooked.
+for marker in (
+    "kMolangHashedStringViewRva",
+    "gMolangHashedStringViewHook",
+    "molangHashedStringViewDetour(",
+):
+    assert marker not in SOURCE
+assert "kNativeOffHandSlotHash=0x5D4C22812BA3AF8CULL" in SOURCE
+assert "kNativeLeftItemResultHash=0x1CF3FDCBB0AB92F7ULL" in SOURCE
 assert "rotateTridentPoleHeadUp" in NATIVE_HELPER
-assert "kMolangHashedStringViewRva=0xEEAB3AC" in SOURCE
-assert "kTridentExpressionBindingCallsiteRva=0x9B37BD4" in SOURCE
-assert "molangHashedStringViewDetour(" in SOURCE
-assert "[TridentFppExpressionBinding]" in SOURCE
-assert "tridentOffhandExpressionOwnerHash(" in SOURCE
+assert "normalizeTridentFppHorizontalOffset" in NATIVE_HELPER
 assert "[TridentFppPoleRotation]" in SOURCE
+assert "[TridentFppHorizontal]" in SOURCE
 
 # Bow TPP visible lean is a screen-plane rotation: semantic Rot Z -> native Rx.
 assert "[BowTppGripPivot] semanticRotZDelta=" in SOURCE

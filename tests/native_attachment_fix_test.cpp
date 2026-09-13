@@ -400,6 +400,17 @@ namespace {
         assert(std::fabs(fix::normalizeBowTppTiltDegrees(-25.2F)+25.2F)<1.0e-6F);
     }
 
+    void testTridentFppHorizontalClamp() {
+        assert(fix::normalizeTridentFppHorizontalOffset(-9.0F)==-1.5F);
+        assert(fix::normalizeTridentFppHorizontalOffset(9.0F)==1.5F);
+        assert(fix::normalizeTridentFppHorizontalOffset(0.875F)==0.875F);
+        assert(
+            fix::normalizeTridentFppHorizontalOffset(
+                std::numeric_limits<float>::infinity()
+            )==fix::kTridentFppHorizontalDefault
+        );
+    }
+
     void testTridentPostComposeRotationPreservesTranslation() {
         std::array<float,16> matrix{
             1.0F,2.0F,3.0F,4.0F,
@@ -595,6 +606,7 @@ int main() {
     testOwnerBoneHashClassificationForNativeProbe();
     testProbeBudgetStopsLogSpamAtLimit();
     testBowTppTiltClamp();
+    testTridentFppHorizontalClamp();
     testTridentPostComposeRotationPreservesTranslation();
     testTridentExpressionBindingMapsRightOwnerToLeftItem();
     testInvalidLocalPoseIsNotMutated();
