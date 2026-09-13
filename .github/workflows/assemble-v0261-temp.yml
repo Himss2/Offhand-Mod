@@ -1,11 +1,11 @@
 name: Assemble v0.2.61 staged archive
 
 on:
-  push:
+  pull_request:
     branches:
-      - test/v0.2.61-attachment-context-probe
-    paths:
-      - ".github/workflows/assemble-v0261-temp.yml"
+      - main
+    types:
+      - opened
 
 permissions:
   contents: write
