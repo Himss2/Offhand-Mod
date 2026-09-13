@@ -35,6 +35,17 @@ namespace levioffhand::render {
         constexpr std::uintptr_t kFirstPersonDataDrivenCallsiteRva=0xADE9E9C;
         constexpr std::uintptr_t kGetOffhandStackRva=0xEC9D62C;
 
+        // v0.2.55 reference-route diagnostic.  Bow TPP is compared against
+        // Fishing Rod by selecting the generic LEFT RenderItem path, while
+        // Trident FPP is compared against Shield by selecting the generic
+        // renderOffhandItem/renderObject path.  No Bow/Trident attachment pose
+        // mutation is allowed while this diagnostic is active.
+        constexpr bool kReferenceRouteDiagnostic=true;
+        constexpr std::uintptr_t kThirdPersonOffhandRenderItemCallsiteRva=0xA32F030;
+        constexpr std::uintptr_t kRenderItemAttachableEnabledCallsiteRva=0xADDEADC;
+        constexpr std::uintptr_t kAttachableStateRva=0xA32F0F4;
+        constexpr std::uint32_t kOffhandInventorySlot=34;
+
         // Native attachment pipeline recovered from libminecraftpe.so 1.26.45.1:
         //   9B36A80 prepares one attachment and its slot/view context.
         //   F147CB0 returns the cached owner-binding mode at state +0xDC.
@@ -297,6 +308,27 @@ namespace levioffhand::render {
 
         std::uintptr_t gGetOffhandStackTarget=0;
 
+        std::unique_ptr<pl::memory::HookHandle> gRenderItemRouteHook;
+        void* gRenderItemRouteOriginal=nullptr;
+
+        std::unique_ptr<pl::memory::HookHandle> gAttachableStateRouteHook;
+        void* gAttachableStateRouteOriginal=nullptr;
+        std::uintptr_t gAttachableStateRouteTarget=0;
+
+        thread_local std::uint32_t gRenderItemRouteDepth=0;
+        thread_local ToolFamily gRenderItemRouteFamily=ToolFamily::None;
+        thread_local std::uint32_t gRenderItemRouteSlot=0;
+        thread_local std::uintptr_t gRenderItemRouteCallsiteRva=0;
+        thread_local bool gRenderItemAttachableCheckSeen=false;
+        thread_local bool gRenderItemNativeAttachable=false;
+        thread_local bool gRenderItemForcedGeneric=false;
+        thread_local std::uint32_t gTppReferenceLoggedMask=0;
+        thread_local bool gBowTppNativeSuppressLogged=false;
+        thread_local bool gTridentFppNativeSuppressLogged=false;
+        thread_local bool gTridentFppGenericLogged=false;
+        thread_local bool gShieldFppReferenceLogged=false;
+        thread_local bool gShieldFppObjectLogged=false;
+
         std::unique_ptr<pl::memory::HookHandle> gPrepareAttachmentHook;
         void* gPrepareAttachmentOriginal=nullptr;
         std::atomic<void*> gPrepareAttachmentOriginalPublished{nullptr};
@@ -324,6 +356,12 @@ namespace levioffhand::render {
         thread_local std::uint32_t gTridentFppBindingDepth=0;
         thread_local std::uint32_t gFirstPersonDataDrivenDepth=0;
         thread_local std::uint32_t gBowTppAttachmentDepth=0;
+        thread_local std::uint32_t gTridentFppAttachmentDepth=0;
+        std::atomic<float> gBowTppHorizontalOffset{
+            native_attachment_fix::kBowTppHorizontalDefault
+        };
+        thread_local float gActiveBowTppHorizontalOffset=
+            native_attachment_fix::kBowTppHorizontalDefault;
         constexpr std::size_t kResolvedTridentBindingBoneCapacity=8;
         std::atomic<std::uint64_t> gTridentFppBindingGeneration{1};
         // Mutation readiness is separate from trampoline lifetime. Teardown
@@ -340,6 +378,7 @@ namespace levioffhand::render {
         thread_local bool gTridentFppBindingLogged=false;
         thread_local bool gTridentFppBindingCacheLogged=false;
         thread_local bool gBowTppLocalPoseLogged=false;
+        thread_local bool gTridentFppLocalPoseLogged=false;
         thread_local bool gTridentFppPrepareProbeLogged=false;
         thread_local std::uint32_t gTridentFppBindingProbeCount=0;
 
@@ -352,6 +391,15 @@ namespace levioffhand::render {
         static_assert(sizeof(BindingPrefix)==16);
         static_assert(offsetof(BindingPrefix,ownerGeometryIndex)==4);
         static_assert(offsetof(BindingPrefix,nameHash)==8);
+
+        bool applyActiveBowTppLocalPose(
+            native_attachment_fix::LocalAttachmentPose& pose
+        ) noexcept {
+            return native_attachment_fix::mirrorAndOffsetBowLocalPose(
+                pose,
+                gActiveBowTppHorizontalOffset
+            );
+        }
 
         void invalidateTridentFppBindingGeneration() noexcept {
             gTridentFppBindingGeneration.fetch_add(
@@ -1194,6 +1242,147 @@ namespace levioffhand::render {
             );
         }
 
+        [[nodiscard]]
+        bool isTppReferenceFamily(ToolFamily family) noexcept {
+            return family==ToolFamily::Bow || family==ToolFamily::FishingRod;
+        }
+
+        using RenderItemRouteFn=void(*)(
+            void*,
+            void*,
+            void*,
+            const void*,
+            bool,
+            std::uint32_t,
+            bool,
+            bool
+        );
+
+        void renderItemRouteDetour(
+            void* self,
+            void* renderContext,
+            void* actor,
+            const void* stack,
+            bool arg4,
+            std::uint32_t slot,
+            bool arg6,
+            bool arg7
+        ) noexcept {
+            const auto original=reinterpret_cast<RenderItemRouteFn>(
+                gRenderItemRouteOriginal
+            );
+            if(!original) {
+                return;
+            }
+
+            const ToolFamily family=
+                OffhandBlockRenderPatch::instance().featureEnabled()
+                ? classifyTool(stack)
+                : ToolFamily::None;
+            const std::uintptr_t callsiteRva=minecraftCallsiteRva(
+                reinterpret_cast<std::uintptr_t>(__builtin_return_address(0))
+            );
+            const bool referenceCall=
+                kReferenceRouteDiagnostic
+                && isTppReferenceFamily(family)
+                && slot==kOffhandInventorySlot
+                && callsiteRva==kThirdPersonOffhandRenderItemCallsiteRva;
+
+            if(!referenceCall) {
+                original(
+                    self,renderContext,actor,stack,arg4,slot,arg6,arg7
+                );
+                return;
+            }
+
+            const auto oldDepth=gRenderItemRouteDepth;
+            const auto oldFamily=gRenderItemRouteFamily;
+            const auto oldSlot=gRenderItemRouteSlot;
+            const auto oldCallsite=gRenderItemRouteCallsiteRva;
+            const auto oldSeen=gRenderItemAttachableCheckSeen;
+            const auto oldNative=gRenderItemNativeAttachable;
+            const auto oldForced=gRenderItemForcedGeneric;
+
+            ++gRenderItemRouteDepth;
+            gRenderItemRouteFamily=family;
+            gRenderItemRouteSlot=slot;
+            gRenderItemRouteCallsiteRva=callsiteRva;
+            gRenderItemAttachableCheckSeen=false;
+            gRenderItemNativeAttachable=false;
+            gRenderItemForcedGeneric=false;
+
+            original(self,renderContext,actor,stack,arg4,slot,arg6,arg7);
+
+            const std::uint32_t bit=
+                family==ToolFamily::Bow ? 1U : 2U;
+            if((gTppReferenceLoggedMask & bit)==0U) {
+                gTppReferenceLoggedMask|=bit;
+                __android_log_print(
+                    ANDROID_LOG_INFO,
+                    kLogTag,
+                    "[BowFishingRodTppRoute] family=%s caller=0x%llX "
+                    "slot=%u attachableCheck=%d nativeAttachable=%d "
+                    "forcedGeneric=%d",
+                    toolFamilyName(family),
+                    static_cast<unsigned long long>(callsiteRva),
+                    static_cast<unsigned>(slot),
+                    gRenderItemAttachableCheckSeen?1:0,
+                    gRenderItemNativeAttachable?1:0,
+                    gRenderItemForcedGeneric?1:0
+                );
+            }
+
+            gRenderItemRouteDepth=oldDepth;
+            gRenderItemRouteFamily=oldFamily;
+            gRenderItemRouteSlot=oldSlot;
+            gRenderItemRouteCallsiteRva=oldCallsite;
+            gRenderItemAttachableCheckSeen=oldSeen;
+            gRenderItemNativeAttachable=oldNative;
+            gRenderItemForcedGeneric=oldForced;
+        }
+
+        using AttachableStateRouteFn=bool(*)(void*);
+
+        bool attachableStateRouteDetour(void* renderer) noexcept {
+            const auto original=reinterpret_cast<AttachableStateRouteFn>(
+                gAttachableStateRouteOriginal
+            );
+            if(!original) {
+                return false;
+            }
+
+            const bool nativeResult=original(renderer);
+            const std::uintptr_t callsiteRva=minecraftCallsiteRva(
+                reinterpret_cast<std::uintptr_t>(__builtin_return_address(0))
+            );
+
+            const bool exactReferenceCheck=
+                kReferenceRouteDiagnostic
+                && gRenderItemRouteDepth!=0
+                && gRenderItemRouteSlot==kOffhandInventorySlot
+                && gRenderItemRouteCallsiteRva==
+                    kThirdPersonOffhandRenderItemCallsiteRva
+                && callsiteRva==kRenderItemAttachableEnabledCallsiteRva
+                && isTppReferenceFamily(gRenderItemRouteFamily);
+
+            if(!exactReferenceCheck) {
+                return nativeResult;
+            }
+
+            gRenderItemAttachableCheckSeen=true;
+            gRenderItemNativeAttachable=nativeResult;
+
+            // Fishing Rod is the reference: it naturally continues through the
+            // generic LEFT renderer.  Bow is made equivalent only at this exact
+            // slot-34 TPP RenderItem transaction.
+            if(gRenderItemRouteFamily==ToolFamily::Bow && nativeResult) {
+                gRenderItemForcedGeneric=true;
+                return false;
+            }
+
+            return nativeResult;
+        }
+
         using GetOffhandStackFn=
             const void*(*)(void*);
 
@@ -1262,7 +1451,8 @@ namespace levioffhand::render {
                 gResolvedTridentFppBindingBones.clear();
             }
             const bool remapBowOwnerBone=
-                native_attachment_fix::shouldRemapBowOwnerBone(
+                !kReferenceRouteDiagnostic
+                && native_attachment_fix::shouldRemapBowOwnerBone(
                     isBow,
                     slot,
                     isFirstPerson,
@@ -1273,7 +1463,8 @@ namespace levioffhand::render {
             // The native bool is not a reliable FPP discriminator for this
             // attachment.  ADE9E9C is, and its depth is already exact-scoped.
             const bool remapTridentOwnerBone=
-                native_attachment_fix::shouldRemapTridentOwnerBone(
+                !kReferenceRouteDiagnostic
+                && native_attachment_fix::shouldRemapTridentOwnerBone(
                     isTrident,
                     slot,
                     gFirstPersonDataDrivenDepth!=0,
@@ -1656,13 +1847,20 @@ namespace levioffhand::render {
             );
             const bool featureEnabled=
                 OffhandBlockRenderPatch::instance().featureEnabled();
+            const bool hooksReady=
+                gNativeAttachmentHooksReady.load(
+                    std::memory_order_acquire
+                );
             const bool isBow=
                 featureEnabled
-                && gNativeAttachmentHooksReady.load(
-                    std::memory_order_acquire
-                )
+                && hooksReady
                 && stack
                 && stackMatchesId(stack,kBowIdRva);
+            const bool isTrident=
+                featureEnabled
+                && hooksReady
+                && stack
+                && stackMatchesId(stack,kTridentIdRva);
             const bool isFirstPerson=
                 gFirstPersonDataDrivenDepth!=0;
             const std::uintptr_t callsiteRva=minecraftCallsiteRva(
@@ -1674,21 +1872,75 @@ namespace levioffhand::render {
                 native_attachment_fix::isEffectiveOffhandDrawCallsite(
                     callsiteRva
                 );
+            const bool suppressBowNative=
+                kReferenceRouteDiagnostic
+                && effectiveOffhandDraw
+                && isBow
+                && slot==native_attachment_fix::kOffhandSlot
+                && !isFirstPerson;
+            const bool suppressTridentNative=
+                kReferenceRouteDiagnostic
+                && effectiveOffhandDraw
+                && isTrident
+                && slot==native_attachment_fix::kOffhandSlot
+                && isFirstPerson;
+
+            if(suppressBowNative) {
+                if(!gBowTppNativeSuppressLogged) {
+                    gBowTppNativeSuppressLogged=true;
+                    __android_log_print(
+                        ANDROID_LOG_INFO,
+                        kLogTag,
+                        "[BowFishingRodTppNativeSuppress] slot6 native Bow "
+                        "attachment suppressed; generic LEFT route is reference"
+                    );
+                }
+                return;
+            }
+
+            if(suppressTridentNative) {
+                if(!gTridentFppNativeSuppressLogged) {
+                    gTridentFppNativeSuppressLogged=true;
+                    __android_log_print(
+                        ANDROID_LOG_INFO,
+                        kLogTag,
+                        "[TridentShieldFppNativeSuppress] slot6 native Trident "
+                        "attachment suppressed; generic offhand route is reference"
+                    );
+                }
+                return;
+            }
+
             const bool offsetBow=
-                effectiveOffhandDraw
+                !kReferenceRouteDiagnostic
+                && effectiveOffhandDraw
                 && native_attachment_fix::shouldFixBowLocalPose(
                     isBow,
+                    slot,
+                    isFirstPerson
+                );
+            const bool fixTrident=
+                !kReferenceRouteDiagnostic
+                && effectiveOffhandDraw
+                && native_attachment_fix::shouldFixTridentLocalPose(
+                    isTrident,
                     slot,
                     isFirstPerson
                 );
             if(offsetBow) {
                 ++gBowTppAttachmentDepth;
             }
+            if(fixTrident) {
+                ++gTridentFppAttachmentDepth;
+            }
 
             original(self,stack,slotPointer,parentContext,actor);
 
             if(offsetBow && gBowTppAttachmentDepth!=0) {
                 --gBowTppAttachmentDepth;
+            }
+            if(fixTrident && gTridentFppAttachmentDepth!=0) {
+                --gTridentFppAttachmentDepth;
             }
 
         }
@@ -1744,7 +1996,10 @@ namespace levioffhand::render {
                     ==
                     native_attachment_fix::kRightItemCamelHash
                 );
-            if(!offsetBowRoot) {
+            const bool fixTridentRoot=
+                gTridentFppAttachmentDepth!=0
+                && boneNameHash==native_attachment_fix::kPoleBoneHash;
+            if(!offsetBowRoot && !fixTridentRoot) {
                 original(boneState,pivot,matrix);
                 return;
             }
@@ -1756,6 +2011,20 @@ namespace levioffhand::render {
                     {}
                 );
 
+            native_attachment_fix::LocalPoseMutator localPoseMutator=nullptr;
+            float bowHorizontalOffset=
+                native_attachment_fix::kBowTppHorizontalDefault;
+            if(offsetBowRoot) {
+                bowHorizontalOffset=gBowTppHorizontalOffset.load(
+                    std::memory_order_acquire
+                );
+                gActiveBowTppHorizontalOffset=bowHorizontalOffset;
+                localPoseMutator=&applyActiveBowTppLocalPose;
+            } else if(fixTridentRoot) {
+                localPoseMutator=
+                    &native_attachment_fix::mirrorAndRotateTridentLocalPose;
+            }
+
             // F147ED0 consumes the animated local pose at +0x70 only when its
             // +0xDE matrix-cache flag is clear. The scoped override snapshots
             // the pose, cached matrix, and flag; invalidates the cache for this
@@ -1765,7 +2034,7 @@ namespace levioffhand::render {
             // pose or cache.
             native_attachment_fix::ScopedLocalPoseOverride localPoseOverride(
                 boneState,
-                &native_attachment_fix::mirrorAndOffsetBowLocalPose
+                localPoseMutator
             );
 
             original(boneState,pivot,matrix);
@@ -1779,19 +2048,32 @@ namespace levioffhand::render {
                 auto corrected=localPoseBefore;
                 static_cast<void>(
                     native_attachment_fix::mirrorAndOffsetBowLocalPose(
-                        corrected
+                        corrected,
+                        bowHorizontalOffset
                     )
                 );
                 __android_log_print(
                     ANDROID_LOG_INFO,
                     kLogTag,
                     "[BowTppLocalPose] slot6 rightitem localX %.3f -> "
-                    "%.3f (mirror plus %.2f extra left)",
+                    "%.3f (TPP slider %.3f)",
                     static_cast<double>(localPoseBefore.position[0]),
                     static_cast<double>(corrected.position[0]),
-                    static_cast<double>(
-                        native_attachment_fix::kBowTppExtraLeftOffset
-                    )
+                    static_cast<double>(bowHorizontalOffset)
+                );
+            }
+
+            if(
+                fixTridentRoot
+                && localPoseOverride.active()
+                && !gTridentFppLocalPoseLogged
+            ) {
+                gTridentFppLocalPoseLogged=true;
+                __android_log_print(
+                    ANDROID_LOG_INFO,
+                    kLogTag,
+                    "[TridentFppLocalPose] slot6 pole local position.x "
+                    "mirrored and rotation.z advanced 180 degrees"
                 );
             }
 
@@ -2064,6 +2346,12 @@ namespace levioffhand::render {
             }
 
             return result;
+        }
+
+        bool isShieldItem(
+            const char* itemClass
+        ) noexcept {
+            return contains(itemClass,"ShieldItem");
         }
 
         bool isBannerItem(
@@ -3039,6 +3327,11 @@ namespace levioffhand::render {
                 +
                 kGetOffhandStackRva;
 
+            gAttachableStateRouteTarget=
+                base
+                +
+                kAttachableStateRva;
+
             gPrepareAttachmentTarget=
                 base
                 +
@@ -3123,6 +3416,8 @@ namespace levioffhand::render {
                 gGetOffhandStackTarget
             )
             ||
+            !belongsToMinecraft(gAttachableStateRouteTarget)
+            ||
             !belongsToMinecraft(gPrepareAttachmentTarget)
             ||
             !belongsToMinecraft(gAttachmentBindingModeTarget)
@@ -3184,6 +3479,8 @@ namespace levioffhand::render {
 
         gHandEquipPredicateOriginal=nullptr;
         gFirstPersonDataDrivenOriginal=nullptr;
+        gRenderItemRouteOriginal=nullptr;
+        gAttachableStateRouteOriginal=nullptr;
         gPrepareAttachmentOriginal=nullptr;
         gPrepareAttachmentOriginalPublished.store(
             nullptr,
@@ -3209,11 +3506,13 @@ namespace levioffhand::render {
         gTridentFppBindingDepth=0;
         gFirstPersonDataDrivenDepth=0;
         gBowTppAttachmentDepth=0;
+        gTridentFppAttachmentDepth=0;
         gResolvedTridentFppBindingBones.clear();
         gBowTppBindingLogged=false;
         gTridentFppBindingLogged=false;
         gTridentFppBindingCacheLogged=false;
         gBowTppLocalPoseLogged=false;
+        gTridentFppLocalPoseLogged=false;
         gTridentFppPrepareProbeLogged=false;
         gTridentFppBindingProbeCount=0;
 
@@ -3224,6 +3523,19 @@ namespace levioffhand::render {
 
         gLastCalibratedToolItem=nullptr;
         gLastSuppressedTridentItem=nullptr;
+        gRenderItemRouteDepth=0;
+        gRenderItemRouteFamily=ToolFamily::None;
+        gRenderItemRouteSlot=0;
+        gRenderItemRouteCallsiteRva=0;
+        gRenderItemAttachableCheckSeen=false;
+        gRenderItemNativeAttachable=false;
+        gRenderItemForcedGeneric=false;
+        gTppReferenceLoggedMask=0;
+        gBowTppNativeSuppressLogged=false;
+        gTridentFppNativeSuppressLogged=false;
+        gTridentFppGenericLogged=false;
+        gShieldFppReferenceLogged=false;
+        gShieldFppObjectLogged=false;
 
 
         mBannerBridgeLogged.store(
@@ -3409,6 +3721,42 @@ namespace levioffhand::render {
                 context
             );
 
+            return false;
+        }
+
+        gRenderItemRouteHook=
+            std::make_unique<pl::memory::HookHandle>(
+                reinterpret_cast<void*>(mRenderItemTarget),
+                reinterpret_cast<void*>(&renderItemRouteDetour),
+                &gRenderItemRouteOriginal,
+                pl::memory::HookPriority::Normal
+            );
+
+        if(
+            !gRenderItemRouteHook
+            || !gRenderItemRouteHook->installed()
+            || !gRenderItemRouteOriginal
+        ) {
+            logger.error("TPP reference RenderItem hook failed");
+            uninstall(context);
+            return false;
+        }
+
+        gAttachableStateRouteHook=
+            std::make_unique<pl::memory::HookHandle>(
+                reinterpret_cast<void*>(gAttachableStateRouteTarget),
+                reinterpret_cast<void*>(&attachableStateRouteDetour),
+                &gAttachableStateRouteOriginal,
+                pl::memory::HookPriority::Normal
+            );
+
+        if(
+            !gAttachableStateRouteHook
+            || !gAttachableStateRouteHook->installed()
+            || !gAttachableStateRouteOriginal
+        ) {
+            logger.error("TPP attachable-state reference hook failed");
+            uninstall(context);
             return false;
         }
 
@@ -3689,13 +4037,13 @@ namespace levioffhand::render {
         );
 
         logger.info(
-            "Bow TPP native binding fix active: "
-            "slot6 owner remapped left + semantic horizontal offset"
+            "v0.2.55 diagnostic: Bow TPP uses Fishing Rod-style "
+            "generic LEFT route; native slot6 Bow draw suppressed"
         );
 
         logger.info(
-            "Trident fix active: generic item-form "
-            "suppressed; cached FPP binding reopened then remapped left"
+            "v0.2.55 diagnostic: Trident FPP uses Shield-style generic "
+            "offhand route; native slot6 Trident draw suppressed"
         );
 
         return true;
@@ -3791,6 +4139,19 @@ namespace levioffhand::render {
         gFirstPersonDataDrivenTarget=0;
         gGetOffhandStackTarget=0;
 
+        if(gAttachableStateRouteHook) {
+            gAttachableStateRouteHook->reset();
+            gAttachableStateRouteHook.reset();
+        }
+        gAttachableStateRouteOriginal=nullptr;
+        gAttachableStateRouteTarget=0;
+
+        if(gRenderItemRouteHook) {
+            gRenderItemRouteHook->reset();
+            gRenderItemRouteHook.reset();
+        }
+        gRenderItemRouteOriginal=nullptr;
+
         if(
             gFinalOffhandMatrixHook
         ) {
@@ -3883,16 +4244,31 @@ namespace levioffhand::render {
 
         gLastCalibratedToolItem=nullptr;
         gLastSuppressedTridentItem=nullptr;
+        gRenderItemRouteDepth=0;
+        gRenderItemRouteFamily=ToolFamily::None;
+        gRenderItemRouteSlot=0;
+        gRenderItemRouteCallsiteRva=0;
+        gRenderItemAttachableCheckSeen=false;
+        gRenderItemNativeAttachable=false;
+        gRenderItemForcedGeneric=false;
+        gTppReferenceLoggedMask=0;
+        gBowTppNativeSuppressLogged=false;
+        gTridentFppNativeSuppressLogged=false;
+        gTridentFppGenericLogged=false;
+        gShieldFppReferenceLogged=false;
+        gShieldFppObjectLogged=false;
 
         gBowTppBindingDepth=0;
         gTridentFppBindingDepth=0;
         gFirstPersonDataDrivenDepth=0;
         gBowTppAttachmentDepth=0;
+        gTridentFppAttachmentDepth=0;
         gResolvedTridentFppBindingBones.clear();
         gBowTppBindingLogged=false;
         gTridentFppBindingLogged=false;
         gTridentFppBindingCacheLogged=false;
         gBowTppLocalPoseLogged=false;
+        gTridentFppLocalPoseLogged=false;
         gTridentFppPrepareProbeLogged=false;
         gTridentFppBindingProbeCount=0;
 
@@ -4082,6 +4458,39 @@ namespace levioffhand::render {
 
     void
     OffhandBlockRenderPatch::
+    setBowTppHorizontalOffset(
+        float value
+    ) noexcept {
+
+        const float normalized=
+            native_attachment_fix::normalizeBowTppHorizontalOffset(value);
+        gBowTppHorizontalOffset.store(
+            normalized,
+            std::memory_order_release
+        );
+
+        __android_log_print(
+            ANDROID_LOG_INFO,
+            kLogTag,
+            "[BowTppSlider] horizontal=%.3f (TPP only)",
+            static_cast<double>(normalized)
+        );
+    }
+
+
+    float
+    OffhandBlockRenderPatch::
+    bowTppHorizontalOffset()
+    const noexcept {
+
+        return gBowTppHorizontalOffset.load(
+            std::memory_order_acquire
+        );
+    }
+
+
+    void
+    OffhandBlockRenderPatch::
     setFeatureEnabled(
         bool enabled
     ) noexcept {
@@ -4107,16 +4516,31 @@ namespace levioffhand::render {
 
         gLastCalibratedToolItem=nullptr;
         gLastSuppressedTridentItem=nullptr;
+        gRenderItemRouteDepth=0;
+        gRenderItemRouteFamily=ToolFamily::None;
+        gRenderItemRouteSlot=0;
+        gRenderItemRouteCallsiteRva=0;
+        gRenderItemAttachableCheckSeen=false;
+        gRenderItemNativeAttachable=false;
+        gRenderItemForcedGeneric=false;
+        gTppReferenceLoggedMask=0;
+        gBowTppNativeSuppressLogged=false;
+        gTridentFppNativeSuppressLogged=false;
+        gTridentFppGenericLogged=false;
+        gShieldFppReferenceLogged=false;
+        gShieldFppObjectLogged=false;
 
         gBowTppBindingDepth=0;
         gTridentFppBindingDepth=0;
         gFirstPersonDataDrivenDepth=0;
         gBowTppAttachmentDepth=0;
+        gTridentFppAttachmentDepth=0;
         gResolvedTridentFppBindingBones.clear();
         gBowTppBindingLogged=false;
         gTridentFppBindingLogged=false;
         gTridentFppBindingCacheLogged=false;
         gBowTppLocalPoseLogged=false;
+        gTridentFppLocalPoseLogged=false;
         gTridentFppPrepareProbeLogged=false;
         gTridentFppBindingProbeCount=0;
 
@@ -4183,6 +4607,18 @@ namespace levioffhand::render {
             &&
             gHandEquipPredicateHook->
                 installed()
+
+            &&
+
+            gRenderItemRouteHook
+            &&
+            gRenderItemRouteHook->installed()
+
+            &&
+
+            gAttachableStateRouteHook
+            &&
+            gAttachableStateRouteHook->installed()
 
             &&
 
@@ -4284,6 +4720,33 @@ namespace levioffhand::render {
             toolRenderScope(
                 toolFamily
             );
+
+        if(
+            instance->featureEnabled()
+            && toolFamily==ToolFamily::Trident
+            && !gTridentFppGenericLogged
+        ) {
+            gTridentFppGenericLogged=true;
+            __android_log_print(
+                ANDROID_LOG_INFO,
+                kLogTag,
+                "[TridentShieldFppRoute] family=Trident entered "
+                "renderOffhandItem generic reference route"
+            );
+        }
+
+        if(
+            instance->featureEnabled()
+            && isShieldItem(itemClass)
+            && !gShieldFppReferenceLogged
+        ) {
+            gShieldFppReferenceLogged=true;
+            __android_log_print(
+                ANDROID_LOG_INFO,
+                kLogTag,
+                "[ShieldFppReference] Shield entered renderOffhandItem"
+            );
+        }
 
         if(
             toolFamily
@@ -4992,36 +5455,39 @@ namespace levioffhand::render {
             );
 
         /*
-         * Keep the duplicate generic item form suppressed. The visible native
-         * slot-6 attachment is corrected by reopening and remapping its native
-         * FPP owner-bone binding instead.
+         * v0.2.55 diagnostic: the native FPP Trident attachment is suppressed
+         * in drawAttachmentDetour, so this generic submission is intentionally
+         * allowed to continue.  This makes the layer match Shield's stable
+         * renderOffhandItem/renderObject route without adding a pose transform.
          */
         if(
-            toolFamily
-            ==
-            ToolFamily::Trident
+            kReferenceRouteDiagnostic
+            && toolFamily==ToolFamily::Trident
         ) {
-
-            const void* item=
-                offhandItem();
-
-            if(
-                item
-                !=
-                gLastSuppressedTridentItem
-            ) {
-
-                gLastSuppressedTridentItem=
-                    item;
-
+            if(gLastSuppressedTridentItem!=offhandItem()) {
+                gLastSuppressedTridentItem=offhandItem();
                 __android_log_print(
                     ANDROID_LOG_INFO,
                     kLogTag,
-                    "[TridentFix] suppress generic item-form submission"
+                    "[TridentShieldFppRoute] generic renderObject submission "
+                    "allowed (Shield reference layer)"
                 );
             }
+        }
 
-            return;
+        const void* referenceItem=offhandItem();
+        if(
+            kReferenceRouteDiagnostic
+            && referenceItem
+            && isShieldItem(rttiName(referenceItem))
+            && !gShieldFppObjectLogged
+        ) {
+            gShieldFppObjectLogged=true;
+            __android_log_print(
+                ANDROID_LOG_INFO,
+                kLogTag,
+                "[ShieldFppReference] Shield reached generic renderObject"
+            );
         }
 
         if(
