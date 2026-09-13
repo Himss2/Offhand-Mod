@@ -14,6 +14,15 @@
 namespace fix = levioffhand::render::native_attachment_fix;
 
 namespace {
+    bool applyDefaultBowTppPose(
+        fix::LocalAttachmentPose& pose
+    ) noexcept {
+        return fix::mirrorAndOffsetBowLocalPose(
+            pose,
+            fix::kBowTppHorizontalDefault
+        );
+    }
+
     void testKnownSlotHashes() {
         static_assert(
             fix::fnv1("main_hand") == 0xEF6FF81E3179CD3EULL
@@ -83,6 +92,13 @@ namespace {
         assert(!fix::shouldFixBowLocalPose(true, 5, false));
         assert(!fix::shouldFixBowLocalPose(true, 6, true));
         assert(!fix::shouldFixBowLocalPose(false, 6, false));
+    }
+
+    void testTridentLocalPoseScope() {
+        assert(fix::shouldFixTridentLocalPose(true, 6, true));
+        assert(!fix::shouldFixTridentLocalPose(true, 5, true));
+        assert(!fix::shouldFixTridentLocalPose(true, 6, false));
+        assert(!fix::shouldFixTridentLocalPose(false, 6, true));
     }
 
     void testTridentBindingScope() {
@@ -273,16 +289,16 @@ namespace {
         assert(activeReaders.load(std::memory_order_seq_cst)==0);
     }
 
-    void testBowLocalPoseMirrorsAndAddsExtraLeftDistance() {
+    void testBowTppSliderControlsOnlyHorizontalDistance() {
         fix::LocalAttachmentPose pose{
             {-0.50F, -3.0F, -2.0F},
             {152.0F, -9.0F, 25.0F}
         };
 
-        assert(fix::mirrorAndOffsetBowLocalPose(pose));
+        assert(fix::mirrorAndOffsetBowLocalPose(pose,0.15F));
 
         const fix::LocalAttachmentPose expected{
-            {0.60F, -3.0F, -2.0F},
+            {0.65F, -3.0F, -2.0F},
             {152.0F, -9.0F, 25.0F}
         };
         assert(std::fabs(pose.position[0]-expected.position[0])<1.0e-6F);
@@ -295,8 +311,52 @@ namespace {
             {152.0F, -9.0F, 25.0F}
         };
 
-        assert(fix::mirrorAndOffsetBowLocalPose(oppositeSide));
-        assert(std::fabs(oppositeSide.position[0]+0.60F)<1.0e-6F);
+        assert(fix::mirrorAndOffsetBowLocalPose(oppositeSide,0.15F));
+        assert(std::fabs(oppositeSide.position[0]+0.65F)<1.0e-6F);
+    }
+
+    void testBowTppSliderValueIsBounded() {
+        static_assert(fix::kBowTppHorizontalMin==0.10F);
+        static_assert(fix::kBowTppHorizontalMax==0.20F);
+        static_assert(fix::kBowTppHorizontalDefault==0.10F);
+
+        assert(
+            std::fabs(
+                fix::normalizeBowTppHorizontalOffset(0.05F)-0.10F
+            )<1.0e-6F
+        );
+        assert(
+            std::fabs(
+                fix::normalizeBowTppHorizontalOffset(0.15F)-0.15F
+            )<1.0e-6F
+        );
+        assert(
+            std::fabs(
+                fix::normalizeBowTppHorizontalOffset(0.25F)-0.20F
+            )<1.0e-6F
+        );
+        assert(
+            std::fabs(
+                fix::normalizeBowTppHorizontalOffset(
+                    std::numeric_limits<float>::quiet_NaN()
+                )-0.10F
+            )<1.0e-6F
+        );
+    }
+
+    void testTridentLocalPoseMovesLeftAndTurnsHeadUp() {
+        fix::LocalAttachmentPose pose{
+            {-7.0F, -3.0F, -2.0F},
+            {152.0F, -9.0F, 25.0F}
+        };
+
+        assert(fix::mirrorAndRotateTridentLocalPose(pose));
+
+        const fix::LocalAttachmentPose expected{
+            {7.0F, -3.0F, -2.0F},
+            {152.0F, -9.0F, 205.0F}
+        };
+        assert(pose==expected);
     }
 
     void testOwnerBoneHashClassificationForNativeProbe() {
@@ -340,7 +400,9 @@ namespace {
         };
         const auto original=pose;
 
-        assert(!fix::mirrorAndOffsetBowLocalPose(pose));
+        assert(!fix::mirrorAndOffsetBowLocalPose(pose,0.15F));
+        assert(pose == original);
+        assert(!fix::mirrorAndRotateTridentLocalPose(pose));
         assert(pose == original);
     }
 
@@ -362,7 +424,7 @@ namespace {
         {
             fix::ScopedLocalPoseOverride override(
                 boneState.data(),
-                &fix::mirrorAndOffsetBowLocalPose
+                &applyDefaultBowTppPose
             );
             assert(override.active());
 
@@ -413,7 +475,7 @@ namespace {
         {
             fix::ScopedLocalPoseOverride override(
                 boneState.data(),
-                &fix::mirrorAndOffsetBowLocalPose
+                &fix::mirrorAndRotateTridentLocalPose
             );
             assert(override.active());
             assert(
@@ -483,11 +545,14 @@ int main() {
     testBowBindingScope();
     testEffectiveOffhandDrawCallsite();
     testBowLocalPoseScope();
+    testTridentLocalPoseScope();
     testTridentBindingScope();
     testResolvedBindingCacheLifecycleAndRetry();
     testScopedHookReadPublishesAndReleasesReaders();
     testScopedHookReadKeepsNestedForwardingDuringConcurrentClose();
-    testBowLocalPoseMirrorsAndAddsExtraLeftDistance();
+    testBowTppSliderControlsOnlyHorizontalDistance();
+    testBowTppSliderValueIsBounded();
+    testTridentLocalPoseMovesLeftAndTurnsHeadUp();
     testOwnerBoneHashClassificationForNativeProbe();
     testProbeBudgetStopsLogSpamAtLimit();
     testInvalidLocalPoseIsNotMutated();

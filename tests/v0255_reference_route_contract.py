@@ -4,6 +4,7 @@ SOURCE = Path('src/render/OffhandBlockRenderPatch.cpp').read_text()
 MOD = Path('src/LeviOffhandMod.cpp').read_text()
 MANIFEST = Path('manifest.json').read_text()
 BUILD = Path('scripts/build.sh').read_text()
+WORKFLOW = Path('.github/workflows/build.yml').read_text()
 
 required_source = {
     'Bow/FishingRod route marker': '[BowFishingRodTppRoute]',
@@ -31,5 +32,11 @@ assert '!kReferenceRouteDiagnostic' in draw_body, (
 
 assert '"version": "0.2.55"' in MANIFEST
 assert 'levi-offhand-v0.2.55.levipack' in BUILD
+assert 'dist/arm64-v8a/levi-offhand-v0.2.55.levipack' in WORKFLOW, (
+    'GitHub Actions still references a stale levipack version'
+)
+assert 'name: levi-offhand-arm64-v0.2.55' in WORKFLOW, (
+    'GitHub Actions artifact name still references a stale version'
+)
 assert 'v0.2.55' in MOD
 print('v0.2.55 reference-route source contract passed')
