@@ -35,12 +35,11 @@ namespace levioffhand::render {
         constexpr std::uintptr_t kFirstPersonDataDrivenCallsiteRva=0xADE9E9C;
         constexpr std::uintptr_t kGetOffhandStackRva=0xEC9D62C;
 
-        // v0.2.57 keeps the v0.2.55 Bow/Fishing-Rod generic LEFT route,
-        // but Trident returns to its native slot-6 3D attachment.  Bow TPP gets
-        // only a grip-pivot tilt correction and Fishing Rod TPP gets only a
-        // small vertical delta; neither correction is shared with FPP.
+        // v0.2.58 keeps the proven Bow/Fishing-Rod generic LEFT route.  Bow
+        // screen-plane tilt is semantic Rot Z (native Rx), live-calibrated only
+        // for this final TPP visual pass. Trident keeps native 3D and redirects
+        // its mode-3 Molang owner-binding result to leftItem.
         constexpr bool kReferenceRouteDiagnostic=true;
-        constexpr float kBowTppGripPivotTiltDegrees=25.20f;
         constexpr float kFishingRodTppVerticalDelta=-0.06f;
         constexpr std::uintptr_t kThirdPersonOffhandRenderItemCallsiteRva=0xA32F030;
         constexpr std::uintptr_t kRenderItemAttachableEnabledCallsiteRva=0xADDEADC;
@@ -63,6 +62,10 @@ namespace levioffhand::render {
         constexpr std::uintptr_t kDrawAttachmentRva=0x9B3A228;
         constexpr std::uintptr_t kComposeAttachmentBoneMatrixRva=0xF147ED0;
         constexpr std::uintptr_t kComposeAttachmentBoneMatrixCallsiteRva=0x9B254C8;
+        // Mode-3 expression binding: 9B37BD4 calls EEAB3AC to expose the
+        // evaluated HashedString before matching it against owner bones.
+        constexpr std::uintptr_t kMolangHashedStringViewRva=0xEEAB3AC;
+        constexpr std::uintptr_t kTridentExpressionBindingCallsiteRva=0x9B37BD4;
 
         constexpr std::array<std::uint8_t,16> kPrepareAttachmentFingerprint{
             0xFD,0x7B,0xBA,0xA9,0xFC,0x6F,0x01,0xA9,
@@ -93,6 +96,9 @@ namespace levioffhand::render {
                 0x08,0x78,0x43,0x39,0xA8,0x00,0x00,0x34,
                 0x00,0x84,0x41,0xAD,0x02,0x8C,0x42,0xAD
             };
+        constexpr std::array<std::uint8_t,8> kMolangHashedStringViewFingerprint{
+            0x00,0x20,0x00,0x91,0xC0,0x03,0x5F,0xD6
+        };
 
         constexpr std::uintptr_t kFinalOffhandMatrixTopRva=0x107CC804;
         constexpr std::uintptr_t kFinalOffhandMatrixReturnRva=0xADE56D8;
@@ -327,6 +333,9 @@ namespace levioffhand::render {
         thread_local ToolFamily gPendingTppReferenceFamily=ToolFamily::None;
         thread_local bool gPendingTppReferenceArmed=false;
         thread_local std::uint32_t gTppReferenceLatchLoggedMask=0;
+        std::atomic<float> gBowTppTiltDegrees{
+            native_attachment_fix::kBowTppTiltDefault
+        };
         thread_local bool gBowTppGripPivotLogged=false;
         thread_local bool gFishingRodTppLowerLogged=false;
         thread_local std::uint32_t gTppReferenceLoggedMask=0;
@@ -350,6 +359,13 @@ namespace levioffhand::render {
         void* gResolveOwnerBoneByNameOriginal=nullptr;
         std::atomic<void*> gResolveOwnerBoneByNameOriginalPublished{nullptr};
         std::uintptr_t gResolveOwnerBoneByNameTarget=0;
+
+        std::unique_ptr<pl::memory::HookHandle> gMolangHashedStringViewHook;
+        void* gMolangHashedStringViewOriginal=nullptr;
+        std::uintptr_t gMolangHashedStringViewTarget=0;
+        thread_local std::uint64_t gTridentFppExpressionProxyHash=0;
+        thread_local bool gTridentFppExpressionBindingLogged=false;
+        thread_local bool gTridentFppPoleRotationLogged=false;
 
         std::unique_ptr<pl::memory::HookHandle> gDrawAttachmentHook;
         void* gDrawAttachmentOriginal=nullptr;
@@ -1834,6 +1850,69 @@ namespace levioffhand::render {
             return resolved;
         }
 
+        using MolangHashedStringViewFn=const void*(*)(const void*);
+
+        const void* molangHashedStringViewDetour(
+            const void* value
+        ) noexcept {
+            const auto original=reinterpret_cast<MolangHashedStringViewFn>(
+                gMolangHashedStringViewOriginal
+            );
+            if(!original) {
+                return value
+                    ? static_cast<const std::byte*>(value)+8
+                    : nullptr;
+            }
+
+            const void* nativeView=original(value);
+            if(
+                !nativeView
+                || gTridentFppBindingDepth==0
+                || gFirstPersonDataDrivenDepth==0
+                || !gNativeAttachmentHooksReady.load(
+                    std::memory_order_acquire
+                )
+                || !OffhandBlockRenderPatch::instance().featureEnabled()
+                || !isExactMinecraftCallsite(
+                    reinterpret_cast<std::uintptr_t>(
+                        __builtin_return_address(0)
+                    ),
+                    kTridentExpressionBindingCallsiteRva
+                )
+            ) {
+                return nativeView;
+            }
+
+            const std::uint64_t nativeHash=
+                readValue<std::uint64_t>(nativeView,0,0);
+            gTridentFppExpressionProxyHash=
+                native_attachment_fix::tridentOffhandExpressionOwnerHash(
+                    nativeHash
+                );
+
+            if(!gTridentFppExpressionBindingLogged) {
+                gTridentFppExpressionBindingLogged=true;
+                __android_log_print(
+                    ANDROID_LOG_INFO,
+                    kLogTag,
+                    "[TridentFppExpressionBinding] caller=0x%llX "
+                    "nativeHash=0x%llX forcedLeftItem=0x%llX",
+                    static_cast<unsigned long long>(
+                        kTridentExpressionBindingCallsiteRva
+                    ),
+                    static_cast<unsigned long long>(nativeHash),
+                    static_cast<unsigned long long>(
+                        gTridentFppExpressionProxyHash
+                    )
+                );
+            }
+
+            // The exact native caller immediately loads only the first qword
+            // (HashedString hash) and then performs the owner-bone scan. Return
+            // a thread-local proxy instead of mutating the Molang value object.
+            return &gTridentFppExpressionProxyHash;
+        }
+
         using DrawAttachmentFn=void(*)(
             void*,
             const void*,
@@ -1915,7 +1994,11 @@ namespace levioffhand::render {
                     slot,
                     isFirstPerson
                 );
-            const bool fixTrident=false;
+            const bool fixTrident=
+                effectiveOffhandDraw
+                && isTrident
+                && slot==native_attachment_fix::kOffhandSlot
+                && isFirstPerson;
             if(offsetBow) {
                 ++gBowTppAttachmentDepth;
             }
@@ -2000,6 +2083,35 @@ namespace levioffhand::render {
                     ==
                     native_attachment_fix::kRightItemCamelHash
                 );
+            const bool rotateTridentPole=
+                gTridentFppAttachmentDepth!=0
+                && boneNameHash==native_attachment_fix::kPoleBoneHash;
+
+            if(rotateTridentPole) {
+                original(boneState,pivot,matrix);
+                const float tx=matrix->value[12];
+                const float ty=matrix->value[13];
+                const float tz=matrix->value[14];
+                const bool rotated=
+                    native_attachment_fix::rotateTridentPoleHeadUp(
+                        matrix->value
+                    );
+                matrix->value[12]=tx;
+                matrix->value[13]=ty;
+                matrix->value[14]=tz;
+
+                if(rotated && !gTridentFppPoleRotationLogged) {
+                    gTridentFppPoleRotationLogged=true;
+                    __android_log_print(
+                        ANDROID_LOG_INFO,
+                        kLogTag,
+                        "[TridentFppPoleRotation] postComposeZ180 "
+                        "translationPreserved=1"
+                    );
+                }
+                return;
+            }
+
             if(!offsetBowRoot) {
                 original(boneState,pivot,matrix);
                 return;
@@ -3226,12 +3338,16 @@ namespace levioffhand::render {
                     const float preservedBowTy=matrix->value[13];
                     const float preservedBowTz=matrix->value[14];
 
+                    const float bowTppTilt=
+                        gBowTppTiltDegrees.load(std::memory_order_acquire);
+                    // Screen-plane lean is semantic Rot Z, which the recovered
+                    // held-item axis mapping converts to native Rx.
                     applyIndependentEuler(
                         *matrix,
                         multiply,
+                        bowTppTilt,
                         0.0f,
-                        0.0f,
-                        kBowTppGripPivotTiltDegrees
+                        0.0f
                     );
 
                     // Keep the hand anchor exactly where v0.2.55 placed it.
@@ -3244,11 +3360,9 @@ namespace levioffhand::render {
                         __android_log_print(
                             ANDROID_LOG_INFO,
                             kLogTag,
-                            "[BowTppGripPivot] semanticRotYDelta=%.2f "
+                            "[BowTppGripPivot] semanticRotZDelta=%.2f "
                             "translationPreserved=1",
-                            static_cast<double>(
-                                kBowTppGripPivotTiltDegrees
-                            )
+                            static_cast<double>(bowTppTilt)
                         );
                     }
                 } else if(
@@ -3476,6 +3590,11 @@ namespace levioffhand::render {
                 +
                 kResolveOwnerBoneByNameRva;
 
+            gMolangHashedStringViewTarget=
+                base
+                +
+                kMolangHashedStringViewRva;
+
             gDrawAttachmentTarget=
                 base
                 +
@@ -3553,6 +3672,8 @@ namespace levioffhand::render {
             ||
             !belongsToMinecraft(gResolveOwnerBoneByNameTarget)
             ||
+            !belongsToMinecraft(gMolangHashedStringViewTarget)
+            ||
             !belongsToMinecraft(gDrawAttachmentTarget)
             ||
             !belongsToMinecraft(gComposeAttachmentBoneMatrixTarget)
@@ -3570,6 +3691,11 @@ namespace levioffhand::render {
             !matchesFingerprint(
                 gResolveOwnerBoneByNameTarget,
                 kResolveOwnerBoneByNameFingerprint
+            )
+            ||
+            !matchesFingerprint(
+                gMolangHashedStringViewTarget,
+                kMolangHashedStringViewFingerprint
             )
             ||
             !matchesFingerprint(
@@ -3625,6 +3751,7 @@ namespace levioffhand::render {
             nullptr,
             std::memory_order_release
         );
+        gMolangHashedStringViewOriginal=nullptr;
         gDrawAttachmentOriginal=nullptr;
         gComposeAttachmentBoneMatrixOriginal=nullptr;
         gFinalOffhandMatrixOriginal=nullptr;
@@ -3644,6 +3771,8 @@ namespace levioffhand::render {
         gTridentFppLocalPoseLogged=false;
         gTridentFppPrepareProbeLogged=false;
         gTridentFppBindingProbeCount=0;
+        gTridentFppExpressionBindingLogged=false;
+        gTridentFppPoleRotationLogged=false;
 
         gCurrentToolFamily=
             ToolFamily::None;
@@ -3938,7 +4067,25 @@ namespace levioffhand::render {
             std::memory_order_release
         );
 
-        // Install the cache gate only after the left-owner resolver is live.
+        gMolangHashedStringViewHook=
+            std::make_unique<pl::memory::HookHandle>(
+                reinterpret_cast<void*>(gMolangHashedStringViewTarget),
+                reinterpret_cast<void*>(&molangHashedStringViewDetour),
+                &gMolangHashedStringViewOriginal,
+                pl::memory::HookPriority::Normal
+            );
+        if(
+            !gMolangHashedStringViewHook
+            || !gMolangHashedStringViewHook->installed()
+            || !gMolangHashedStringViewOriginal
+        ) {
+            logger.error("Trident Molang owner-binding hook failed");
+            uninstall(context);
+            return false;
+        }
+
+        // Keep the legacy name-binding hooks installed for Bow/native safety,
+        // but Trident v0.2.58 is repaired at its actual mode-3 expression path.
         // The reverse uninstall order prevents a concurrent prepare from
         // being forced into the unmodified right-owner resolver.
         gAttachmentBindingModeHook=
@@ -4169,12 +4316,12 @@ namespace levioffhand::render {
         );
 
         logger.info(
-            "v0.2.57 Bow TPP: generic LEFT route + grip-pivot tilt; "
+            "v0.2.58 Bow TPP: generic LEFT route + semantic Rot-Z tilt; "
             "native slot6 Bow draw suppressed"
         );
 
         logger.info(
-            "v0.2.57 Trident FPP: native slot6 3D attachment retained; "
+            "v0.2.58 Trident FPP: native 3D expression->leftItem + pole Z180; "
             "generic 2D item form suppressed"
         );
 
@@ -4220,6 +4367,13 @@ namespace levioffhand::render {
         }
         gAttachmentBindingModeOriginal=nullptr;
         gAttachmentBindingModeTarget=0;
+
+        if(gMolangHashedStringViewHook) {
+            gMolangHashedStringViewHook->reset();
+            gMolangHashedStringViewHook.reset();
+        }
+        gMolangHashedStringViewOriginal=nullptr;
+        gMolangHashedStringViewTarget=0;
 
         if(gResolveOwnerBoneByNameHook) {
             gResolveOwnerBoneByNameHook->reset();
@@ -4406,6 +4560,8 @@ namespace levioffhand::render {
         gTridentFppLocalPoseLogged=false;
         gTridentFppPrepareProbeLogged=false;
         gTridentFppBindingProbeCount=0;
+        gTridentFppExpressionBindingLogged=false;
+        gTridentFppPoleRotationLogged=false;
 
 
         mRenderOffhandOriginal=nullptr;
@@ -4593,6 +4749,30 @@ namespace levioffhand::render {
 
     void
     OffhandBlockRenderPatch::
+    setBowTppTiltDegrees(
+        float value
+    ) noexcept {
+        const float normalized=
+            native_attachment_fix::normalizeBowTppTiltDegrees(value);
+        gBowTppTiltDegrees.store(normalized,std::memory_order_release);
+        gBowTppGripPivotLogged=false;
+        __android_log_print(
+            ANDROID_LOG_INFO,
+            kLogTag,
+            "[BowTppTiltSlider] semanticRotZ=%.2f",
+            static_cast<double>(normalized)
+        );
+    }
+
+    float
+    OffhandBlockRenderPatch::
+    bowTppTiltDegrees() const noexcept {
+        return gBowTppTiltDegrees.load(std::memory_order_acquire);
+    }
+
+
+    void
+    OffhandBlockRenderPatch::
     setBowTppHorizontalOffset(
         float value
     ) noexcept {
@@ -4773,6 +4953,11 @@ namespace levioffhand::render {
             gResolveOwnerBoneByNameHook
             &&
             gResolveOwnerBoneByNameHook->installed()
+            &&
+
+            gMolangHashedStringViewHook
+            &&
+            gMolangHashedStringViewHook->installed()
             &&
 
             gDrawAttachmentHook

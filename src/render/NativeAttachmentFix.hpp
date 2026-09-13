@@ -218,6 +218,46 @@ namespace levioffhand::render::native_attachment_fix {
     inline constexpr std::uint64_t kPoleBoneHash=
         fnv1("pole");
 
+    inline constexpr float kBowTppTiltMin=-45.0F;
+    inline constexpr float kBowTppTiltMax=45.0F;
+    inline constexpr float kBowTppTiltDefault=-25.2F;
+
+    [[nodiscard]]
+    inline float normalizeBowTppTiltDegrees(float value) noexcept {
+        if(!std::isfinite(value)) {
+            return kBowTppTiltDefault;
+        }
+        return std::clamp(value,kBowTppTiltMin,kBowTppTiltMax);
+    }
+
+    // Trident's official geometry uses the expression binding
+    // q.item_slot_to_bone_name(c.item_slot).  Inside the exact slot-6 FPP
+    // expression-binding callsite, the desired owner is always leftItem.
+    [[nodiscard]]
+    constexpr std::uint64_t tridentOffhandExpressionOwnerHash(
+        std::uint64_t /*nativeHash*/
+    ) noexcept {
+        return kLeftItemCamelHash;
+    }
+
+    // Post-compose Rz(180): flip the pole's head/tail without moving the
+    // Minecraft-selected owner-bone translation.
+    [[nodiscard]]
+    inline bool rotateTridentPoleHeadUp(float* matrix) noexcept {
+        if(!matrix) {
+            return false;
+        }
+        for(std::size_t index=0;index<16;++index) {
+            if(!std::isfinite(matrix[index])) {
+                return false;
+            }
+        }
+        for(std::size_t index=0;index<8;++index) {
+            matrix[index]=-matrix[index];
+        }
+        return true;
+    }
+
     [[nodiscard]]
     constexpr bool isRightOwnerBoneHash(
         std::uint64_t hash
