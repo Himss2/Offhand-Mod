@@ -3,159 +3,129 @@ import struct
 import sys
 from pathlib import Path
 
+EXPECTED_SHA256='444e77434bdd3789a0d90978d06336a99831e78e52955e528258cc375dfa0557'
 
-EXPECTED_SHA256 = (
-    "444e77434bdd3789a0d90978d06336a99831e78e52955e528258cc375dfa0557"
-)
+def load_virtual_bytes(binary:bytes,address:int,size:int)->bytes:
+    assert binary[:4]==b'\x7fELF' and binary[4]==2 and binary[5]==1
+    phoff=struct.unpack_from('<Q',binary,0x20)[0]
+    phentsize=struct.unpack_from('<H',binary,0x36)[0]
+    phnum=struct.unpack_from('<H',binary,0x38)[0]
+    for i in range(phnum):
+        off=phoff+i*phentsize
+        p_type,p_flags,p_offset,p_vaddr=struct.unpack_from('<IIQQ',binary,off)
+        p_filesz=struct.unpack_from('<Q',binary,off+0x20)[0]
+        if p_type==1 and p_vaddr<=address and address+size<=p_vaddr+p_filesz:
+            start=p_offset+address-p_vaddr
+            return binary[start:start+size]
+    raise AssertionError(f'RVA 0x{address:X} outside file-backed PT_LOAD')
 
+def branch_target(binary:bytes,address:int,link:bool)->int:
+    ins=int.from_bytes(load_virtual_bytes(binary,address,4),'little')
+    opcode=0x94000000 if link else 0x14000000
+    assert ins&0xFC000000==opcode,f'0x{address:X} is not {"BL" if link else "B"}'
+    imm=ins&0x03FFFFFF
+    if imm&0x02000000: imm-=0x04000000
+    return address+imm*4
 
-def load_virtual_bytes(binary: bytes, address: int, size: int) -> bytes:
-    assert binary[:4] == b"\x7fELF", "not an ELF file"
-    assert binary[4] == 2, "expected ELF64"
-    assert binary[5] == 1, "expected little-endian ELF"
+def executable_segments(binary:bytes):
+    phoff=struct.unpack_from('<Q',binary,0x20)[0]
+    phentsize=struct.unpack_from('<H',binary,0x36)[0]
+    phnum=struct.unpack_from('<H',binary,0x38)[0]
+    for i in range(phnum):
+        off=phoff+i*phentsize
+        p_type,p_flags,p_offset,p_vaddr=struct.unpack_from('<IIQQ',binary,off)
+        p_filesz=struct.unpack_from('<Q',binary,off+0x20)[0]
+        if p_type==1 and (p_flags&1):
+            yield p_offset,p_vaddr,p_filesz
 
-    program_header_offset = struct.unpack_from("<Q", binary, 0x20)[0]
-    program_header_size = struct.unpack_from("<H", binary, 0x36)[0]
-    program_header_count = struct.unpack_from("<H", binary, 0x38)[0]
+def direct_bl_callers(binary:bytes,target:int):
+    callers=[]
+    for file_off,vaddr,size in executable_segments(binary):
+        end=file_off+size-(size%4)
+        for o in range(file_off,end,4):
+            ins=int.from_bytes(binary[o:o+4],'little')
+            if ins&0xFC000000!=0x94000000:
+                continue
+            imm=ins&0x03FFFFFF
+            if imm&0x02000000: imm-=0x04000000
+            addr=vaddr+(o-file_off)
+            if addr+imm*4==target:
+                callers.append(addr)
+    return callers
 
-    for index in range(program_header_count):
-        offset = program_header_offset + index * program_header_size
-        segment_type, _flags, file_offset, virtual_address = struct.unpack_from(
-            "<IIQQ", binary, offset
+def main():
+    assert len(sys.argv)==2,'usage: native_attachment_binary_contract.py LIB'
+    binary=Path(sys.argv[1]).read_bytes()
+    assert hashlib.sha256(binary).hexdigest()==EXPECTED_SHA256
+
+    # Attachment slot routing and exact native-only boundaries.
+    assert load_virtual_bytes(binary,0x9B36358,4)==bytes.fromhex('c8008052')
+    assert branch_target(binary,0x9B36314,True)==0x9B368D4
+    assert branch_target(binary,0x9B36370,True)==0x9B368D4
+    assert branch_target(binary,0x9B36A18,False)==0x9B3A228
+    assert branch_target(binary,0xA2C837C,True)==0x9B36A80
+    assert load_virtual_bytes(binary,0xA2C8374,8)==bytes.fromhex(
+        'e5031f2a26008052'
+    ),'prepare caller must pass w5=0, w6=1'
+    assert branch_target(binary,0x9B3779C,True)==0xAF3A1E4
+    assert branch_target(binary,0x9B37814,True)==0xAF3A1E4
+    assert branch_target(binary,0x9B254C8,True)==0xF147ED0
+
+    # 9B368D4 itself computes variable.is_first_person before tail-drawing.
+    assert branch_target(binary,0x9B36908,True)==0xEC8A478
+    assert branch_target(binary,0x9B36930,True)==0xEE63508
+    assert branch_target(binary,0x9B36934,True)==0xEEA721C
+    assert load_virtual_bytes(binary,0x2652B1D,25)==b'variable.is_first_person\x00'
+    assert direct_bl_callers(binary,0x9B368D4)==[
+        0x9B361AC,0x9B361D8,0x9B36204,0x9B36230,
+        0x9B3625C,0x9B36314,0x9B36370,
+    ]
+    assert direct_bl_callers(binary,0xAF3A1E4)==[0x9B3779C,0x9B37814]
+
+    fingerprints={
+        0x9B36A80:'fd7bbaa9fc6f01a9fa6702a9f85f03a9',
+        0xAF3A1E4:'ff4302d1fd7b03a9fc6f04a9fa6705a9',
+        0x9B368D4:'fd7bbaa9fc6f01a9fa6702a9f85f03a9',
+        0xF147ED0:'08784339a8000034008441ad028c42ad',
+        0xEC8A478:'fd7bbfa9fd030091090840f92a839452',
+        0xEE63508:'ffc300d1fd7b01a9f44f02a9fd430091',
+        0xEEA721C:'00200091c0035fd6',
+    }
+    for address,hex_bytes in fingerprints.items():
+        expected=bytes.fromhex(hex_bytes)
+        assert load_virtual_bytes(binary,address,len(expected))==expected,(
+            f'entry fingerprint changed at 0x{address:X}'
         )
-        file_size = struct.unpack_from("<Q", binary, offset + 0x20)[0]
 
-        if (
-            segment_type == 1
-            and virtual_address <= address
-            and address + size <= virtual_address + file_size
-        ):
-            start = file_offset + address - virtual_address
-            return binary[start:start + size]
-
-    raise AssertionError(f"RVA 0x{address:X} is outside file-backed PT_LOAD")
-
-
-def branch_target(binary: bytes, address: int, link: bool) -> int:
-    instruction = int.from_bytes(
-        load_virtual_bytes(binary, address, 4), "little"
+    # Native query.item_slot_to_bone_name already maps off_hand -> leftitem.
+    assert load_virtual_bytes(binary,0xEE89174,28).hex()==(
+        '88f195d2010040f973c205916874a5f22850c4f288a9ebf23f0008eb'
     )
-    expected_opcode = 0x94000000 if link else 0x14000000
-    assert instruction & 0xFC000000 == expected_opcode, (
-        f"0x{address:X} is not {'BL' if link else 'B'}"
+    assert load_virtual_bytes(binary,0xEE89294,32).hex()==(
+        '00e4006fe15e92d2080080126115b6f2e80300b961b9dff2619ee3f2e083803c'
+    )
+    # Tiny HashedString accessor remains only data evidence; never inline-hook it.
+    assert load_virtual_bytes(binary,0xEEAB3AC,12).hex()==(
+        '00200091c0035fd6085040b9'
     )
 
-    immediate = instruction & 0x03FFFFFF
-    if immediate & 0x02000000:
-        immediate -= 0x04000000
-    return address + immediate * 4
-
-
-def main() -> None:
-    assert len(sys.argv) == 2, "usage: native_attachment_binary_contract.py LIB"
-    path = Path(sys.argv[1])
-    binary = path.read_bytes()
-
-    assert hashlib.sha256(binary).hexdigest() == EXPECTED_SHA256, (
-        "libminecraftpe.so SHA-256 does not match the 1.26.45.1 target"
-    )
-
-    assert load_virtual_bytes(binary, 0x9B36358, 4) == bytes.fromhex(
-        "c8008052"
-    ), "slot-6 MOV fingerprint changed"
-    assert branch_target(binary, 0x9B36370, link=True) == 0x9B368D4
-    assert branch_target(binary, 0x9B3680C, link=False) == 0x9B36A80
-    assert branch_target(binary, 0x9B36A18, link=False) == 0x9B3A228
-    assert branch_target(binary, 0xA2C837C, link=True) == 0x9B36A80
-    assert branch_target(binary, 0xA2C87BC, link=True) == 0x9B3A228
-    assert branch_target(binary, 0x9B3779C, link=True) == 0xAF3A1E4
-    assert branch_target(binary, 0x9B37814, link=True) == 0xAF3A1E4
-    assert branch_target(binary, 0x9B37780, link=True) == 0xF147CB0
-    assert branch_target(binary, 0x9B377D8, link=True) == 0xF147CB0
-    assert branch_target(binary, 0x9B37BD4, link=True) == 0xEEAB3AC
-    assert branch_target(binary, 0x9B254C8, link=True) == 0xF147ED0
-    assert branch_target(binary, 0x9B254F8, link=True) == 0x9B25474
-    assert branch_target(binary, 0xADE9E9C, link=True) == 0xA31662C
-
-    fingerprints = {
-        0x9B36A80: "fd7bbaa9fc6f01a9fa6702a9f85f03a9",
-        0xF147CB0: "00704339c0035fd6",
-        0xAF3A1E4: "ff4302d1fd7b03a9fc6f04a9fa6705a9",
-        0x9B3A228: "ff0305d1e86b00fdfd7b0ea9fc6f0fa9",
-        0xF147ED0: "08784339a8000034008441ad028c42ad",
-        0xEEAB3AC: "00200091c0035fd6",
+    # F147ED0 copies the native owner matrix when +0xDE is set, then continues
+    # into local pose reads. Therefore the new patch must mutate only +0x70 pose.
+    expected_ins={
+        0xF147ED0:'08784339',0xF147ED4:'a8000034',
+        0xF147ED8:'008441ad',0xF147EDC:'028c42ad',
+        0xF147EE0:'400400ad',0xF147EE4:'420c01ad',
+        0xF147EEC:'0204476d',0xF147FF0:'01c047fc',0xF147FF4:'024048fc',
     }
-
-    for address, expected in fingerprints.items():
-        expected_bytes = bytes.fromhex(expected)
-        assert load_virtual_bytes(
-            binary, address, len(expected_bytes)
-        ) == expected_bytes, f"entry fingerprint changed at 0x{address:X}"
-
-    # v0.2.59 static proof for query.item_slot_to_bone_name: the native
-    # function compares the evaluated slot hash with off_hand, then materializes
-    # the lowercase leftitem hash. This means no expression-result hook is needed.
-    assert load_virtual_bytes(binary, 0xEE89174, 28).hex() == (
-        "88f195d2010040f973c205916874a5f22850c4f288a9ebf23f0008eb"
-    ), "native off_hand hash compare changed"
-    assert load_virtual_bytes(binary, 0xEE89190, 4).hex() == "20080054"
-    assert load_virtual_bytes(binary, 0xEE89294, 32).hex() == (
-        "00e4006fe15e92d2080080126115b6f2e80300b961b9dff2619ee3f2e083803c"
-    ), "native off_hand -> leftitem materialization changed"
-    assert load_virtual_bytes(binary, 0xEEAB3AC, 12).hex() == (
-        "00200091c0035fd6085040b9"
-    ), "tiny accessor / adjacent routine boundary changed"
-
-    cache_fast_path = {
-        0xF147ED0: "08784339",  # LDRB W8,[X0,#0xDE]
-        0xF147ED4: "a8000034",  # CBZ W8,0xF147EE8
-        0xF147ED8: "008441ad",  # LDP Q0,Q1,[X0,#0x30]
-        0xF147EDC: "028c42ad",  # LDP Q2,Q3,[X0,#0x50]
-        0xF147EE0: "400400ad",  # STP Q0,Q1,[X2]
-        0xF147EE4: "420c01ad",  # STP Q2,Q3,[X2,#0x20]
-    }
-    for address, expected in cache_fast_path.items():
-        assert load_virtual_bytes(binary, address, 4) == bytes.fromhex(
-            expected
-        ), f"matrix-cache fast path changed at 0x{address:X}"
-
-    child_matrix_forwarding = {
-        0x9B254E8: "e20f41ad",  # LDP Q2,Q3,[SP,#0x20]
-        0x9B254F0: "e00740ad",  # LDP Q0,Q1,[SP]
-    }
-    for address, expected in child_matrix_forwarding.items():
-        assert load_virtual_bytes(binary, address, 4) == bytes.fromhex(
-            expected
-        ), f"child-matrix forwarding changed at 0x{address:X}"
-
-    local_pose_reads = {
-        0xF147EEC: "0204476d",  # LDP D2,D1,[X0,#0x70]: position
-        0xF147FF0: "01c047fc",  # LDUR D1,[X0,#0x7C]: rotation x/y
-        0xF147FF4: "024048fc",  # LDUR D2,[X0,#0x84]: rotation z
-    }
-    for address, expected in local_pose_reads.items():
-        assert load_virtual_bytes(binary, address, 4) == bytes.fromhex(
-            expected
-        ), f"local-pose field read changed at 0x{address:X}"
-
-    composed_matrix_stores = {
-        0xF148478: "018001ad",
-        0xF14847C: "028c02ad",
-        0xF1484A0: "018001ad",
-        0xF1484A4: "028c02ad",
-    }
-    for address, expected in composed_matrix_stores.items():
-        assert load_virtual_bytes(binary, address, 4) == bytes.fromhex(
-            expected
-        ), f"composed-matrix cache store changed at 0x{address:X}"
+    for address,hex_bytes in expected_ins.items():
+        assert load_virtual_bytes(binary,address,4)==bytes.fromhex(hex_bytes),(
+            f'compose/local-pose instruction changed at 0x{address:X}'
+        )
 
     print(
-        "native attachment binary contract passed: "
-        "1 slot, 14 branches, 6 entry fingerprints, native off_hand->leftitem, "
-        "6 cache-fast-path instructions, 3 local-pose reads, "
-        "4 composed-matrix stores, 2 child-matrix forwards"
+        'native attachment binary contract passed: exact 1.26.45.1 Bow owner '
+        'resolver + native Trident FPP route/local-pose pipeline'
     )
 
-
-if __name__ == "__main__":
+if __name__=='__main__':
     main()
