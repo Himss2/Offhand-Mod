@@ -31,6 +31,15 @@ jobs:
         uses: actions/checkout@v4
 
 
+      - name: Materialize native-only renderer
+        run: |
+          base64 --decode .github/native-only-renderer.patch.gz.b64 \
+            | gzip --decompress > /tmp/native-only-renderer.patch
+          patch -p1 < /tmp/native-only-renderer.patch
+          test "$(git hash-object src/render/OffhandBlockRenderPatch.cpp)" = \
+            "5f6f654705fea14935d1a693746df203e3c76345"
+
+
       - name: Set up Android SDK
         uses: android-actions/setup-android@v3
 
