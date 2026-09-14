@@ -98,7 +98,7 @@ DIST_DIR="$ROOT/dist/$ABI"
 
 PACKAGE_DIR="$DIST_DIR/levi-offhand"
 
-LEVIPACK="$DIST_DIR/levi-offhand-v0.2.62.levipack"
+LEVIPACK="$DIST_DIR/levi-offhand-v0.2.63.levipack"
 
 
 echo "Using Android NDK: $NDK"
