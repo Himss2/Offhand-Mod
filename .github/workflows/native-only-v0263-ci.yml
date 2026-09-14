@@ -1,0 +1,53 @@
+name: Native-only v0.2.63 CI
+
+on:
+  push:
+    branches:
+      - native-only-bow-trident-renderer
+  workflow_dispatch:
+
+jobs:
+  build-arm64:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Materialize native-only source payload
+        shell: bash
+        run: |
+          set -euo pipefail
+          cat .ci-payload/native-only-v0263.part1 \
+              .ci-payload/native-only-v0263.part2 \
+              .ci-payload/native-only-v0263.part3 \
+            | base64 -d > /tmp/native-only-v0263.tar.gz
+          tar -xzf /tmp/native-only-v0263.tar.gz -C "$GITHUB_WORKSPACE"
+          rm -f src/runtime/OffhandBlockRenderPatch.cpp
+
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Install NDK and tools
+        run: |
+          sdkmanager "platforms;android-28" "ndk;28.2.13676358"
+          sudo apt-get update
+          sudo apt-get install -y ninja-build zip
+
+      - name: Run tests
+        run: bash tests/run_native_attachment_fix_tests.sh
+
+      - name: Build
+        env:
+          LEVI_NDK_VERSION: "28.2.13676358"
+        run: bash ./scripts/build.sh
+
+      - name: Inspect output
+        run: |
+          unzip -l dist/arm64-v8a/levi-offhand-v0.2.63.levipack
+          file build/android-arm64-v8a-Release/out/arm64-v8a/liblevi_offhand.so
+
+      - name: Upload levipack
+        uses: actions/upload-artifact@v4
+        with:
+          name: levi-offhand-native-only-v0.2.63
+          path: dist/arm64-v8a/levi-offhand-v0.2.63.levipack
