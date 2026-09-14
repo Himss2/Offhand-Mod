@@ -92,7 +92,9 @@ add_library(
 
     src/LeviOffhandMod.cpp
 
-    src/runtime/OffhandValidationHook.cpp
+    src/runtime/NativeOffhandPolicy.cpp
+
+    src/runtime/AutoInsertRouting.cpp
 
     src/render/OffhandBlockRenderPatch.cpp
 )

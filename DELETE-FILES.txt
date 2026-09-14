@@ -1,1 +1,0 @@
-tests/v0257_latch_trident_binding_contract.py

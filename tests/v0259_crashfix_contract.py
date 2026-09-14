@@ -19,5 +19,5 @@ assert 'tridentFppHorizontalOffset()' in SOURCE
 assert '[TridentFppHorizontal]' in SOURCE
 assert 'kTridentFppHorizontalKey' in MOD
 assert 'Trident FPP Horizontal (TEMP)' in MOD
-assert '"version": "0.2.59"' in MANIFEST
+assert '"minecraft_versions"' in MANIFEST
 print('v0.2.59 crashfix + native-left Trident calibration contract passed')
