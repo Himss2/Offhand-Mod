@@ -2,23 +2,38 @@
 
 Native Levi Launcher Android mod for Minecraft Bedrock **1.26.45.1**.
 
-## v0.2.61 — attachment-context probe
+## v0.2.61.1 — native Item offhand policy architecture
 
-This is a diagnostic branch based on the stable v0.2.59 storage baseline. It does **not** use the v0.2.60 global `mAllowOffHand` constructor policy, so the known crafting-result-to-offhand regression is not part of this test.
+This diagnostic release removes the five storage-policy detours used by the
+previous architecture (`manual-set`, `auto-add`, `tryTransfer`, `trySwap`, and
+`ItemStackBase::getAllowOffHand`). Instead, it follows Minecraft's own Item
+state: `Item::Item` initializes a 16-bit flag field at `Item+0x112`, and bit
+`0x80` is the native `mAllowOffHand` bit read by `getAllowOffHand`.
 
-The purpose is to compare Minecraft's native attachment context for Shield, Bow, and Trident before applying another visual fix. For those target attachment passes, previous Bow/Trident owner-binding, local-pose, final-matrix calibration, pole rotation, and temporary slider adjustments are bypassed. The legacy DataDriven depth is still observed only as a comparison signal; native `prepareAttachment(..., isFirstPerson, ...)` is the authoritative perspective field being logged.
+For the supplied 1.26.45.1 binary, the constructor initializes that word from
+`0x50`. v0.2.61.1 changes only the constructor immediate to `0xD0`, preserving
+all existing default bits and adding `0x80`. The patch is one four-byte native
+instruction change; no ContainerValidation/getAllowOffHand trampoline is used.
 
-Expected diagnostic markers:
+Visual Bow/Trident code is intentionally left at the v0.2.61.1 state so this
+build isolates the effect of making every Item genuinely offhand-capable.
 
-- `[AttachmentContextPrepare]` — family, slot 5/6, native `isFirstPerson`, old DataDriven scope, actor/stack identity.
-- `[AttachmentContextBinding]` — native binding mode/name hash and name-resolver result where that path is used.
-- `[AttachmentContextDraw]` — draw callsite plus the prepare context correlated to the same actor/stack/slot.
-- `[AttachmentContextBone]` — unmodified Bow `rightitem` or Trident `pole` matrix after Minecraft composes it.
-- Existing `[ShieldFppReference]` logs remain useful if Shield takes the generic offhand renderer instead of the attachment path.
+### Runtime validation
 
-### Device test
+Test these before changing visual code again:
 
-From a fresh launch, capture logs while viewing each case separately: Shield offhand FPP, Shield offhand TPP, Bow offhand FPP, Bow offhand TPP, Trident offhand FPP, Trident offhand TPP, then open inventory/paperdoll with Bow and Trident in offhand. Do not expect v0.2.61 to visually fix Bow/Trident; this build is intended to reveal the first native context where their path differs from Shield.
+1. Move Stone (or another normally unsupported item) inventory -> offhand and back.
+2. Move an unsupported item chest -> offhand and offhand -> chest.
+3. Swap mainhand/inventory items with offhand.
+4. Craft with an empty offhand and verify crafted output does **not** auto-route into offhand unexpectedly.
+5. Pick up dropped items with empty offhand and verify normal inventory routing.
+6. Leave/re-enter the world and confirm the offhand item persists.
+7. Recheck Bow TPP and Trident FPP visuals without changing calibration values.
+
+Important: disabling the module reverts the constructor instruction for future
+Item constructions, but Item singletons already constructed in the current
+process keep their flag values. Restart Minecraft for a complete vanilla-policy
+rollback.
 
 ## Build
 
@@ -31,5 +46,5 @@ bash ./scripts/build.sh
 Output:
 
 ```text
-dist/arm64-v8a/levi-offhand-v0.2.61.levipack
+dist/arm64-v8a/levi-offhand-v0.2.61.1.levipack
 ```

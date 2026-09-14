@@ -8,16 +8,21 @@
 #include <cstdint>
 #include <cstring>
 #include <dlfcn.h>
+#include <link.h>
 #include <memory>
 #include <thread>
 #include <pl/memory/Hook.hpp>
-#include <pl/memory/Signature.hpp>
 
 namespace levioffhand::render {
     namespace {
         constexpr char kMinecraftLibrary[]="libminecraftpe.so";
         constexpr char kLogTag[]="Levi Offhand";
 
+        constexpr std::uintptr_t kRenderOffhandRva=0xADE4590;
+        constexpr std::uintptr_t kBlockPredicateRva=0xAF21B18;
+        constexpr std::uintptr_t kCanTessellateRva=0xADE84A8;
+        constexpr std::uintptr_t kRenderObjectRva=0xADDDE6C;
+        constexpr std::uintptr_t kItemTransformRva=0xAF21B50;
         constexpr std::uintptr_t kRenderItemRva=0xADDEA08;
         constexpr std::uintptr_t kDefaultTransformRva=0xA1DEE04;
         constexpr std::uintptr_t kMatrixMultiplyRva=0x94E96F4;
@@ -40,9 +45,6 @@ namespace levioffhand::render {
         // Trident keeps native 3D and trusts Minecraft's native mode-3 Molang
         // binding; 1.26.45.1 already maps off_hand -> leftitem.
         constexpr bool kReferenceRouteDiagnostic=true;
-        // v0.2.61 diagnostic build: observe Minecraft's own attachment hand/view
-        // context without applying Bow/Trident binding, pose, or calibration fixes.
-        constexpr bool kAttachmentContextProbe=true;
         constexpr float kFishingRodTppVerticalDelta=-0.06f;
         constexpr std::uintptr_t kThirdPersonOffhandRenderItemCallsiteRva=0xA32F030;
         constexpr std::uintptr_t kRenderItemAttachableEnabledCallsiteRva=0xADDEADC;
@@ -411,100 +413,6 @@ namespace levioffhand::render {
             std::uint64_t nameHash{0};
         };
 
-        enum class AttachmentProbeFamily : std::uint8_t {
-            None=0,
-            Shield,
-            Bow,
-            Trident
-        };
-
-        struct AttachmentProbeRecord {
-            const void* stack{nullptr};
-            const void* actor{nullptr};
-            std::uint32_t slot{static_cast<std::uint32_t>(-1)};
-            bool nativeFirstPerson{false};
-            bool legacyDataDriven{false};
-            AttachmentProbeFamily family{AttachmentProbeFamily::None};
-        };
-
-        constexpr std::size_t kAttachmentProbeRecordCapacity=8;
-        thread_local std::array<
-            AttachmentProbeRecord,
-            kAttachmentProbeRecordCapacity
-        > gAttachmentProbeRecords{};
-        thread_local std::size_t gAttachmentProbeRecordCursor=0;
-        thread_local std::uint32_t gAttachmentProbeLogBudget=96;
-        thread_local AttachmentProbeFamily gAttachmentProbePrepareFamily=
-            AttachmentProbeFamily::None;
-        thread_local std::uint32_t gAttachmentProbePrepareSlot=
-            static_cast<std::uint32_t>(-1);
-        thread_local bool gAttachmentProbePrepareNativeFpp=false;
-        thread_local AttachmentProbeFamily gAttachmentProbeDrawFamily=
-            AttachmentProbeFamily::None;
-        thread_local std::uint32_t gAttachmentProbeDrawSlot=
-            static_cast<std::uint32_t>(-1);
-        thread_local bool gAttachmentProbeDrawNativeFpp=false;
-        thread_local bool gAttachmentProbeDrawPrepared=false;
-
-        class AttachmentProbePrepareScope final {
-        public:
-            AttachmentProbePrepareScope(
-                AttachmentProbeFamily family,
-                std::uint32_t slot,
-                bool nativeFirstPerson
-            ) noexcept
-                : mFamily(gAttachmentProbePrepareFamily),
-                  mSlot(gAttachmentProbePrepareSlot),
-                  mNativeFpp(gAttachmentProbePrepareNativeFpp) {
-                gAttachmentProbePrepareFamily=family;
-                gAttachmentProbePrepareSlot=slot;
-                gAttachmentProbePrepareNativeFpp=nativeFirstPerson;
-            }
-
-            ~AttachmentProbePrepareScope() {
-                gAttachmentProbePrepareFamily=mFamily;
-                gAttachmentProbePrepareSlot=mSlot;
-                gAttachmentProbePrepareNativeFpp=mNativeFpp;
-            }
-
-        private:
-            AttachmentProbeFamily mFamily;
-            std::uint32_t mSlot;
-            bool mNativeFpp;
-        };
-
-        class AttachmentProbeDrawScope final {
-        public:
-            AttachmentProbeDrawScope(
-                AttachmentProbeFamily family,
-                std::uint32_t slot,
-                bool nativeFirstPerson,
-                bool prepared
-            ) noexcept
-                : mFamily(gAttachmentProbeDrawFamily),
-                  mSlot(gAttachmentProbeDrawSlot),
-                  mNativeFpp(gAttachmentProbeDrawNativeFpp),
-                  mPrepared(gAttachmentProbeDrawPrepared) {
-                gAttachmentProbeDrawFamily=family;
-                gAttachmentProbeDrawSlot=slot;
-                gAttachmentProbeDrawNativeFpp=nativeFirstPerson;
-                gAttachmentProbeDrawPrepared=prepared;
-            }
-
-            ~AttachmentProbeDrawScope() {
-                gAttachmentProbeDrawFamily=mFamily;
-                gAttachmentProbeDrawSlot=mSlot;
-                gAttachmentProbeDrawNativeFpp=mNativeFpp;
-                gAttachmentProbeDrawPrepared=mPrepared;
-            }
-
-        private:
-            AttachmentProbeFamily mFamily;
-            std::uint32_t mSlot;
-            bool mNativeFpp;
-            bool mPrepared;
-        };
-
         static_assert(sizeof(BindingPrefix)==16);
         static_assert(offsetof(BindingPrefix,ownerGeometryIndex)==4);
         static_assert(offsetof(BindingPrefix,nameHash)==8);
@@ -704,6 +612,22 @@ namespace levioffhand::render {
                     kMinecraftLibrary
                 )
                 !=nullptr;
+        }
+
+        std::uintptr_t moduleBaseByName(const char* library) noexcept {
+            struct Search { const char* name; std::uintptr_t base; } search{library,0};
+            dl_iterate_phdr(
+                [](dl_phdr_info* info,std::size_t,void* opaque)->int {
+                    auto& state=*static_cast<Search*>(opaque);
+                    if(info && info->dlpi_name && std::strstr(info->dlpi_name,state.name)) {
+                        state.base=static_cast<std::uintptr_t>(info->dlpi_addr);
+                        return 1;
+                    }
+                    return 0;
+                },
+                &search
+            );
+            return search.base;
         }
 
         std::uintptr_t moduleBaseOf(
@@ -998,106 +922,6 @@ namespace levioffhand::render {
                     0,
                     nullptr
                 );
-        }
-
-        const void* itemFromStack(const void* stack) noexcept {
-            if(!stack) {
-                return nullptr;
-            }
-            const void* weakStorage=readValue<const void*>(
-                stack,
-                kItemWeakPtrOffset,
-                nullptr
-            );
-            if(!weakStorage) {
-                return nullptr;
-            }
-            return readValue<const void*>(weakStorage,0,nullptr);
-        }
-
-        [[nodiscard]] AttachmentProbeFamily attachmentProbeFamily(
-            const void* stack
-        ) noexcept {
-            const char* itemClass=rttiName(itemFromStack(stack));
-            if(contains(itemClass,"ShieldItem")) {
-                return AttachmentProbeFamily::Shield;
-            }
-            if(contains(itemClass,"BowItem")) {
-                return AttachmentProbeFamily::Bow;
-            }
-            if(contains(itemClass,"TridentItem")) {
-                return AttachmentProbeFamily::Trident;
-            }
-            return AttachmentProbeFamily::None;
-        }
-
-        [[nodiscard]] const char* probeFamilyName(
-            AttachmentProbeFamily family
-        ) noexcept {
-            switch(family) {
-                case AttachmentProbeFamily::Shield: return "Shield";
-                case AttachmentProbeFamily::Bow: return "Bow";
-                case AttachmentProbeFamily::Trident: return "Trident";
-                case AttachmentProbeFamily::None: break;
-            }
-            return "None";
-        }
-
-        bool consumeAttachmentProbeLog() noexcept {
-            if(gAttachmentProbeLogBudget==0) {
-                return false;
-            }
-            --gAttachmentProbeLogBudget;
-            return true;
-        }
-
-        void rememberAttachmentProbe(
-            const void* stack,
-            const void* actor,
-            std::uint32_t slot,
-            bool nativeFirstPerson,
-            bool legacyDataDriven,
-            AttachmentProbeFamily family
-        ) noexcept {
-            auto& record=gAttachmentProbeRecords[
-                gAttachmentProbeRecordCursor%kAttachmentProbeRecordCapacity
-            ];
-            record={
-                stack,
-                actor,
-                slot,
-                nativeFirstPerson,
-                legacyDataDriven,
-                family
-            };
-            ++gAttachmentProbeRecordCursor;
-        }
-
-        [[nodiscard]] bool findAttachmentProbe(
-            const void* stack,
-            const void* actor,
-            std::uint32_t slot,
-            AttachmentProbeRecord& result
-        ) noexcept {
-            const std::size_t count=std::min(
-                gAttachmentProbeRecordCursor,
-                kAttachmentProbeRecordCapacity
-            );
-            for(std::size_t age=0;age<count;++age) {
-                const std::size_t index=(
-                    gAttachmentProbeRecordCursor-1-age
-                )%kAttachmentProbeRecordCapacity;
-                const auto& candidate=gAttachmentProbeRecords[index];
-                if(
-                    candidate.stack==stack
-                    && candidate.actor==actor
-                    && candidate.slot==slot
-                ) {
-                    result=candidate;
-                    return true;
-                }
-            }
-            return false;
         }
 
         const void* offhandBlock() noexcept {
@@ -1602,11 +1426,7 @@ namespace levioffhand::render {
             // Fishing Rod is the reference: it naturally continues through the
             // generic LEFT renderer.  Bow is made equivalent only at this exact
             // slot-34 TPP RenderItem transaction.
-            if(
-                !kAttachmentContextProbe
-                && gRenderItemRouteFamily==ToolFamily::Bow
-                && nativeResult
-            ) {
+            if(gRenderItemRouteFamily==ToolFamily::Bow && nativeResult) {
                 gRenderItemForcedGeneric=true;
                 return false;
             }
@@ -1669,59 +1489,6 @@ namespace levioffhand::render {
                 featureEnabled
                 && stack
                 && stackMatchesId(stack,kTridentIdRva);
-            const AttachmentProbeFamily probeFamily=
-                attachmentProbeFamily(stack);
-            if(
-                kAttachmentContextProbe
-                && featureEnabled
-                && probeFamily!=AttachmentProbeFamily::None
-                && (
-                    slot==native_attachment_fix::kMainhandSlot
-                    || slot==native_attachment_fix::kOffhandSlot
-                )
-            ) {
-                const bool legacyDataDriven=
-                    gFirstPersonDataDrivenDepth!=0;
-                rememberAttachmentProbe(
-                    stack,
-                    actor,
-                    slot,
-                    isFirstPerson,
-                    legacyDataDriven,
-                    probeFamily
-                );
-                if(consumeAttachmentProbeLog()) {
-                    __android_log_print(
-                        ANDROID_LOG_INFO,
-                        kLogTag,
-                        "[AttachmentContextPrepare] family=%s slot=%u "
-                        "nativeFpp=%d legacyDataDriven=%d enabled=%d "
-                        "stack=%p actor=%p",
-                        probeFamilyName(probeFamily),
-                        static_cast<unsigned>(slot),
-                        isFirstPerson?1:0,
-                        legacyDataDriven?1:0,
-                        enabled?1:0,
-                        stack,
-                        actor
-                    );
-                }
-                AttachmentProbePrepareScope probeScope(
-                    probeFamily,
-                    slot,
-                    isFirstPerson
-                );
-                original(
-                    self,
-                    stack,
-                    slotPointer,
-                    parentContext,
-                    actor,
-                    isFirstPerson,
-                    enabled
-                );
-                return;
-            }
             if(
                 slot==native_attachment_fix::kOffhandSlot
                 && (
@@ -1839,31 +1606,6 @@ namespace levioffhand::render {
             }
 
             const std::uint8_t nativeMode=original(bindingState);
-            if(
-                kAttachmentContextProbe
-                && gAttachmentProbePrepareFamily
-                    !=AttachmentProbeFamily::None
-            ) {
-                if(consumeAttachmentProbeLog()) {
-                    const std::uint64_t sourceHash=readValue<std::uint64_t>(
-                        bindingState,
-                        offsetof(BindingPrefix,nameHash),
-                        0
-                    );
-                    __android_log_print(
-                        ANDROID_LOG_INFO,
-                        kLogTag,
-                        "[AttachmentContextBinding] family=%s slot=%u "
-                        "nativeFpp=%d mode=%u sourceHash=0x%llx",
-                        probeFamilyName(gAttachmentProbePrepareFamily),
-                        static_cast<unsigned>(gAttachmentProbePrepareSlot),
-                        gAttachmentProbePrepareNativeFpp?1:0,
-                        static_cast<unsigned>(nativeMode),
-                        static_cast<unsigned long long>(sourceHash)
-                    );
-                }
-                return nativeMode;
-            }
             if(
                 gActiveTridentFppBindingScopes.load(
                     std::memory_order_acquire
@@ -1996,34 +1738,6 @@ namespace levioffhand::render {
                 OffhandBlockRenderPatch::instance().featureEnabled();
             const BindingPrefix sourceBinding=
                 readValue<BindingPrefix>(bindingState,0,{});
-
-            if(
-                kAttachmentContextProbe
-                && gAttachmentProbePrepareFamily
-                    !=AttachmentProbeFamily::None
-            ) {
-                const bool resolved=original(self,ownerGeometry,bindingState);
-                const BindingPrefix finalBinding=
-                    readValue<BindingPrefix>(bindingState,0,{});
-                if(consumeAttachmentProbeLog()) {
-                    __android_log_print(
-                        ANDROID_LOG_INFO,
-                        kLogTag,
-                        "[AttachmentContextBinding] family=%s slot=%u "
-                        "nativeFpp=%d resolverCall=0x%llx resolved=%d "
-                        "sourceHash=0x%llx ownerBone=%d ownerGeometry=%d",
-                        probeFamilyName(gAttachmentProbePrepareFamily),
-                        static_cast<unsigned>(gAttachmentProbePrepareSlot),
-                        gAttachmentProbePrepareNativeFpp?1:0,
-                        static_cast<unsigned long long>(callsiteRva),
-                        resolved?1:0,
-                        static_cast<unsigned long long>(sourceBinding.nameHash),
-                        finalBinding.ownerBoneIndex,
-                        finalBinding.ownerGeometryIndex
-                    );
-                }
-                return resolved;
-            }
 
             if(
                 (remapBowOwnerBone || remapTridentOwnerBone)
@@ -2208,51 +1922,6 @@ namespace levioffhand::render {
                 native_attachment_fix::isEffectiveOffhandDrawCallsite(
                     callsiteRva
                 );
-            const AttachmentProbeFamily probeFamily=
-                attachmentProbeFamily(stack);
-            if(
-                kAttachmentContextProbe
-                && featureEnabled
-                && probeFamily!=AttachmentProbeFamily::None
-                && (
-                    slot==native_attachment_fix::kMainhandSlot
-                    || slot==native_attachment_fix::kOffhandSlot
-                )
-            ) {
-                AttachmentProbeRecord prepared{};
-                const bool foundPrepared=findAttachmentProbe(
-                    stack,
-                    actor,
-                    slot,
-                    prepared
-                );
-                if(consumeAttachmentProbeLog()) {
-                    __android_log_print(
-                        ANDROID_LOG_INFO,
-                        kLogTag,
-                        "[AttachmentContextDraw] family=%s slot=%u "
-                        "nativeFpp=%d prepared=%d legacyDataDriven=%d "
-                        "caller=0x%llx offhandDraw=%d stack=%p actor=%p",
-                        probeFamilyName(probeFamily),
-                        static_cast<unsigned>(slot),
-                        foundPrepared && prepared.nativeFirstPerson?1:0,
-                        foundPrepared?1:0,
-                        foundPrepared && prepared.legacyDataDriven?1:0,
-                        static_cast<unsigned long long>(callsiteRva),
-                        effectiveOffhandDraw?1:0,
-                        stack,
-                        actor
-                    );
-                }
-                AttachmentProbeDrawScope probeScope(
-                    probeFamily,
-                    slot,
-                    foundPrepared && prepared.nativeFirstPerson,
-                    foundPrepared
-                );
-                original(self,stack,slotPointer,parentContext,actor);
-                return;
-            }
             const bool suppressBowNative=
                 kReferenceRouteDiagnostic
                 && effectiveOffhandDraw
@@ -2357,43 +2026,6 @@ namespace levioffhand::render {
                 8,
                 0
             );
-
-            if(
-                kAttachmentContextProbe
-                && gAttachmentProbeDrawFamily!=AttachmentProbeFamily::None
-            ) {
-                original(boneState,pivot,matrix);
-                const bool interestingBone=
-                    (
-                        gAttachmentProbeDrawFamily==AttachmentProbeFamily::Bow
-                        && (
-                            boneNameHash==native_attachment_fix::kRightItemLowerHash
-                            || boneNameHash==native_attachment_fix::kRightItemCamelHash
-                        )
-                    )
-                    || (
-                        gAttachmentProbeDrawFamily==AttachmentProbeFamily::Trident
-                        && boneNameHash==native_attachment_fix::kPoleBoneHash
-                    );
-                if(interestingBone && consumeAttachmentProbeLog()) {
-                    __android_log_print(
-                        ANDROID_LOG_INFO,
-                        kLogTag,
-                        "[AttachmentContextBone] family=%s slot=%u "
-                        "nativeFpp=%d prepared=%d boneHash=0x%llx "
-                        "T=(%.3f,%.3f,%.3f)",
-                        probeFamilyName(gAttachmentProbeDrawFamily),
-                        static_cast<unsigned>(gAttachmentProbeDrawSlot),
-                        gAttachmentProbeDrawNativeFpp?1:0,
-                        gAttachmentProbeDrawPrepared?1:0,
-                        static_cast<unsigned long long>(boneNameHash),
-                        static_cast<double>(matrix->value[12]),
-                        static_cast<double>(matrix->value[13]),
-                        static_cast<double>(matrix->value[14])
-                    );
-                }
-                return;
-            }
 
             const bool offsetBowRoot=
                 gBowTppAttachmentDepth!=0
@@ -2601,7 +2233,6 @@ namespace levioffhand::render {
                 actorOffhand,
                 offhandBow
                 && isFirstPersonCallsite
-                && !kAttachmentContextProbe
             );
 
             if(bowMask.active()) {
@@ -3650,10 +3281,6 @@ namespace levioffhand::render {
             if(
                 gCurrentToolFamily==ToolFamily::Trident
                 || gCurrentToolFamily==ToolFamily::Spear
-                || (
-                    kAttachmentContextProbe
-                    && gCurrentToolFamily==ToolFamily::Bow
-                )
             ) {
                 // Dedicated native attachment paths are corrected separately.
                 gToolFinalMatrixApplied=true;
@@ -3831,47 +3458,18 @@ namespace levioffhand::render {
         auto& logger=
             context.logger();
 
-        mRenderOffhandTarget=
-            pl::memory::
-            resolveSignature(
-                kRenderOffhandSignature,
-                kMinecraftLibrary
-            );
+        const std::uintptr_t fastBase=moduleBaseByName(kMinecraftLibrary);
+        if(!fastBase) {
+            logger.error("Minecraft module base unavailable");
+            return false;
+        }
 
-        mBlockPredicateTarget=
-            pl::memory::
-            resolveSignature(
-                kBlockPredicateSignature,
-                kMinecraftLibrary
-            );
-
-        mCanTessellateTarget=
-            pl::memory::
-            resolveSignature(
-                kCanTessellateSignature,
-                kMinecraftLibrary
-            );
-
-        mRenderObjectTarget=
-            pl::memory::
-            resolveSignature(
-                kRenderObjectSignature,
-                kMinecraftLibrary
-            );
-
-        mItemTransformTarget=
-            pl::memory::
-            resolveSignature(
-                kItemTransformSignature,
-                kMinecraftLibrary
-            );
-
-        gHandEquipPredicateTarget=
-            pl::memory::
-            resolveSignature(
-                kHandEquipPredicateSignature,
-                kMinecraftLibrary
-            );
+        mRenderOffhandTarget=fastBase+kRenderOffhandRva;
+        mBlockPredicateTarget=fastBase+kBlockPredicateRva;
+        mCanTessellateTarget=fastBase+kCanTessellateRva;
+        mRenderObjectTarget=fastBase+kRenderObjectRva;
+        mItemTransformTarget=fastBase+kItemTransformRva;
+        gHandEquipPredicateTarget=fastBase+kHandEquipPredicateRva;
 
         const std::uintptr_t base=
             moduleBaseOf(
@@ -4049,6 +3647,12 @@ namespace levioffhand::render {
             base
             +
             kHandEquipPredicateRva
+            || !matchesFingerprint(mRenderOffhandTarget,std::array<std::uint8_t,4>{0xFF,0xC3,0x05,0xD1})
+            || !matchesFingerprint(mBlockPredicateTarget,std::array<std::uint8_t,4>{0xFD,0x7B,0xBE,0xA9})
+            || !matchesFingerprint(mCanTessellateTarget,std::array<std::uint8_t,4>{0xFD,0x7B,0xBE,0xA9})
+            || !matchesFingerprint(mRenderObjectTarget,std::array<std::uint8_t,4>{0xFD,0x7B,0xBA,0xA9})
+            || !matchesFingerprint(mItemTransformTarget,std::array<std::uint8_t,4>{0xFF,0x83,0x02,0xD1})
+            || !matchesFingerprint(gHandEquipPredicateTarget,std::array<std::uint8_t,4>{0xFD,0x7B,0xBE,0xA9})
         ) {
 
             logger.error(
