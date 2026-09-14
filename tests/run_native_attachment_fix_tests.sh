@@ -31,7 +31,7 @@ else
         "native attachment binary contract skipped: LEVI_MCPE_LIBRARY unset"
 fi
 
-python3 tests/v0259_crashfix_contract.py
+python3 "$repo_root/tests/v0263_native_only_renderer_contract.py"
 
 routing_test_binary="${TMPDIR:-/tmp}/levi-offhand-v0262-routing-test"
 
