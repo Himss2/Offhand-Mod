@@ -1,0 +1,76 @@
+name: Assemble v0.2.62 temp
+
+on:
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  assemble:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout transport branch
+        uses: actions/checkout@v4
+        with:
+          ref: temp/v0.2.62-main-transport
+          fetch-depth: 0
+
+      - name: Reassemble and verify uploaded repository
+        shell: bash
+        run: |
+          set -euo pipefail
+          cat .tmp-v0262/part*.b64 | base64 -d > /tmp/v0262.zip
+          echo "9f846e66949b4e8425a50fbfb9a19a4b811095d313a846246ba553bf343db75f  /tmp/v0262.zip" | sha256sum -c -
+          rm -rf /tmp/v0262-target
+          mkdir -p /tmp/v0262-target
+          unzip -q /tmp/v0262.zip -d /tmp/v0262-target
+
+      - name: Replace branch working tree with v0.2.62
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+          import shutil
+          root = Path('.').resolve()
+          keep = {'.git'}
+          for p in list(root.iterdir()):
+              if p.name in keep:
+                  continue
+              if p.as_posix().endswith('/.github'):
+                  continue
+              if p.is_dir(): shutil.rmtree(p)
+              else: p.unlink()
+          wf = root / '.github' / 'workflows' / 'assemble-v0262-temp.yml'
+          for p in list((root / '.github').iterdir()):
+              if p.name != 'workflows':
+                  shutil.rmtree(p) if p.is_dir() else p.unlink()
+          for p in list((root / '.github' / 'workflows').iterdir()):
+              if p.name != 'assemble-v0262-temp.yml': p.unlink()
+          src = Path('/tmp/v0262-target')
+          for p in src.iterdir():
+              dst = root / p.name
+              if p.is_dir():
+                  shutil.copytree(p, dst, dirs_exist_ok=True)
+              else:
+                  shutil.copy2(p, dst)
+          PY
+          bash tests/run_native_attachment_fix_tests.sh
+          bash -n scripts/build.sh
+
+      - name: Commit exact target state to transport branch
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name "Fathul"
+          git config user.email "97374618+Himss2@users.noreply.github.com"
+          git add -A ':!.github/workflows/assemble-v0262-temp.yml'
+          if git diff --cached --quiet; then
+            echo "No target changes to commit"
+          else
+            git commit -m "Stage v0.2.62 native offhand routing"
+            git push origin HEAD:temp/v0.2.62-main-transport
+          fi
