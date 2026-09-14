@@ -2,13 +2,14 @@
 
 #include <android/log.h>
 
+#include <array>
 #include <cstdint>
 #include <cstring>
 #include <dlfcn.h>
+#include <link.h>
 #include <memory>
 
 #include <pl/memory/Hook.hpp>
-#include <pl/memory/Signature.hpp>
 
 
 namespace levioffhand::runtime {
@@ -24,6 +25,12 @@ constexpr char
 constexpr char
     kLogTag[] =
         "Levi Offhand";
+
+constexpr std::uintptr_t kManualSetPathRva=0xF01AD14;
+constexpr std::uintptr_t kAutoAddPathRva=0xF024024;
+constexpr std::uintptr_t kTryTransferRva=0xF705380;
+constexpr std::uintptr_t kTrySwapRva=0xF704CA0;
+constexpr std::uintptr_t kAllowOffhandRva=0xF644930;
 
 
 /*
@@ -733,6 +740,22 @@ bool shouldUnlockSwap(
  * ============================================================
  */
 [[nodiscard]]
+std::uintptr_t moduleBaseByName(const char* library) noexcept {
+    struct Search { const char* name; std::uintptr_t base; } search{library,0};
+    dl_iterate_phdr([](dl_phdr_info* info,std::size_t,void* opaque)->int {
+        auto& state=*static_cast<Search*>(opaque);
+        if(info && info->dlpi_name && std::strstr(info->dlpi_name,state.name)) {
+            state.base=static_cast<std::uintptr_t>(info->dlpi_addr); return 1;
+        } return 0;
+    },&search);
+    return search.base;
+}
+
+template<std::size_t N>
+bool matchesFingerprint(std::uintptr_t target,const std::array<std::uint8_t,N>& expected) noexcept {
+    return target && std::memcmp(reinterpret_cast<const void*>(target),expected.data(),N)==0;
+}
+
 bool belongsToMinecraft(
     std::uintptr_t address
 ) noexcept {
@@ -1011,44 +1034,13 @@ install(
      * ========================================================
      */
 
-    mManualSetTarget =
-        pl::memory::
-        resolveSignature(
-            kManualSetPathSignature,
-            kMinecraftLibrary
-        );
-
-
-    mAutoAddTarget =
-        pl::memory::
-        resolveSignature(
-            kAutoAddPathSignature,
-            kMinecraftLibrary
-        );
-
-
-    mTryTransferTarget =
-        pl::memory::
-        resolveSignature(
-            kTryTransferSignature,
-            kMinecraftLibrary
-        );
-
-
-    mTrySwapTarget =
-        pl::memory::
-        resolveSignature(
-            kTrySwapSignature,
-            kMinecraftLibrary
-        );
-
-
-    mAllowOffhandTarget =
-        pl::memory::
-        resolveSignature(
-            kAllowOffhandSignature,
-            kMinecraftLibrary
-        );
+    const std::uintptr_t base=moduleBaseByName(kMinecraftLibrary);
+    if(!base) { context.logger().error("Levi Offhand: Minecraft module base unavailable"); return false; }
+    mManualSetTarget=base+kManualSetPathRva;
+    mAutoAddTarget=base+kAutoAddPathRva;
+    mTryTransferTarget=base+kTryTransferRva;
+    mTrySwapTarget=base+kTrySwapRva;
+    mAllowOffhandTarget=base+kAllowOffhandRva;
 
 
     if (
@@ -1071,6 +1063,11 @@ install(
         !belongsToMinecraft(
             mAllowOffhandTarget
         )
+        || !matchesFingerprint(mManualSetTarget,std::array<std::uint8_t,4>{0xFF,0x83,0x01,0xD1})
+        || !matchesFingerprint(mAutoAddTarget,std::array<std::uint8_t,4>{0xFF,0x83,0x05,0xD1})
+        || !matchesFingerprint(mTryTransferTarget,std::array<std::uint8_t,4>{0xFF,0x83,0x06,0xD1})
+        || !matchesFingerprint(mTrySwapTarget,std::array<std::uint8_t,4>{0xFD,0x7B,0xBA,0xA9})
+        || !matchesFingerprint(mAllowOffhandTarget,std::array<std::uint8_t,4>{0x08,0x04,0x40,0xF9})
     ) {
 
         logger.error(

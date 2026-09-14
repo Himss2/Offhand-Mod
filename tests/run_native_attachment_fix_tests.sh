@@ -31,4 +31,4 @@ else
         "native attachment binary contract skipped: LEVI_MCPE_LIBRARY unset"
 fi
 
-python3 tests/v0261_attachment_context_probe_contract.py
+python3 "$repo_root/tests/v02611_fast_init_contract.py"
