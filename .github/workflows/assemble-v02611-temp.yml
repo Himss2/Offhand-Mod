@@ -1,0 +1,49 @@
+name: Assemble v0.2.61.1 staged archive
+
+on:
+  pull_request:
+    branches:
+      - main
+    types:
+      - opened
+
+permissions:
+  contents: write
+
+jobs:
+  assemble:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout staging branch
+        uses: actions/checkout@v4
+        with:
+          ref: test/v0.2.61.1-fast-init
+
+      - name: Reassemble and verify archive
+        shell: bash
+        run: |
+          set -euo pipefail
+          cat .tmp-v02611/part-*.b64 | base64 -d > /tmp/v02611.zip
+          echo "c7369e02efa8fb30a6043551219aa1907247667449f5e769efa711f8fc64a9c8  /tmp/v02611.zip" | sha256sum -c -
+          unzip -o /tmp/v02611.zip -d .
+          test "$(git hash-object tests/v02611_fast_init_contract.py)" = "9f60b352a85be6c585f87050234a137f6a1a0992"
+          test "$(git hash-object scripts/build.sh)" = "08ac111ab3c77d9d79c025fa4f114b160224a582"
+          test "$(git hash-object src/LeviOffhandMod.cpp)" = "46ca31dce7fa71b15eefaf0c0d6d6acdb6eebcd8"
+          test "$(git hash-object src/runtime/OffhandValidationHook.cpp)" = "6982276d24ca7a230187c7e96252005585febfe6"
+          test "$(git hash-object src/runtime/OffhandValidationHook.hpp)" = "c2165fb74e0419abcf9b4595b1f8c3e50763266c"
+          test "$(git hash-object src/render/OffhandBlockRenderPatch.cpp)" = "375699369b318ef53a99c2003a6222e5933f96d0"
+          test "$(git hash-object manifest.json)" = "7d43b9360ed430baf71fbd2b32f0fc8d3d7e055c"
+          test "$(git hash-object README.md)" = "dab41917f012f966f6c5f883a5bee3fe75c9dd7c"
+          test "$(git hash-object .github/workflows/build.yml)" = "a461c7b65ba92e98ea8ae0eb10ddebef5512a2a5"
+          python3 tests/v02611_fast_init_contract.py
+          bash -n scripts/build.sh
+
+      - name: Commit extracted files
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add .github/workflows/build.yml README.md manifest.json scripts/build.sh src/LeviOffhandMod.cpp src/runtime/OffhandValidationHook.cpp src/runtime/OffhandValidationHook.hpp src/render/OffhandBlockRenderPatch.cpp tests/v02611_fast_init_contract.py
+          git commit -m "Assemble v0.2.61.1 fast-init files"
+          git push origin HEAD:test/v0.2.61.1-fast-init
