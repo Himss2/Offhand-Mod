@@ -3,10 +3,6 @@
 #include "runtime/AutoInsertRouting.hpp"
 
 #include <android/log.h>
-#include <cerrno>
-#include <cmath>
-#include <cstdlib>
-#include <string>
 #include <string_view>
 
 #include <pl/Mod.hpp>
@@ -17,8 +13,6 @@ namespace {
 
 constexpr char kModuleId[]="levi_offhand.offhand";
 constexpr char kLogTag[]="Levi Offhand";
-constexpr char kBowTppTiltKey[]="bow_tpp_tilt";
-constexpr char kTridentFppHorizontalKey[]="trident_fpp_horizontal";
 
 using Patch=render::OffhandBlockRenderPatch;
 
@@ -41,50 +35,6 @@ void onModuleToggle(
         enabled?"ON":"OFF"
     );
 }
-
-void onModuleConfigChanged(
-    std::string_view moduleId,
-    std::string_view key,
-    std::string_view value
-) {
-    if(
-        moduleId!=kModuleId
-        || (
-            key!=kBowTppTiltKey
-            && key!=kTridentFppHorizontalKey
-        )
-    ) {
-        return;
-    }
-
-    const std::string ownedValue{value};
-    char* parseEnd=nullptr;
-    errno=0;
-    const float parsedValue=std::strtof(ownedValue.c_str(),&parseEnd);
-    if(
-        errno==ERANGE
-        || parseEnd==ownedValue.c_str()
-        || parseEnd!=ownedValue.c_str()+ownedValue.size()
-        || !std::isfinite(parsedValue)
-    ) {
-        __android_log_print(
-            ANDROID_LOG_WARN,
-            kLogTag,
-            "[OffhandCalibration] rejected invalid value for %.*s",
-            static_cast<int>(key.size()),
-            key.data()
-        );
-        return;
-    }
-
-    if(key==kBowTppTiltKey) {
-        Patch::instance().setBowTppTiltDegrees(parsedValue);
-        return;
-    }
-
-    Patch::instance().setTridentFppHorizontalOffset(parsedValue);
-}
-
 
 } // namespace
 
@@ -132,29 +82,12 @@ public:
             pl::modmenu::ModuleBuilder(kModuleId,"Offhand")
                 .modId(context.id())
                 .description(
-                    "Native arbitrary offhand storage with automatic-routing protection. "
-                    "Visual calibration remains v0.2.59 behavior."
+                    "Native arbitrary offhand storage with protected automatic routing "
+                    "and native-only Bow/Trident rendering."
                 )
                 .defaultEnabled(true)
                 .hideInHudEditor(true)
                 .onToggle(onModuleToggle)
-                .onConfigChanged(onModuleConfigChanged)
-                .config(
-                    kBowTppTiltKey,
-                    "Bow TPP Tilt (TEMP)",
-                    pl::modmenu::ConfigType::SliderFloat,
-                    "-25.20",
-                    "-45.00",
-                    "45.00"
-                )
-                .config(
-                    kTridentFppHorizontalKey,
-                    "Trident FPP Horizontal (TEMP)",
-                    pl::modmenu::ConfigType::SliderFloat,
-                    "0.875",
-                    "-1.500",
-                    "1.500"
-                )
                 .registerModule();
 
         if(!registered) {
@@ -171,16 +104,13 @@ public:
 
         context.logger().info("Levi Offhand registered in Mod Menu");
         context.logger().info(
-            "v0.2.59 crash-safe Bow Rot-Z + native-left Trident calibration active"
+            "Native-only Bow/Trident renderer active for Minecraft 1.26.45.1"
         );
         context.logger().info(
-            "Bow FPP fixed: generic FIRSTPERSON_LEFT with native DataDriven Bow masked"
+            "Bow slot6 keeps native animation and resolves its owner to leftitem"
         );
         context.logger().info(
-            "Bow TPP v0.2.59: generic LEFT route + live semantic Rot-Z tilt"
-        );
-        context.logger().info(
-            "Trident FPP v0.2.59: native off_hand->leftitem + pole Z180 + live horizontal"
+            "Trident slot6 keeps native mode-3 binding and mirrors only FPP pole pose"
         );
         context.logger().info(
             "Decorated Pot/Copper calibration frozen as default values"
