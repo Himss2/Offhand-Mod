@@ -170,7 +170,7 @@ bool AutoInsertRouting::install(pl::mod::ModContext& context) noexcept {
             "Levi Offhand v0.2.62: automatic insertion planner hook failed"
         );
         if (mHook) {
-            mHook->uninstall();
+            mHook->reset();
             mHook.reset();
         }
         mOriginal = nullptr;
@@ -195,7 +195,7 @@ bool AutoInsertRouting::install(pl::mod::ModContext& context) noexcept {
 
 void AutoInsertRouting::uninstall(pl::mod::ModContext& context) noexcept {
     if (mHook) {
-        mHook->uninstall();
+        mHook->reset();
         mHook.reset();
     }
 
