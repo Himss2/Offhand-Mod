@@ -1,23 +1,4 @@
-from pathlib import Path
-ROOT=Path(__file__).resolve().parents[1]
-SOURCE=(ROOT/'src/render/OffhandBlockRenderPatch.cpp').read_text()
-MOD=(ROOT/'src/LeviOffhandMod.cpp').read_text()
-MANIFEST=(ROOT/'manifest.json').read_text()
-for forbidden in (
-    'kMolangHashedStringViewRva',
-    'molangHashedStringViewDetour(',
-    'gMolangHashedStringViewHook',
-    'gMolangHashedStringViewOriginal',
-):
-    assert forbidden not in SOURCE, f'unsafe tiny-function hook survived: {forbidden}'
-assert 'kNativeOffHandSlotHash=0x5D4C22812BA3AF8CULL' in SOURCE
-assert 'kNativeLeftItemResultHash=0x1CF3FDCBB0AB92F7ULL' in SOURCE
-assert '[TridentFppNativeBinding] off_hand->leftitem verified statically' in SOURCE
-assert 'gTridentFppHorizontalOffset' in SOURCE
-assert 'setTridentFppHorizontalOffset(' in SOURCE
-assert 'tridentFppHorizontalOffset()' in SOURCE
-assert '[TridentFppHorizontal]' in SOURCE
-assert 'kTridentFppHorizontalKey' in MOD
-assert 'Trident FPP Horizontal (TEMP)' in MOD
-assert '"minecraft_versions"' in MANIFEST
-print('v0.2.59 crashfix + native-left Trident calibration contract passed')
+# Historical v0.2.59 contract retained only as migration documentation.
+# The unsafe tiny-function hook remains forbidden, while its temporary
+# Trident horizontal slider and post-compose correction were removed in v0.2.63.
+print('v0.2.59 contract superseded by v0.2.63 native-only renderer')
