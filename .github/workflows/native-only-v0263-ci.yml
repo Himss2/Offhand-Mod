@@ -38,14 +38,24 @@ jobs:
         run: |
           set -euo pipefail
           cat > /tmp/v0264-parts.sha256 <<'EOF'
-          dd39384b40ff43a29d8bf3277661a74cdb403340ed97e929155df1f9dd10e285  .ci-payload/v0264-overlay.part1
-          3bd3190c630f916d35939d29fa5756205ee3aecda988146390a5f430ba846507  .ci-payload/v0264-overlay.part2
-          2c2ec790e00e5d0b95add16eb289c03999a2fcff468f6f172b49328dfebff993  .ci-payload/v0264-overlay.part3
+          a815345f922a8748b5a1e5c1a693ac7275a961210a1494a4c94d53831194a745  .ci-payload/v0264-small.part1
+          5d94d929456acc342398c415d65b850b746a589463bd0a7efc7ef0bdf2b2b086  .ci-payload/v0264-small.part2
+          7616f359cedc4ef09f1f42395a5902f746f6d8d5b45dd5c509d09739d577037f  .ci-payload/v0264-small.part3
+          c4e23ad67e4e6f5230195d308a616325b85e636f1e28826e41a882cbc1b629c0  .ci-payload/v0264-small.part4
+          b3f6969ab4ca1489bb0eec5a827ea63f17139f562da6f6493d4b910005a8925f  .ci-payload/v0264-small.part5
+          7c4ef667007ed069981b153590bcbd3320d038bc044d9520f1f16aecbd8ce3ee  .ci-payload/v0264-small.part6
+          bf455ff9619121545f244c92df92bf31af99fb7b2f437926a335122088ba2f5a  .ci-payload/v0264-small.part7
+          18f34931ecd5aed4daa8e491a7914ab6ae90968762d76b1e58e04fe3b9e077a1  .ci-payload/v0264-small.part8
           EOF
           sha256sum -c /tmp/v0264-parts.sha256
-          cat .ci-payload/v0264-overlay.part1 \
-              .ci-payload/v0264-overlay.part2 \
-              .ci-payload/v0264-overlay.part3 \
+          cat .ci-payload/v0264-small.part1 \
+              .ci-payload/v0264-small.part2 \
+              .ci-payload/v0264-small.part3 \
+              .ci-payload/v0264-small.part4 \
+              .ci-payload/v0264-small.part5 \
+              .ci-payload/v0264-small.part6 \
+              .ci-payload/v0264-small.part7 \
+              .ci-payload/v0264-small.part8 \
             | base64 -d > /tmp/v0264-overlay.tar.gz
           echo '5fdb08370a7ee4b1b52db7948947d168f93d6959c8313edeab7f0efec1064da8  /tmp/v0264-overlay.tar.gz' | sha256sum -c -
           tar -xzf /tmp/v0264-overlay.tar.gz -C "$GITHUB_WORKSPACE"
