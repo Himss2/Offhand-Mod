@@ -30,6 +30,13 @@ jobs:
           echo 'fa7d288030c7f51c78cf4a54bb305955002da222ab03ed32a2e38100619f6ad6  /tmp/native-only-v0263.tar.gz' | sha256sum -c -
           tar -xzf /tmp/native-only-v0263.tar.gz -C "$GITHUB_WORKSPACE"
           rm -f src/runtime/OffhandBlockRenderPatch.cpp
+          tar --exclude=.git --exclude=.ci-payload -czf /tmp/native-only-v0263-source.tar.gz .
+
+      - name: Upload reconstructed v0.2.63 source
+        uses: actions/upload-artifact@v4
+        with:
+          name: levi-offhand-native-only-v0.2.63-source
+          path: /tmp/native-only-v0263-source.tar.gz
 
       - name: Set up Android SDK
         uses: android-actions/setup-android@v3
