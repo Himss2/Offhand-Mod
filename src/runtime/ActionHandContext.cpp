@@ -2,61 +2,106 @@
 
 namespace levioffhand::runtime {
 namespace {
-thread_local ActionHandContext::Frame gFrame{};
-struct SessionState {
-    bool active{false};
-    ActionKind kind{ActionKind::None};
-    ActionHand hand{ActionHand::Vanilla};
-    SessionKey key{};
-};
-thread_local SessionState gSession{};
+
+thread_local std::optional<ActionContextView> gScopedAction;
+thread_local ActionSessionState gActionSession;
+
 } // namespace
 
-bool ActionHandContext::active() noexcept { return gFrame.active; }
-ActionHand ActionHandContext::hand() noexcept { return gFrame.hand; }
-ActionKind ActionHandContext::kind() noexcept { return gFrame.kind; }
-void* ActionHandContext::owner() noexcept { return gFrame.owner; }
-
-bool ActionHandContext::sessionActive() noexcept { return gSession.active; }
-ActionHand ActionHandContext::sessionHand() noexcept { return gSession.hand; }
-ActionKind ActionHandContext::sessionKind() noexcept { return gSession.kind; }
-SessionKey ActionHandContext::sessionKey() noexcept { return gSession.key; }
-bool ActionHandContext::matchesSession(const SessionKey& key) noexcept {
-    return gSession.active && gSession.key == key;
+std::optional<ActionContextView> currentScopedAction() noexcept {
+    return gScopedAction;
 }
 
-void ActionHandContext::beginSession(
-    ActionKind kind,
+ScopedActionHand::ScopedActionHand(ActionHand hand, ActionKind kind) noexcept
+    : mPrevious(gScopedAction) {
+    gScopedAction = ActionContextView{hand, kind};
+}
+
+ScopedActionHand::~ScopedActionHand() noexcept {
+    gScopedAction = mPrevious;
+}
+
+void ActionSessionState::begin(
+    ActionSessionKind kind,
     ActionHand hand,
-    SessionKey key
+    ActionIdentityToken stackIdentity,
+    ActionSlotToken slotIdentity,
+    ActionTargetToken targetIdentity,
+    std::uint64_t startTick
 ) noexcept {
-    gSession.active = true;
-    gSession.kind = kind;
-    gSession.hand = hand;
-    gSession.key = key;
+    (void)tryBegin(
+        kind,
+        hand,
+        stackIdentity,
+        slotIdentity,
+        targetIdentity,
+        startTick
+    );
 }
 
-void ActionHandContext::cancelSession() noexcept { gSession = {}; }
-void ActionHandContext::completeSession() noexcept { gSession = {}; }
-
-ActionHandContext::Frame ActionHandContext::push(
-    ActionKind kind,
+bool ActionSessionState::tryBegin(
+    ActionSessionKind kind,
     ActionHand hand,
-    void* owner
+    ActionIdentityToken stackIdentity,
+    ActionSlotToken slotIdentity,
+    ActionTargetToken targetIdentity,
+    std::uint64_t startTick
 ) noexcept {
-    const Frame previous = gFrame;
-    gFrame = Frame{true, hand, kind, owner};
-    return previous;
+    if (active() || kind == ActionSessionKind::None) {
+        return false;
+    }
+
+    mKind = kind;
+    mHand = hand;
+    mStackIdentity = stackIdentity;
+    mSlotIdentity = slotIdentity;
+    mTargetIdentity = targetIdentity;
+    mStartTick = startTick;
+    return true;
 }
 
-void ActionHandContext::restore(Frame frame) noexcept { gFrame = frame; }
+void ActionSessionState::finish() noexcept {
+    cancel();
+}
 
-ScopedActionHand::ScopedActionHand(
-    ActionKind kind,
-    ActionHand hand,
-    void* owner
-) noexcept : mPrevious(ActionHandContext::push(kind, hand, owner)) {}
+void ActionSessionState::cancel() noexcept {
+    mKind = ActionSessionKind::None;
+    mHand = ActionHand::MainHand;
+    mStackIdentity = 0;
+    mSlotIdentity = 0;
+    mTargetIdentity = 0;
+    mStartTick = 0;
+}
 
-ScopedActionHand::~ScopedActionHand() { ActionHandContext::restore(mPrevious); }
+bool ActionSessionState::active() const noexcept {
+    return mKind != ActionSessionKind::None;
+}
+
+ActionSessionKind ActionSessionState::kind() const noexcept {
+    return mKind;
+}
+
+ActionHand ActionSessionState::hand() const noexcept {
+    return mHand;
+}
+
+std::uint64_t ActionSessionState::startTick() const noexcept {
+    return mStartTick;
+}
+
+bool ActionSessionState::matches(
+    ActionIdentityToken stackIdentity,
+    ActionSlotToken slotIdentity,
+    ActionTargetToken targetIdentity
+) const noexcept {
+    return active() &&
+        mStackIdentity == stackIdentity &&
+        mSlotIdentity == slotIdentity &&
+        mTargetIdentity == targetIdentity;
+}
+
+ActionSessionState& currentActionSession() noexcept {
+    return gActionSession;
+}
 
 } // namespace levioffhand::runtime

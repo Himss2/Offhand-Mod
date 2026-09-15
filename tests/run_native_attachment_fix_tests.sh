@@ -5,9 +5,9 @@ set -euo pipefail
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 test_binary="${TMPDIR:-/tmp}/levi-offhand-native-attachment-fix-test"
 
-python3 "$repo_root/tests/native_attachment_source_contract.py"
+python3 "$repo_root/tests/v0268_action_routing_source_contract.py"
 
-hand_action_policy_test_binary="${TMPDIR:-/tmp}/levi-offhand-hand-action-routing-core-test"
+policy_test_binary="${TMPDIR:-/tmp}/levi-offhand-v0268-policy-test"
 
 g++ \
     -std=c++20 \
@@ -18,11 +18,61 @@ g++ \
     -fsanitize=address,undefined \
     -fno-omit-frame-pointer \
     -I"$repo_root/src" \
-    "$repo_root/tests/hand_action_routing_core_test.cpp" \
-    -o "$hand_action_policy_test_binary"
+    "$repo_root/tests/v0268_hand_action_policy_test.cpp" \
+    -o "$policy_test_binary"
 
-ASAN_OPTIONS=detect_leaks=0 "$hand_action_policy_test_binary"
-printf '%s\n' "hand action routing core test passed"
+ASAN_OPTIONS=detect_leaks=0 "$policy_test_binary"
+printf '%s\n' "v0.2.68 hand action policy test passed"
+
+context_test_binary="${TMPDIR:-/tmp}/levi-offhand-v0268-context-test"
+
+g++ \
+    -std=c++20 \
+    -Wall \
+    -Wextra \
+    -Wpedantic \
+    -Werror \
+    -pthread \
+    -fsanitize=address,undefined \
+    -fno-omit-frame-pointer \
+    -I"$repo_root/src" \
+    "$repo_root/tests/v0268_action_hand_context_test.cpp" \
+    "$repo_root/src/runtime/ActionHandContext.cpp" \
+    -o "$context_test_binary"
+
+ASAN_OPTIONS=detect_leaks=0 "$context_test_binary"
+printf '%s\n' "v0.2.68 action hand context test passed"
+
+router_core_test_binary="${TMPDIR:-/tmp}/levi-offhand-v0268-router-core-test"
+
+g++ \
+    -std=c++20 \
+    -Wall \
+    -Wextra \
+    -Wpedantic \
+    -Werror \
+    -pthread \
+    -fsanitize=address,undefined \
+    -fno-omit-frame-pointer \
+    -I"$repo_root/src" \
+    "$repo_root/tests/v0268_hand_action_router_core_test.cpp" \
+    "$repo_root/src/runtime/ActionHandContext.cpp" \
+    -o "$router_core_test_binary"
+
+ASAN_OPTIONS=detect_leaks=0 "$router_core_test_binary"
+printf '%s\n' "v0.2.68 hand action router core test passed"
+
+
+if [[ -n "${LEVI_MCPE_LIBRARY:-}" ]]; then
+    python3 \
+        "$repo_root/tests/v0268_action_routing_binary_contract.py" \
+        "$LEVI_MCPE_LIBRARY"
+else
+    printf '%s\n' \
+        "v0.2.68 action routing binary contract skipped: LEVI_MCPE_LIBRARY unset"
+fi
+
+python3 "$repo_root/tests/native_attachment_source_contract.py"
 
 g++ \
     -std=c++20 \

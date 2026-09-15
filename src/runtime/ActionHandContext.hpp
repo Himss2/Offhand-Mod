@@ -1,72 +1,88 @@
 #pragma once
 
-#include "runtime/HandActionRoutingCore.hpp"
+#include "runtime/HandActionPolicy.hpp"
 
 #include <cstdint>
+#include <optional>
 
 namespace levioffhand::runtime {
 
-enum class ActionKind {
-    None,
-    AttackEntity,
-    MineBlock,
-    UseAir,
-    UseBlock,
-    UseEntity,
+struct ActionContextView {
+    ActionHand hand{ActionHand::MainHand};
+    ActionKind kind{ActionKind::UseAir};
 };
 
-struct SessionKey {
-    void* owner{nullptr};
-    void* stack{nullptr};
-    std::uintptr_t target{0};
-    int x{0};
-    int y{0};
-    int z{0};
-
-    friend constexpr bool operator==(const SessionKey&, const SessionKey&) = default;
-};
-
-class ActionHandContext final {
-public:
-    [[nodiscard]] static bool active() noexcept;
-    [[nodiscard]] static ActionHand hand() noexcept;
-    [[nodiscard]] static ActionKind kind() noexcept;
-    [[nodiscard]] static void* owner() noexcept;
-
-    [[nodiscard]] static bool sessionActive() noexcept;
-    [[nodiscard]] static ActionHand sessionHand() noexcept;
-    [[nodiscard]] static ActionKind sessionKind() noexcept;
-    [[nodiscard]] static SessionKey sessionKey() noexcept;
-    [[nodiscard]] static bool matchesSession(const SessionKey& key) noexcept;
-
-    static void beginSession(ActionKind kind, ActionHand hand, SessionKey key) noexcept;
-    static void cancelSession() noexcept;
-    static void completeSession() noexcept;
-
-public:
-    struct Frame {
-        bool active{false};
-        ActionHand hand{ActionHand::Vanilla};
-        ActionKind kind{ActionKind::None};
-        void* owner{nullptr};
-    };
-
-private:
-    friend class ScopedActionHand;
-    [[nodiscard]] static Frame push(ActionKind kind, ActionHand hand, void* owner) noexcept;
-    static void restore(Frame frame) noexcept;
-};
+[[nodiscard]] std::optional<ActionContextView> currentScopedAction() noexcept;
 
 class ScopedActionHand final {
 public:
-    ScopedActionHand(ActionKind kind, ActionHand hand, void* owner) noexcept;
-    ~ScopedActionHand();
+    ScopedActionHand(ActionHand hand, ActionKind kind) noexcept;
+    ~ScopedActionHand() noexcept;
 
     ScopedActionHand(const ScopedActionHand&) = delete;
     ScopedActionHand& operator=(const ScopedActionHand&) = delete;
+    ScopedActionHand(ScopedActionHand&&) = delete;
+    ScopedActionHand& operator=(ScopedActionHand&&) = delete;
 
 private:
-    ActionHandContext::Frame mPrevious{};
+    std::optional<ActionContextView> mPrevious;
 };
+
+enum class ActionSessionKind {
+    None,
+    Mining,
+    UsingItem,
+    Charging,
+    Blocking,
+};
+
+using ActionIdentityToken = std::uint64_t;
+using ActionSlotToken = std::int32_t;
+using ActionTargetToken = std::uint64_t;
+
+class ActionSessionState final {
+public:
+    void begin(
+        ActionSessionKind kind,
+        ActionHand hand,
+        ActionIdentityToken stackIdentity,
+        ActionSlotToken slotIdentity,
+        ActionTargetToken targetIdentity,
+        std::uint64_t startTick
+    ) noexcept;
+
+    [[nodiscard]] bool tryBegin(
+        ActionSessionKind kind,
+        ActionHand hand,
+        ActionIdentityToken stackIdentity,
+        ActionSlotToken slotIdentity,
+        ActionTargetToken targetIdentity,
+        std::uint64_t startTick
+    ) noexcept;
+
+    void finish() noexcept;
+    void cancel() noexcept;
+
+    [[nodiscard]] bool active() const noexcept;
+    [[nodiscard]] ActionSessionKind kind() const noexcept;
+    [[nodiscard]] ActionHand hand() const noexcept;
+    [[nodiscard]] std::uint64_t startTick() const noexcept;
+
+    [[nodiscard]] bool matches(
+        ActionIdentityToken stackIdentity,
+        ActionSlotToken slotIdentity,
+        ActionTargetToken targetIdentity
+    ) const noexcept;
+
+private:
+    ActionSessionKind mKind{ActionSessionKind::None};
+    ActionHand mHand{ActionHand::MainHand};
+    ActionIdentityToken mStackIdentity{0};
+    ActionSlotToken mSlotIdentity{0};
+    ActionTargetToken mTargetIdentity{0};
+    std::uint64_t mStartTick{0};
+};
+
+[[nodiscard]] ActionSessionState& currentActionSession() noexcept;
 
 } // namespace levioffhand::runtime

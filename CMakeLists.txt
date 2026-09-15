@@ -96,6 +96,8 @@ add_library(
 
     src/runtime/AutoInsertRouting.cpp
 
+    src/runtime/ActionHandContext.cpp
+
     src/render/OffhandBlockRenderPatch.cpp
 )
 

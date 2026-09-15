@@ -1,99 +1,70 @@
-# Reverse-engineering notes — Minecraft Bedrock Android 1.26.45.1
+# Reverse-engineering notes — v0.2.67 reference carriers
 
-Target binary:
+Target: Minecraft Bedrock Android **1.26.45.1** (`libminecraftpe.so`, AArch64).
 
-- file: `libminecraftpe.so`
-- architecture: AArch64
-- Build ID: `868e275cb295e9a275bb29d2258edc2f7dc48761`
-- SHA-256: `444e77434bdd3789a0d90978d06336a99831e78e52955e528258cc375dfa0557`
+## Bow TPP reference route
 
-All RVAs below are exact-build targets and are guarded by native fingerprints.
+Recovered reference path from the earlier Fishing Rod diagnostic:
 
-## Native display contexts
+- `RenderItem`: `0xADDEA08`
+- exact world offhand TPP caller: `0xA32F030`
+- offhand inventory slot: `34`
+- attachable-state function: `0xA32F0F4`
+- attachable-state call inside RenderItem: `0xADDEADC`
 
-Minecraft maps Item Display Transform contexts as follows:
+v0.2.67 scopes a depth guard only around that exact Bow transaction and forces
+that one attachable check false. The native Bow slot-6 attachment is suppressed
+only while the exact transaction is active. No pending latch is used.
 
-```text
-0 gui
-1 firstperson_righthand
-2 firstperson_lefthand
-3 thirdperson_righthand
-4 thirdperson_lefthand
-5 ground
-6 fixed
-7 head
-8 embedded
-9 shelf
-```
+## Spear/Trident FPP carrier substitution
 
-The native offhand FPP path selects context 2 and the world offhand TPP path selects context 4. Paperdoll is a separate render state and must not be treated as TPP world state.
+The owner-bone vector is recovered through `F14355C`; owner matrix copy is
+`F147CC0`. In the exact native FPP scope, the player `rightitem` owner matrix is
+located in the vector, copied into a temporary matrix, and transformed with a
+bilateral X reflection `S * R * S`. That transformed owner frame is supplied to
+`F147CC0`.
 
-## Bow slot-6 attachment
+Crucially, Minecraft then applies the original local Spear/Trident animation on
+top of the carrier. v0.2.67 does **not** mirror the fully composed root after
+`F147ED0`, so `spear` / `pole` local animation remains authored and 3D.
 
-Bow keeps its local animation bone `rightitem`. Unlike Crossbow, Bow does not provide an expression binding that maps that local bone to the owner hand.
+## Locked behavior
 
-Relevant native path:
+Bow FPP remains on the accepted generic `FIRSTPERSON_LEFT` route and calibration.
+Storage/automatic insertion remains the v0.2.62 architecture; no
+`ContainerValidation` hooks are added.
 
-- attachment prepare: `0x9B36A80`
-- owner-name resolver: `0xAF3A1E4`
-- resolver direct callers: `0x9B3779C`, `0x9B37814`
+## v0.2.68 Java-like action routing — locked gameplay boundaries
 
-For Bow attachment slot 6, the mod clones the binding prefix, changes only the clone's owner lookup hash from `rightitem/rightItem` to `leftitem/leftItem`, runs the native resolver, then copies only the resolved owner bone/geometry indices back. The live local bone name/hash is never changed, preserving Bow animation.
+Exact binary identity remains SHA-256
+`444e77434bdd3789a0d90978d06336a99831e78e52955e528258cc375dfa0557`,
+GNU Build ID `868e275cb295e9a275bb29d2258edc2f7dc48761`.
 
-`0x9B36A80` has one direct BL caller (`0xA2C837C`) and that caller passes `isFirstPerson=0`, so Bow owner remapping is deliberately scoped by **Bow + attachment slot 6**, not by perspective.
+The following semantic GameMode entries are now fingerprinted independently of
+renderer/storage code:
 
-## Trident native FPP scope
+- `GameMode::interact(Actor&, Vec3 const&)`: RVA `0xEF71B7C`, FDE
+  `0xEF71B7C..0xEF72170`. Its `interact::$_0` function object uses vptr
+  `0x1226FFF8`, constructed at `0xEF71CC4`.
+- `GameMode::_attack(Actor&, bool, Vec3 const&)`: RVA `0xEF721E4`, FDE
+  `0xEF721E4..0xEF72684`. The `_attack` transaction path constructs the
+  verified lambda function object around `0xEF72368`.
+- `GameMode::startDestroyBlock(BlockPos const&, unsigned char, bool&)`: RVA
+  `0xEF72684`, FDE `0xEF72684..0xEF729FC`. ABI evidence includes the face in
+  `w2`, output boolean in `x3` (cleared at `0xEF72704`), and the verified helper
+  call at `0xEF72734 -> 0xEF729FC`.
+- `GameMode::baseUseItem(ItemStack const&)`: RVA `0xEF75578`, FDE
+  `0xEF75578..0xEF7590C`; lambda vptr references at `0xEF75684 -> 0x12270308`
+  and `0xEF756B0 -> 0x12270388`.
+- `GameMode::baseUseItemAsAttack(ItemStack const&, Vec3 const&)`: RVA
+  `0xEF75B9C`, FDE `0xEF75B9C..0xEF75F40`; lambda vptr references at
+  `0xEF75CB4 -> 0x12270408` and `0xEF75CE0 -> 0x12270488`.
+- `GameMode::releaseUsingItem()`: RVA `0xEF76108`, FDE
+  `0xEF76108..0xEF764EC`; lambda vptr references at
+  `0xEF76298 -> 0x12270508` and `0xEF762A4 -> 0x12270588`.
 
-Trident already uses `q.item_slot_to_bone_name(c.item_slot)`. On this build native `off_hand` resolves to `leftitem`; no binding-mode or owner-bone mutation is required.
-
-The exact legacy attachment route helper is `0x9B368D4`. Its seven direct BL callers are:
-
-```text
-0x9B361AC 0x9B361D8 0x9B36204 0x9B36230
-0x9B3625C 0x9B36314 0x9B36370
-```
-
-`0x9B36314` is mainhand slot 5 and `0x9B36370` is offhand slot 6. The helper evaluates `variable.is_first_person` natively through:
-
-- actor type helper: `0xEC8A478`
-- Molang variable lookup: `0xEE63508`
-- Molang value view: `0xEEA721C`
-- string RVA: `0x2652B1D`
-- FNV/hash: `0x2739F381184DE4AE`
-- accepted legacy first-person actor type: `0x13F`
-
-The mod opens a synchronous RAII scope only for **Trident + slot 6 + native first-person=true** and lets the original route/draw execute normally.
-
-## Trident local pose composition
-
-Attachment bone composition is `0xF147ED0`; the relevant attachment caller is `0x9B254C8`.
-
-Bone state layout used by the renderer:
-
-```text
-+0x30 composed/owner matrix seed
-+0x70 local position xyz
-+0x7C local rotation xyz
-+0x88 local scale xyz
-+0xDE composed-matrix-present flag
-```
-
-`+0xDE` does not mean "return immediately". When set, Minecraft seeds the output from `+0x30` and then continues applying the local pose. Therefore the mod never clears `+0xDE` and never overwrites `+0x30`.
-
-Inside the exact Trident offhand FPP scope and only for the `pole` bone, the current animated local pose is mirrored before the original composition call:
-
-```text
-position.x = -position.x
-rotation.y = -rotation.y
-rotation.z = -rotation.z
-```
-
-Position Y/Z, rotation X and scale remain native. The original local pose is restored immediately after composition. Because the current animated pose is mirrored rather than a hard-coded rest pose, normal wield/raise/use animation can remain under Minecraft's animation system.
-
-## Removed renderer architecture
-
-v0.2.63 intentionally removes the old forced generic hand-equipped dispatch, Bow weak-item mask, pending TPP latch, Bow native-draw suppression, Trident binding/cache mutation, final-matrix horizontal/tilt corrections and Bow/Trident temporary sliders. Bow and Trident now remain on one native attachment path.
-
-## Storage/routing remains independent
-
-v0.2.62's storage architecture remains unchanged: Item construction enables the native offhand capability and the central automatic-insertion planner excludes container slot 34 from generic automatic destinations. No `ContainerValidation` hook is reintroduced.
+The block-destroy lifecycle beyond `startDestroyBlock` is deliberately **not**
+enabled yet. Functions around `0xEF72AF4` / `0xEF72F9C` have strong destroy
+path evidence, but continue/finalize/cancel semantics are not yet uniquely
+proven. Mining routing must remain fail-closed until those edges and the native
+tool-suitability boundary are fingerprinted.
