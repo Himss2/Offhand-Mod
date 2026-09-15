@@ -1,4 +1,4 @@
-name: Native-only v0.2.63 CI
+name: v0.2.64 Device Correction CI
 
 on:
   push:
@@ -13,15 +13,17 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Materialize native-only source payload
+      - name: Materialize exact v0.2.63 baseline
         shell: bash
         run: |
           set -euo pipefail
-          echo '510adeb7418f3f2fbdf04328b26a2b6519c7dce3d46b40bac7edce09eed41093  .ci-payload/native-only-v0263.part1' > /tmp/parts.sha256
-          echo '6597008502098b16c46b75517524f3546c003ba5ac0f8fb26e73541e92bbb574  .ci-payload/native-only-v0263.part2' >> /tmp/parts.sha256
-          echo '7f9d659076fe10661101b199668710a9e5b12edd00e7caad8e239366bb56c2e7  .ci-payload/native-only-v0263.part3a' >> /tmp/parts.sha256
-          echo '6ad7d0501b4949d1c504c95034e05adb8c59f52e443c4b7e1112efc1b3f4543c  .ci-payload/native-only-v0263.part3b' >> /tmp/parts.sha256
-          sha256sum -c /tmp/parts.sha256
+          cat > /tmp/v0263-parts.sha256 <<'EOF'
+          510adeb7418f3f2fbdf04328b26a2b6519c7dce3d46b40bac7edce09eed41093  .ci-payload/native-only-v0263.part1
+          6597008502098b16c46b75517524f3546c003ba5ac0f8fb26e73541e92bbb574  .ci-payload/native-only-v0263.part2
+          7f9d659076fe10661101b199668710a9e5b12edd00e7caad8e239366bb56c2e7  .ci-payload/native-only-v0263.part3a
+          6ad7d0501b4949d1c504c95034e05adb8c59f52e443c4b7e1112efc1b3f4543c  .ci-payload/native-only-v0263.part3b
+          EOF
+          sha256sum -c /tmp/v0263-parts.sha256
           cat .ci-payload/native-only-v0263.part1 \
               .ci-payload/native-only-v0263.part2 \
               .ci-payload/native-only-v0263.part3a \
@@ -30,13 +32,38 @@ jobs:
           echo 'fa7d288030c7f51c78cf4a54bb305955002da222ab03ed32a2e38100619f6ad6  /tmp/native-only-v0263.tar.gz' | sha256sum -c -
           tar -xzf /tmp/native-only-v0263.tar.gz -C "$GITHUB_WORKSPACE"
           rm -f src/runtime/OffhandBlockRenderPatch.cpp
-          tar --exclude=.git --exclude=.ci-payload -czf /tmp/native-only-v0263-source.tar.gz .
 
-      - name: Upload reconstructed v0.2.63 source
+      - name: Apply v0.2.64 device-correction overlay
+        shell: bash
+        run: |
+          set -euo pipefail
+          cat > /tmp/v0264-parts.sha256 <<'EOF'
+          dd39384b40ff43a29d8bf3277661a74cdb403340ed97e929155df1f9dd10e285  .ci-payload/v0264-overlay.part1
+          3bd3190c630f916d35939d29fa5756205ee3aecda988146390a5f430ba846507  .ci-payload/v0264-overlay.part2
+          2c2ec790e00e5d0b95add16eb289c03999a2fcff468f6f172b49328dfebff993  .ci-payload/v0264-overlay.part3
+          EOF
+          sha256sum -c /tmp/v0264-parts.sha256
+          cat .ci-payload/v0264-overlay.part1 \
+              .ci-payload/v0264-overlay.part2 \
+              .ci-payload/v0264-overlay.part3 \
+            | base64 -d > /tmp/v0264-overlay.tar.gz
+          echo '5fdb08370a7ee4b1b52db7948947d168f93d6959c8313edeab7f0efec1064da8  /tmp/v0264-overlay.tar.gz' | sha256sum -c -
+          tar -xzf /tmp/v0264-overlay.tar.gz -C "$GITHUB_WORKSPACE"
+          if [[ -f .delete-list ]]; then
+            while IFS= read -r path; do
+              [[ -z "$path" ]] || rm -f "$path"
+            done < .delete-list
+            rm -f .delete-list
+          fi
+          grep -q '"version": "0.2.64"' manifest.json
+          tar --exclude=.git --exclude=.ci-payload --exclude=build --exclude=dist \
+            -czf /tmp/levi-offhand-v0.2.64-source.tar.gz .
+
+      - name: Upload reconstructed v0.2.64 source
         uses: actions/upload-artifact@v4
         with:
-          name: levi-offhand-native-only-v0.2.63-source
-          path: /tmp/native-only-v0263-source.tar.gz
+          name: levi-offhand-v0.2.64-source
+          path: /tmp/levi-offhand-v0.2.64-source.tar.gz
 
       - name: Set up Android SDK
         uses: android-actions/setup-android@v3
@@ -57,11 +84,12 @@ jobs:
 
       - name: Inspect output
         run: |
-          unzip -l dist/arm64-v8a/levi-offhand-v0.2.63.levipack
+          unzip -t dist/arm64-v8a/levi-offhand-v0.2.64.levipack
+          unzip -l dist/arm64-v8a/levi-offhand-v0.2.64.levipack
           file build/android-arm64-v8a-Release/out/arm64-v8a/liblevi_offhand.so
 
       - name: Upload levipack
         uses: actions/upload-artifact@v4
         with:
-          name: levi-offhand-native-only-v0.2.63
-          path: dist/arm64-v8a/levi-offhand-v0.2.63.levipack
+          name: levi-offhand-v0.2.64-device-correction
+          path: dist/arm64-v8a/levi-offhand-v0.2.64.levipack
