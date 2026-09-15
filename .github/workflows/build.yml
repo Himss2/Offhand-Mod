@@ -18,7 +18,7 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Materialize v0.2.65 native-first source
+      - name: Materialize v0.2.65 source
         run: |
           cat \
             .github/v0265-source.tar.gz.b64.part00 \
@@ -29,19 +29,44 @@ jobs:
             > /tmp/v0265-source.b64
           echo "8d603b059375644504eaf3afea9569e61ea53fe7b309ffafc3e068090812f78b  /tmp/v0265-source.b64" \
             | sha256sum --check --strict
-          base64 --decode /tmp/v0265-source.b64 \
-            > /tmp/v0265-source.tar.gz
+          base64 --decode /tmp/v0265-source.b64 > /tmp/v0265-source.tar.gz
           echo "fa45135e0bd2ef23c344b73d21c099c2eb25dec33b48cb1e6df51dee8ffb9443  /tmp/v0265-source.tar.gz" \
             | sha256sum --check --strict
           tar -xzf /tmp/v0265-source.tar.gz
           rm -f src/runtime/OffhandBlockRenderPatch.cpp
+
+      - name: Apply v0.2.66 native3D frame overlay
+        run: |
+          cat \
+            .github/v0266-overlay.chunk00 \
+            .github/v0266-overlay.chunk01 \
+            .github/v0266-overlay.chunk02 \
+            .github/v0266-overlay.chunk03 \
+            .github/v0266-overlay.chunk04 \
+            .github/v0266-overlay.chunk05 \
+            .github/v0266-overlay.chunk06 \
+            .github/v0266-overlay.chunk07 \
+            .github/v0266-overlay.chunk08 \
+            .github/v0266-overlay.chunk09 \
+            .github/v0266-overlay.chunk10 \
+            .github/v0266-overlay.chunk11 \
+            > /tmp/v0266-overlay.patch.gz.b64
+          echo "ebb666943e16439fb8a8c23633e7400c6389b2fe20bf61e95d6cdfb82700097f  /tmp/v0266-overlay.patch.gz.b64" \
+            | sha256sum --check --strict
+          base64 --decode /tmp/v0266-overlay.patch.gz.b64 > /tmp/v0266-overlay.patch.gz
+          echo "375621adb4025a6dd26efb45e9499a7a4d07913a002ee494a6f859f17c320b74  /tmp/v0266-overlay.patch.gz" \
+            | sha256sum --check --strict
+          gzip -dc /tmp/v0266-overlay.patch.gz > /tmp/v0266-overlay.patch
+          echo "413b4c44dc582875b5e525bf34356197534e1c3c23ff866e57f782fe647c6ad1  /tmp/v0266-overlay.patch" \
+            | sha256sum --check --strict
+          patch -p1 < /tmp/v0266-overlay.patch
           test "$(git hash-object src/render/OffhandBlockRenderPatch.cpp)" = \
-            "49771fb7def73855213dc547664d3f65dd91c421"
+            "e162334d020c2b026a85976ec379da7fbbcbbf7d"
           test "$(git hash-object src/render/NativeAttachmentFix.hpp)" = \
-            "fb046703d462402461b34b2885e7cc87c3bc2094"
+            "2585bc4fb14c295686206cb90680fca83d5175ad"
           test "$(git hash-object manifest.json)" = \
-            "78f9a3976f93a1bf292d246e31063ff62e5b0fbd"
-          grep -q '"version": "0.2.65"' manifest.json
+            "00c364e8d1c11b955bf0c10711f4b6cbaf3cfec2"
+          grep -q '"version": "0.2.66"' manifest.json
 
       - name: Set up Android SDK
         uses: android-actions/setup-android@v3
@@ -55,45 +80,38 @@ jobs:
             "platforms;android-28" \
             "ndk;28.2.13676358"
           sudo apt-get update
-          sudo apt-get install -y \
-            ninja-build \
-            zip
+          sudo apt-get install -y ninja-build zip
 
       - name: Run native attachment tests
-        run: |
-          bash tests/run_native_attachment_fix_tests.sh
+        run: bash tests/run_native_attachment_fix_tests.sh
 
       - name: Build
         env:
           LEVI_NDK_VERSION: "28.2.13676358"
-        run: |
-          bash ./scripts/build.sh
+        run: bash ./scripts/build.sh
 
       - name: Inspect output
         run: |
-          unzip -t \
-            dist/arm64-v8a/levi-offhand-v0.2.65.levipack
-          unzip -l \
-            dist/arm64-v8a/levi-offhand-v0.2.65.levipack
-          file \
-            build/android-arm64-v8a-Release/out/arm64-v8a/liblevi_offhand.so
+          unzip -t dist/arm64-v8a/levi-offhand-v0.2.66.levipack
+          unzip -l dist/arm64-v8a/levi-offhand-v0.2.66.levipack
+          file build/android-arm64-v8a-Release/out/arm64-v8a/liblevi_offhand.so
           python3 - <<'PY'
           import json, zipfile
-          path='dist/arm64-v8a/levi-offhand-v0.2.65.levipack'
+          path='dist/arm64-v8a/levi-offhand-v0.2.66.levipack'
           with zipfile.ZipFile(path) as z:
               assert set(z.namelist()) == {'manifest.json','liblevi_offhand.so'}
               manifest=json.loads(z.read('manifest.json'))
-              assert manifest['version']=='0.2.65'
+              assert manifest['version']=='0.2.66'
           PY
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
-          name: levi-offhand-arm64-v0.2.65
-          path: dist/arm64-v8a/levi-offhand-v0.2.65.levipack
+          name: levi-offhand-arm64-v0.2.66
+          path: dist/arm64-v8a/levi-offhand-v0.2.66.levipack
 
       - name: Publish tagged release
         if: startsWith(github.ref, 'refs/tags/v')
         uses: softprops/action-gh-release@v2
         with:
-          files: dist/arm64-v8a/levi-offhand-v0.2.65.levipack
+          files: dist/arm64-v8a/levi-offhand-v0.2.66.levipack
