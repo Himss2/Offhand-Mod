@@ -7,6 +7,23 @@ test_binary="${TMPDIR:-/tmp}/levi-offhand-native-attachment-fix-test"
 
 python3 "$repo_root/tests/native_attachment_source_contract.py"
 
+hand_action_policy_test_binary="${TMPDIR:-/tmp}/levi-offhand-hand-action-routing-core-test"
+
+g++ \
+    -std=c++20 \
+    -Wall \
+    -Wextra \
+    -Wpedantic \
+    -Werror \
+    -fsanitize=address,undefined \
+    -fno-omit-frame-pointer \
+    -I"$repo_root/src" \
+    "$repo_root/tests/hand_action_routing_core_test.cpp" \
+    -o "$hand_action_policy_test_binary"
+
+ASAN_OPTIONS=detect_leaks=0 "$hand_action_policy_test_binary"
+printf '%s\n' "hand action routing core test passed"
+
 g++ \
     -std=c++20 \
     -Wall \
@@ -31,7 +48,7 @@ else
         "native attachment binary contract skipped: LEVI_MCPE_LIBRARY unset"
 fi
 
-python3 "$repo_root/tests/v0263_native_only_renderer_contract.py"
+python3 "$repo_root/tests/v0267_reference_carriers_contract.py"
 
 routing_test_binary="${TMPDIR:-/tmp}/levi-offhand-v0262-routing-test"
 
