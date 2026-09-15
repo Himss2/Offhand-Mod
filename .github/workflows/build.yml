@@ -18,27 +18,23 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Materialize v0.2.63 native renderer baseline
-        run: |
-          base64 --decode .github/native-only-renderer.patch.gz.b64 \
-            | gzip --decompress > /tmp/native-only-renderer.patch
-          patch -p1 < /tmp/native-only-renderer.patch
-          test "$(git hash-object src/render/OffhandBlockRenderPatch.cpp)" = \
-            "5f6f654705fea14935d1a693746df203e3c76345"
-
-      - name: Apply v0.2.65 native-first weapon overlay
+      - name: Materialize v0.2.65 native-first source
         run: |
           cat \
-            .github/v0265-overlay.patch.gz.b64.part00 \
-            .github/v0265-overlay.patch.gz.b64.part01 \
-            .github/v0265-overlay.patch.gz.b64.part02 \
-            .github/v0265-overlay.patch.gz.b64.part03 \
-            > /tmp/v0265-overlay.b64
-          echo "45a95b48f2316309ad746af1871c67a786a63a501b2baf66da3760d21a505265  /tmp/v0265-overlay.b64" \
+            .github/v0265-source.tar.gz.b64.part00 \
+            .github/v0265-source.tar.gz.b64.part01 \
+            .github/v0265-source.tar.gz.b64.part02 \
+            .github/v0265-source.tar.gz.b64.part03 \
+            .github/v0265-source.tar.gz.b64.part04 \
+            > /tmp/v0265-source.b64
+          echo "8d603b059375644504eaf3afea9569e61ea53fe7b309ffafc3e068090812f78b  /tmp/v0265-source.b64" \
             | sha256sum --check --strict
-          base64 --decode /tmp/v0265-overlay.b64 \
-            | gzip --decompress > /tmp/v0265-overlay.patch
-          patch -p1 < /tmp/v0265-overlay.patch
+          base64 --decode /tmp/v0265-source.b64 \
+            > /tmp/v0265-source.tar.gz
+          echo "fa45135e0bd2ef23c344b73d21c099c2eb25dec33b48cb1e6df51dee8ffb9443  /tmp/v0265-source.tar.gz" \
+            | sha256sum --check --strict
+          tar -xzf /tmp/v0265-source.tar.gz
+          rm -f src/runtime/OffhandBlockRenderPatch.cpp
           test "$(git hash-object src/render/OffhandBlockRenderPatch.cpp)" = \
             "49771fb7def73855213dc547664d3f65dd91c421"
           test "$(git hash-object src/render/NativeAttachmentFix.hpp)" = \
