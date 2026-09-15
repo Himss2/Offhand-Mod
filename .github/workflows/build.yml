@@ -1,37 +1,24 @@
 name: Build Levi Offhand
 
 on:
-
   push:
-
     branches:
       - main
       - "test/**"
-
     tags:
       - "v*"
-
-
   pull_request:
-
-
   workflow_dispatch:
 
-
 jobs:
-
   build-arm64:
-
     runs-on: ubuntu-latest
 
-
     steps:
-
       - name: Checkout
         uses: actions/checkout@v4
 
-
-      - name: Materialize native-only renderer
+      - name: Materialize v0.2.63 native renderer baseline
         run: |
           base64 --decode .github/native-only-renderer.patch.gz.b64 \
             | gzip --decompress > /tmp/native-only-renderer.patch
@@ -39,68 +26,76 @@ jobs:
           test "$(git hash-object src/render/OffhandBlockRenderPatch.cpp)" = \
             "5f6f654705fea14935d1a693746df203e3c76345"
 
+      - name: Apply v0.2.65 native-first weapon overlay
+        run: |
+          cat \
+            .github/v0265-overlay.patch.gz.b64.part00 \
+            .github/v0265-overlay.patch.gz.b64.part01 \
+            .github/v0265-overlay.patch.gz.b64.part02 \
+            .github/v0265-overlay.patch.gz.b64.part03 \
+            > /tmp/v0265-overlay.b64
+          echo "45a95b48f2316309ad746af1871c67a786a63a501b2baf66da3760d21a505265  /tmp/v0265-overlay.b64" \
+            | sha256sum --check --strict
+          base64 --decode /tmp/v0265-overlay.b64 \
+            | gzip --decompress > /tmp/v0265-overlay.patch
+          patch -p1 < /tmp/v0265-overlay.patch
+          test "$(git hash-object src/render/OffhandBlockRenderPatch.cpp)" = \
+            "49771fb7def73855213dc547664d3f65dd91c421"
+          test "$(git hash-object src/render/NativeAttachmentFix.hpp)" = \
+            "fb046703d462402461b34b2885e7cc87c3bc2094"
+          test "$(git hash-object manifest.json)" = \
+            "78f9a3976f93a1bf292d246e31063ff62e5b0fbd"
+          grep -q '"version": "0.2.65"' manifest.json
 
       - name: Set up Android SDK
         uses: android-actions/setup-android@v3
 
-
       - name: Install NDK and tools
         run: |
-
           sdkmanager \
+            "platform-tools" \
             "platforms;android-28" \
             "ndk;28.2.13676358"
-
           sudo apt-get update
-
           sudo apt-get install -y \
             ninja-build \
             zip
 
-
       - name: Run native attachment tests
         run: |
-
           bash tests/run_native_attachment_fix_tests.sh
-
 
       - name: Build
         env:
-
           LEVI_NDK_VERSION: "28.2.13676358"
-
         run: |
-
           bash ./scripts/build.sh
-
 
       - name: Inspect output
         run: |
-
+          unzip -t \
+            dist/arm64-v8a/levi-offhand-v0.2.65.levipack
           unzip -l \
-            dist/arm64-v8a/levi-offhand-v0.2.63.levipack
-
+            dist/arm64-v8a/levi-offhand-v0.2.65.levipack
           file \
             build/android-arm64-v8a-Release/out/arm64-v8a/liblevi_offhand.so
-
+          python3 - <<'PY'
+          import json, zipfile
+          path='dist/arm64-v8a/levi-offhand-v0.2.65.levipack'
+          with zipfile.ZipFile(path) as z:
+              assert set(z.namelist()) == {'manifest.json','liblevi_offhand.so'}
+              manifest=json.loads(z.read('manifest.json'))
+              assert manifest['version']=='0.2.65'
+          PY
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
-
         with:
-
-          name: levi-offhand-arm64-v0.2.63
-
-          path: >-
-            dist/arm64-v8a/levi-offhand-v0.2.63.levipack
-
+          name: levi-offhand-arm64-v0.2.65
+          path: dist/arm64-v8a/levi-offhand-v0.2.65.levipack
 
       - name: Publish tagged release
         if: startsWith(github.ref, 'refs/tags/v')
-
         uses: softprops/action-gh-release@v2
-
         with:
-
-          files: >-
-            dist/arm64-v8a/levi-offhand-v0.2.63.levipack
+          files: dist/arm64-v8a/levi-offhand-v0.2.65.levipack
