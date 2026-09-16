@@ -76,4 +76,46 @@ template <typename MainAttempt, typename OffAttempt, typename Fallback>
     };
 }
 
+struct MiningRouteResult {
+    ActionHand hand{ActionHand::MainHand};
+    bool nativeResult{false};
+    bool usedFallback{false};
+};
+
+template <typename MainAttempt, typename OffAttempt, typename Fallback>
+[[nodiscard]] MiningRouteResult routeMiningStart(
+    bool mainSuitableForTarget,
+    bool offSuitableForTarget,
+    MainAttempt&& mainAttempt,
+    OffAttempt&& offAttempt,
+    Fallback&& fallback,
+    bool& destroyedOut
+) {
+    (void)destroyedOut;
+
+    if (mainSuitableForTarget) {
+        ScopedActionHand scope(ActionHand::MainHand, ActionKind::MineBlock);
+        return MiningRouteResult{
+            ActionHand::MainHand,
+            static_cast<bool>(std::forward<MainAttempt>(mainAttempt)()),
+            false,
+        };
+    }
+
+    if (offSuitableForTarget) {
+        ScopedActionHand scope(ActionHand::OffHand, ActionKind::MineBlock);
+        return MiningRouteResult{
+            ActionHand::OffHand,
+            static_cast<bool>(std::forward<OffAttempt>(offAttempt)()),
+            false,
+        };
+    }
+
+    return MiningRouteResult{
+        ActionHand::MainHand,
+        static_cast<bool>(std::forward<Fallback>(fallback)()),
+        true,
+    };
+}
+
 } // namespace levioffhand::runtime
