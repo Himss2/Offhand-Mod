@@ -33,6 +33,7 @@ def main() -> int:
         "kDestroyRateContextRva = 0xF08CC44",
         "kBaseUseItemRva = 0xEF75578",
         "kReleaseUsingItemRva = 0xEF76108",
+        "kPlayerGameModeGetterRva = 0xF0CD850",
         "upperUseDetour(",
         "destroyRateContextDetour(",
         "selectedItemDetour(",
@@ -43,9 +44,20 @@ def main() -> int:
         "kDestroyRateContextCopySize = 0x20",
         "[SemanticBridge] upper-use OFFHAND retry handled",
         "[SemanticBridge] destroy-rate context redirected to OFFHAND",
-        "[ActionDiag] attack nativeResult=",
+        "[ActionDiag] attack selected-item bridge=OFFHAND",
     ):
         require(bridge, token, "NativeSemanticBridge")
+
+    # The upper dispatcher must first run unchanged and retry only after the
+    # native MAIN path returns unhandled. The retry owns an OFFHAND action scope,
+    # while the selected-item hook supplies the actual offhand stack.
+    for token in (
+        "const bool mainHandled = original(controller, inputFlags, interaction, target)",
+        "if (mainHandled || player == nullptr)",
+        "ScopedActionHand actionScope(ActionHand::OffHand, ActionKind::UseAir)",
+        "offHandled = original(controller, inputFlags, interaction, target)",
+    ):
+        require(bridge, token, "NativeSemanticBridge upper-use retry")
 
     # The native destroy-rate context must be copied and edited locally. The
     # original Minecraft context/inventory may not be mutated to fake selection.
@@ -85,7 +97,8 @@ def main() -> int:
 
     print(
         "v0.2.68 semantic bridge source contract passed: native mining suitability, "
-        "scoped destroy-rate stack redirect, upper-use retry, and attack diagnostics"
+        "scoped destroy-rate stack redirect, upper-use retry, release ownership, "
+        "and attack selected-stack diagnostics"
     )
     return 0
 
