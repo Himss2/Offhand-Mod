@@ -115,8 +115,8 @@ def main() -> int:
         if token not in probe_text:
             raise AssertionError(f"NativeCapabilityProbe missing exact ABI marker {token!r}")
 
-    # Task 5 RED/GREEN contract: combat capability comes from the Item virtual
-    # getAttackDamage slot, not from item identifiers or generic punch success.
+    # Combat capability comes from the Item virtual getAttackDamage slot, not
+    # from item identifiers or generic punch success.
     for token in (
         "kAttackRva = 0xEF721E4",
         "attackDetour(",
@@ -145,6 +145,77 @@ def main() -> int:
         if token not in probe_text:
             raise AssertionError(f"native combat probe missing exact ABI marker {token!r}")
 
+    # Mining must pin the chosen stack for the complete native GameMode
+    # destroy lifecycle. Suitability is target-sensitive and obtained from
+    # Item::getDestroySpeed(stack, block), never from item-name tables.
+    for token in (
+        "kStartDestroyBlockRva = 0xEF72684",
+        "kDestroyBlockRva = 0xEF72C18",
+        "kContinueDestroyBlockRva = 0xEF72F9C",
+        "kStopDestroyBlockRva = 0xEF7398C",
+        "startDestroyBlockDetour(",
+        "destroyBlockDetour(",
+        "continueDestroyBlockDetour(",
+        "stopDestroyBlockDetour(",
+        "routeMiningStart(",
+        "ActionSessionKind::Mining",
+    ):
+        if token not in router_text:
+            raise AssertionError(f"native mining router missing required marker {token!r}")
+
+    start_mining = function_body(router_text, "HandActionRouter::startDestroyBlockDetour(")
+    for token in (
+        "blockAt(player, blockPos)",
+        "realMiningCapability(mainStack, targetBlock)",
+        "realMiningCapability(offStack, targetBlock)",
+        "routeMiningStart(",
+        "ActionSessionKind::Mining",
+        "stackItemIdentity(offStack)",
+        "targetIdentityForBlockPos(blockPos)",
+    ):
+        if token not in start_mining:
+            raise AssertionError(f"start-destroy detour missing mining marker {token!r}")
+
+    for marker in (
+        "HandActionRouter::continueDestroyBlockDetour(",
+        "HandActionRouter::destroyBlockDetour(",
+        "HandActionRouter::stopDestroyBlockDetour(",
+    ):
+        body = function_body(router_text, marker)
+        for token in (
+            "ActionSessionKind::Mining",
+            "ActionHand::OffHand",
+            "targetIdentityForBlockPos(blockPos)",
+            "stackItemIdentity(offStack)",
+            "ScopedRoutedPlayer",
+        ):
+            if token not in body:
+                raise AssertionError(f"{marker} missing pinned mining lifecycle marker {token!r}")
+
+    if "session.finish()" not in function_body(router_text, "HandActionRouter::destroyBlockDetour("):
+        raise AssertionError("destroyBlock must finish the pinned mining session")
+    if "session.cancel()" not in function_body(router_text, "HandActionRouter::stopDestroyBlockDetour("):
+        raise AssertionError("stopDestroyBlock must cancel the pinned mining session")
+
+    selected = function_body(router_text, "HandActionRouter::selectedItemDetour(")
+    for token in (
+        "ActionSessionKind::Mining",
+        "stackItemIdentity(offStack)",
+    ):
+        if token not in selected:
+            raise AssertionError(f"selected-item detour lacks mining-session validation {token!r}")
+
+    for token in (
+        "kActorBlockSourceRva = 0xEC844CC",
+        "kBlockSourceGetBlockSlot = 2",
+        "kItemGetDestroySpeedSlot = 89",
+        "blockAt(",
+        "realMiningCapability(",
+        "stackItemIdentity(",
+    ):
+        if token not in probe_text:
+            raise AssertionError(f"native mining probe missing exact ABI marker {token!r}")
+
     for forbidden in (
         "dlsym(",
         "_ZNK6Player15getSelectedItemEv",
@@ -162,7 +233,7 @@ def main() -> int:
     print(
         "v0.2.68 action routing source contract passed: "
         "exact-RVA hand access, MAIN-first item-use, native active-stack validation, "
-        "native getAttackDamage combat routing"
+        "native combat routing, and target-sensitive pinned mining lifecycle"
     )
     return 0
 
