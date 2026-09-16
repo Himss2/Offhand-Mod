@@ -23,6 +23,15 @@ UPPER_USE_CALLS = {
     0x9433030: 0xEF75578,  # GameMode::baseUseItem
 }
 
+ATTACK_CALLBACK_RVA = 0xEF886A8
+ATTACK_CALLBACK_PROLOGUE = bytes.fromhex(
+    "ff c3 01 d1 fd 7b 03 a9 f7 23 00 f9 f6 57 05 a9"
+)
+ATTACK_CALLBACK_CALLS = {
+    0xEF886DC: 0xF0B900C,  # deferred callback -> Player::getSelectedItem
+}
+ATTACK_CALLBACK_VTABLE_RELOC = 0x12270128
+
 DESTROY_RATE_CONTEXT_RVA = 0xF08CC44
 DESTROY_RATE_CONTEXT_PROLOGUE = bytes.fromhex(
     "ff 03 02 d1 e9 23 02 6d fd 7b 03 a9 f9 23 00 f9"
@@ -116,6 +125,19 @@ def main() -> int:
             fail(f"upper-use BL 0x{callsite:X}: expected 0x{target:X}, got {actual!r}")
 
     if data[
+        ATTACK_CALLBACK_RVA:
+        ATTACK_CALLBACK_RVA + len(ATTACK_CALLBACK_PROLOGUE)
+    ] != ATTACK_CALLBACK_PROLOGUE:
+        fail("deferred attack callback fingerprint mismatch")
+    for callsite, target in ATTACK_CALLBACK_CALLS.items():
+        actual = decode_bl_target(data, callsite)
+        if actual != target:
+            fail(
+                f"deferred attack callback BL 0x{callsite:X}: "
+                f"expected 0x{target:X}, got {actual!r}"
+            )
+
+    if data[
         DESTROY_RATE_CONTEXT_RVA:
         DESTROY_RATE_CONTEXT_RVA + len(DESTROY_RATE_CONTEXT_PROLOGUE)
     ] != DESTROY_RATE_CONTEXT_PROLOGUE:
@@ -145,6 +167,13 @@ def main() -> int:
         fail("Player game-mode getter fingerprint mismatch")
 
     relocs = relative_relocations(path)
+    if relocs.get(ATTACK_CALLBACK_VTABLE_RELOC) != ATTACK_CALLBACK_RVA:
+        fail(
+            "deferred attack callback vtable relocation mismatch: "
+            f"expected 0x{ATTACK_CALLBACK_RVA:X}, "
+            f"got {relocs.get(ATTACK_CALLBACK_VTABLE_RELOC)!r}"
+        )
+
     for address, expected in CAN_DESTROY_SPECIAL_RELOCS.items():
         actual = relocs.get(address)
         if actual != expected:
@@ -158,8 +187,8 @@ def main() -> int:
 
     print(
         "v0.2.68 semantic bridge binary contract passed: upper-use dispatcher, "
-        "destroy-rate context stack slot, Player game-mode ownership, and "
-        "canDestroySpecial ABI"
+        "deferred attack selected-stack callback, destroy-rate context stack slot, "
+        "Player game-mode ownership, and canDestroySpecial ABI"
     )
     return 0
 
