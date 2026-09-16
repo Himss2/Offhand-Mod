@@ -21,6 +21,7 @@ constexpr std::uintptr_t kStackIsNullRva = 0xF63E760;
 constexpr std::uintptr_t kPlayerIsUsingItemRva = 0xF0B8094;
 constexpr std::uintptr_t kItemInUseStackRva = 0xF0B80B4;
 constexpr std::uintptr_t kStackDiffersForUseRva = 0xF6443F4;
+constexpr std::uintptr_t kActorBlockSourceRva = 0xEC844CC;
 
 constexpr std::size_t kGameModePlayerOffset = sizeof(void*);
 
@@ -28,9 +29,11 @@ constexpr std::size_t kGameModePlayerOffset = sizeof(void*);
 // SharedCounter<Item>* and the SharedCounter's first field is Item*.
 constexpr std::size_t kItemStackItemOffset = sizeof(void*);
 
-// Item vtable slot proven against the 1.26.45.1 base/Weapon/Digger/Trident
-// relocation tables. Base Item::getAttackDamage() returns exactly zero.
+// Exact native virtual slots for 1.26.45.1. These are also guarded by the
+// binary relocation contract so a game update cannot silently reuse them.
+constexpr std::size_t kBlockSourceGetBlockSlot = 2;
 constexpr std::size_t kItemGetAttackDamageSlot = 38;
+constexpr std::size_t kItemGetDestroySpeedSlot = 89;
 
 constexpr std::array<std::uint8_t, 16> kSelectedItemFingerprint{
     0x08, 0xB8, 0x42, 0xF9, 0x09, 0xC1, 0x42, 0x39,
@@ -54,6 +57,10 @@ constexpr std::array<std::uint8_t, 8> kItemInUseStackFingerprint{
 constexpr std::array<std::uint8_t, 16> kStackDiffersForUseFingerprint{
     0x08, 0x88, 0x40, 0x39, 0x29, 0x88, 0x40, 0x39,
     0x1F, 0x01, 0x09, 0x6B, 0x01, 0x01, 0x00, 0x54,
+};
+constexpr std::array<std::uint8_t, 16> kActorBlockSourceFingerprint{
+    0xFD, 0x7B, 0xBE, 0xA9, 0xF4, 0x4F, 0x01, 0xA9,
+    0xFD, 0x03, 0x00, 0x91, 0xF3, 0x03, 0x00, 0xAA,
 };
 
 struct ModuleSearchState {
@@ -159,6 +166,10 @@ bool NativeCapabilityProbe::install(pl::mod::ModContext& context) noexcept {
         kStackDiffersForUseRva,
         kStackDiffersForUseFingerprint
     );
+    const auto actorBlockSourceTarget = resolveExactTarget(
+        kActorBlockSourceRva,
+        kActorBlockSourceFingerprint
+    );
 
     mGetSelectedItem = reinterpret_cast<SelectedItemFn>(selectedItemTarget);
     mGetOffhandSlot = reinterpret_cast<OffhandItemFn>(offhandSlotTarget);
@@ -172,6 +183,9 @@ bool NativeCapabilityProbe::install(pl::mod::ModContext& context) noexcept {
     mStackDiffersForUse = reinterpret_cast<StackDiffersForUseFn>(
         stackDiffersTarget
     );
+    mGetBlockSource = reinterpret_cast<ActorBlockSourceFn>(
+        actorBlockSourceTarget
+    );
     mSelectedItemTarget = selectedItemTarget;
 
     mAvailable =
@@ -180,18 +194,19 @@ bool NativeCapabilityProbe::install(pl::mod::ModContext& context) noexcept {
         mStackIsNull != nullptr &&
         mPlayerIsUsingItem != nullptr &&
         mItemInUseStack != nullptr &&
-        mStackDiffersForUse != nullptr;
+        mStackDiffersForUse != nullptr &&
+        mGetBlockSource != nullptr;
 
     if (!mAvailable) {
         context.logger().warn(
-            "[NativeCapabilityProbe] fail-closed: exact 1.26.45.1 hand accessor fingerprint mismatch"
+            "[NativeCapabilityProbe] fail-closed: exact 1.26.45.1 capability fingerprint mismatch"
         );
         uninstall(context);
         return false;
     }
 
     context.logger().info(
-        "[NativeCapabilityProbe] exact-RVA hand/use accessors and Item combat ABI resolved"
+        "[NativeCapabilityProbe] exact-RVA hand/use/block accessors and Item capability ABI resolved"
     );
     return true;
 }
@@ -203,6 +218,7 @@ void NativeCapabilityProbe::uninstall(pl::mod::ModContext& context) noexcept {
     mPlayerIsUsingItem = nullptr;
     mItemInUseStack = nullptr;
     mStackDiffersForUse = nullptr;
+    mGetBlockSource = nullptr;
     mSelectedItemTarget = 0;
     mAvailable = false;
     context.logger().info("[NativeCapabilityProbe] accessors released");
@@ -348,6 +364,89 @@ bool NativeCapabilityProbe::realCombatCapability(const void* stack) const noexce
         const_cast<void*>(function)
     );
     return getAttackDamage(item) > 0;
+}
+
+const void* NativeCapabilityProbe::blockAt(
+    const void* player,
+    const void* blockPos
+) const noexcept {
+    if (
+        !available() ||
+        player == nullptr ||
+        blockPos == nullptr ||
+        mGetBlockSource == nullptr
+    ) {
+        return nullptr;
+    }
+
+    void* blockSource = mGetBlockSource(player);
+    if (blockSource == nullptr) {
+        return nullptr;
+    }
+
+    const void* vtable = nullptr;
+    std::memcpy(&vtable, blockSource, sizeof(vtable));
+    if (!belongsToMinecraft(reinterpret_cast<std::uintptr_t>(vtable))) {
+        return nullptr;
+    }
+
+    const void* function = nullptr;
+    const auto* vtableBytes = static_cast<const std::byte*>(vtable);
+    std::memcpy(
+        &function,
+        vtableBytes + kBlockSourceGetBlockSlot * sizeof(void*),
+        sizeof(function)
+    );
+    if (!belongsToMinecraft(reinterpret_cast<std::uintptr_t>(function))) {
+        return nullptr;
+    }
+
+    const auto getBlock = reinterpret_cast<BlockSourceGetBlockFn>(
+        const_cast<void*>(function)
+    );
+    return getBlock(blockSource, blockPos);
+}
+
+bool NativeCapabilityProbe::realMiningCapability(
+    const void* stack,
+    const void* block
+) const noexcept {
+    if (block == nullptr) {
+        return false;
+    }
+
+    const void* item = itemFromStack(stack);
+    if (item == nullptr) {
+        return false;
+    }
+
+    const void* vtable = nullptr;
+    std::memcpy(&vtable, item, sizeof(vtable));
+    if (!belongsToMinecraft(reinterpret_cast<std::uintptr_t>(vtable))) {
+        return false;
+    }
+
+    const void* function = nullptr;
+    const auto* vtableBytes = static_cast<const std::byte*>(vtable);
+    std::memcpy(
+        &function,
+        vtableBytes + kItemGetDestroySpeedSlot * sizeof(void*),
+        sizeof(function)
+    );
+    if (!belongsToMinecraft(reinterpret_cast<std::uintptr_t>(function))) {
+        return false;
+    }
+
+    const auto getDestroySpeed = reinterpret_cast<GetDestroySpeedFn>(
+        const_cast<void*>(function)
+    );
+    return getDestroySpeed(item, stack, block) > 1.0F;
+}
+
+std::uintptr_t NativeCapabilityProbe::stackItemIdentity(
+    const void* stack
+) const noexcept {
+    return reinterpret_cast<std::uintptr_t>(itemFromStack(stack));
 }
 
 std::uintptr_t NativeCapabilityProbe::selectedItemTarget() const noexcept {
