@@ -22,7 +22,7 @@ def main() -> int:
     if not bridge_hpp.exists() or not bridge_cpp.exists():
         raise AssertionError(
             "NativeSemanticBridge production source is required for the proven "
-            "upper-use and destroy-rate boundaries"
+            "upper-use, attack-callback, and destroy-rate boundaries"
         )
 
     bridge = bridge_cpp.read_text(errors="replace")
@@ -30,11 +30,13 @@ def main() -> int:
 
     for token in (
         "kUpperUseDispatcherRva = 0x9432794",
+        "kAttackCallbackRva = 0xEF886A8",
         "kDestroyRateContextRva = 0xF08CC44",
         "kBaseUseItemRva = 0xEF75578",
         "kReleaseUsingItemRva = 0xEF76108",
         "kPlayerGameModeGetterRva = 0xF0CD850",
         "upperUseDetour(",
+        "attackCallbackDetour(",
         "destroyRateContextDetour(",
         "selectedItemDetour(",
         "releaseUsingItemDetour(",
@@ -42,7 +44,10 @@ def main() -> int:
         "currentActionSession()",
         "kDestroyRateStackOffset = 0x10",
         "kDestroyRateContextCopySize = 0x20",
+        "gSemanticScopePlayer",
+        "player == gSemanticScopePlayer",
         "[SemanticBridge] upper-use OFFHAND retry handled",
+        "[SemanticBridge] attack callback scoped to OFFHAND",
         "[SemanticBridge] destroy-rate context redirected to OFFHAND",
         "[ActionDiag] attack selected-item bridge=OFFHAND",
     ):
@@ -97,8 +102,8 @@ def main() -> int:
 
     print(
         "v0.2.68 semantic bridge source contract passed: native mining suitability, "
-        "scoped destroy-rate stack redirect, upper-use retry, release ownership, "
-        "and attack selected-stack diagnostics"
+        "scoped destroy-rate stack redirect, upper-use retry, deferred attack callback, "
+        "release ownership, and player-owned selected-item routing"
     )
     return 0
 
