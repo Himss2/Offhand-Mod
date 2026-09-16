@@ -19,6 +19,30 @@ BOUNDARIES = {
         "prologue": bytes.fromhex("ff 43 07 d1 fd 7b 17 a9 fc c3 00 f9 fa 67 19 a9"),
         "refs": [(0xEF72368, 0x122700F8)],
     },
+    "GameMode::startDestroyBlock": {
+        "rva": 0xEF72684,
+        "prologue": bytes.fromhex("ff 83 01 d1 fd 7b 01 a9 f9 13 00 f9 f8 5f 03 a9"),
+        "refs": [],
+        "words": [(0xEF72704, 0x390002BF)],
+        "bl_targets": [(0xEF72734, 0xEF729FC)],
+    },
+    "GameMode::destroyBlock": {
+        "rva": 0xEF72C18,
+        "prologue": bytes.fromhex("ff 03 02 d1 fd 7b 04 a9 f8 5f 05 a9 f6 57 06 a9"),
+        "refs": [],
+        "bl_targets": [(0xEF72C4C, 0xEC844CC), (0xEF72C5C, 0xF0B900C)],
+    },
+    "GameMode::continueDestroyBlock": {
+        "rva": 0xEF72F9C,
+        "prologue": bytes.fromhex("ff 83 03 d1 e9 23 07 6d fd 7b 08 a9 fc 6f 09 a9"),
+        "refs": [],
+        "bl_targets": [(0xEF73004, 0xEC844CC)],
+    },
+    "GameMode::stopDestroyBlock": {
+        "rva": 0xEF7398C,
+        "prologue": bytes.fromhex("fd 7b be a9 f3 0b 00 f9 fd 03 00 91 f3 03 00 aa"),
+        "refs": [],
+    },
     "GameMode::baseUseItem": {
         "rva": 0xEF75578,
         "prologue": bytes.fromhex("ff 43 04 d1 fd 7b 0d a9 fc 5f 0e a9 f6 57 0f a9"),
@@ -39,21 +63,17 @@ BOUNDARIES = {
         "prologue": bytes.fromhex("fd 7b bb a9 fc 67 01 a9 f8 5f 02 a9 f6 57 03 a9"),
         "refs": [(0xEF71CC4, 0x1226FFF8)],
     },
-    "GameMode::startDestroyBlock": {
-        "rva": 0xEF72684,
-        "prologue": bytes.fromhex("ff 83 01 d1 fd 7b 01 a9 f9 13 00 f9 f8 5f 03 a9"),
-        "refs": [],
-        "words": [(0xEF72704, 0x390002BF)],
-        "bl_targets": [(0xEF72734, 0xEF729FC)],
-    },
 }
 REQUIRED = {
     "GameMode::_attack",
+    "GameMode::startDestroyBlock",
+    "GameMode::destroyBlock",
+    "GameMode::continueDestroyBlock",
+    "GameMode::stopDestroyBlock",
     "GameMode::baseUseItem",
     "GameMode::baseUseItemAsAttack",
     "GameMode::releaseUsingItem",
     "GameMode::interact",
-    "GameMode::startDestroyBlock",
 }
 
 # Exact accessors used by NativeCapabilityProbe. Shipping Android does not
@@ -84,6 +104,18 @@ ACCESSOR_FINGERPRINTS = {
         0xF6443F4,
         bytes.fromhex("08 88 40 39 29 88 40 39 1f 01 09 6b 01 01 00 54"),
     ),
+    "Actor::getDimensionBlockSource": (
+        0xEC844CC,
+        bytes.fromhex("fd 7b be a9 f4 4f 01 a9 fd 03 00 91 f3 03 00 aa"),
+    ),
+}
+
+# GameMode vtable order independently proves the four mining lifecycle entries.
+GAME_MODE_VTABLE_RELOCS = {
+    0x1226EDC0: 0xEF72684,
+    0x1226EDC8: 0xEF72C18,
+    0x1226EDD0: 0xEF72F9C,
+    0x1226EDD8: 0xEF7398C,
 }
 
 # Item vtable slot 38 (0x130) is getAttackDamage(). These relative relocations
@@ -100,6 +132,22 @@ COMBAT_FUNCTION_FINGERPRINTS = {
     0xF4C7B00: bytes.fromhex("00 c8 41 b9 c0 03 5f d6"),
     0xF6B3880: bytes.fromhex("00 d8 41 b9 c0 03 5f d6"),
     0xF46CAEC: bytes.fromhex("00 01 80 52 c0 03 5f d6"),
+}
+
+# Item vtable slot 89 is getDestroySpeed(stack, block). Base Item and Trident
+# use the 1.0f implementation, while WeaponItem and DiggerItem override it.
+# Arbitration therefore can ask the native target-specific virtual directly and
+# treat speeds > 1.0f as meaningful mining capability.
+MINING_VTABLE_RELOCS = {
+    0x122E21E0: 0xF665908,  # Item::getDestroySpeed -> 1.0f
+    0x122C6480: 0xF4C7970,  # WeaponItem::getDestroySpeed
+    0x122E4208: 0xF6B3FB0,  # DiggerItem::getDestroySpeed
+    0x122C52D8: 0xF665908,  # TridentItem -> base destroy speed
+}
+MINING_FUNCTION_FINGERPRINTS = {
+    0xF665908: bytes.fromhex("28 00 80 52 00 01 22 1e c0 03 5f d6"),
+    0xF4C7970: bytes.fromhex("ff 83 02 d1 fd 7b 07 a9 f6 57 08 a9 f4 4f 09 a9"),
+    0xF6B3FB0: bytes.fromhex("e8 0f 1d fc fd 7b 01 a9 f4 4f 02 a9 fd 43 00 91"),
 }
 
 
@@ -217,7 +265,19 @@ def main() -> int:
         if data[rva:rva + len(fingerprint)] != fingerprint:
             fail(f"combat virtual target fingerprint mismatch at 0x{rva:X}")
 
+    for rva, fingerprint in MINING_FUNCTION_FINGERPRINTS.items():
+        if data[rva:rva + len(fingerprint)] != fingerprint:
+            fail(f"mining virtual target fingerprint mismatch at 0x{rva:X}")
+
     relocations = relative_relocations(path)
+    for slot_address, expected_target in GAME_MODE_VTABLE_RELOCS.items():
+        actual_target = relocations.get(slot_address)
+        if actual_target != expected_target:
+            fail(
+                f"GameMode mining vtable relocation mismatch at 0x{slot_address:X}: "
+                f"expected 0x{expected_target:X}, got {actual_target!r}"
+            )
+
     for slot_address, expected_target in COMBAT_VTABLE_RELOCS.items():
         actual_target = relocations.get(slot_address)
         if actual_target != expected_target:
@@ -226,11 +286,18 @@ def main() -> int:
                 f"expected 0x{expected_target:X}, got {actual_target!r}"
             )
 
+    for slot_address, expected_target in MINING_VTABLE_RELOCS.items():
+        actual_target = relocations.get(slot_address)
+        if actual_target != expected_target:
+            fail(
+                f"Item getDestroySpeed vtable relocation mismatch at 0x{slot_address:X}: "
+                f"expected 0x{expected_target:X}, got {actual_target!r}"
+            )
+
     print(
         "v0.2.68 action routing binary contract passed: "
-        "attack/interact/use/release/start-destroy boundaries, exact hand/use accessors, "
-        "and Item::getAttackDamage slot-38 combat ABI proven; "
-        "full mining lifecycle remains fail-closed until continue/finalize/cancel are proven"
+        "attack/interact/use/release and full mining lifecycle boundaries, exact hand/use/block accessors, "
+        "Item::getAttackDamage slot-38, and Item::getDestroySpeed slot-89 ABI proven"
     )
     return 0
 
