@@ -115,6 +115,36 @@ def main() -> int:
         if token not in probe_text:
             raise AssertionError(f"NativeCapabilityProbe missing exact ABI marker {token!r}")
 
+    # Task 5 RED/GREEN contract: combat capability comes from the Item virtual
+    # getAttackDamage slot, not from item identifiers or generic punch success.
+    for token in (
+        "kAttackRva = 0xEF721E4",
+        "attackDetour(",
+        "routeAttackAction(",
+    ):
+        if token not in router_text:
+            raise AssertionError(f"native attack router missing required marker {token!r}")
+
+    attack = function_body(router_text, "HandActionRouter::attackDetour(")
+    for token in (
+        "realCombatCapability(mainStack)",
+        "realCombatCapability(offStack)",
+        "ScopedRoutedPlayer",
+        "routeAttackAction(",
+        "original(gameMode, entity, playPredictiveSound, hitPosition)",
+    ):
+        if token not in attack:
+            raise AssertionError(f"attack detour missing capability/fallback marker {token!r}")
+
+    for token in (
+        "kItemStackItemOffset = sizeof(void*)",
+        "kItemGetAttackDamageSlot = 38",
+        "itemFromStack(",
+        "realCombatCapability(",
+    ):
+        if token not in probe_text:
+            raise AssertionError(f"native combat probe missing exact ABI marker {token!r}")
+
     for forbidden in (
         "dlsym(",
         "_ZNK6Player15getSelectedItemEv",
@@ -131,7 +161,8 @@ def main() -> int:
 
     print(
         "v0.2.68 action routing source contract passed: "
-        "exact-RVA native hand access, MAIN-first item-use, native active-stack validation"
+        "exact-RVA hand access, MAIN-first item-use, native active-stack validation, "
+        "native getAttackDamage combat routing"
     )
     return 0
 
