@@ -6,13 +6,14 @@
 
 #include <android/log.h>
 
+#include <array>
 #include <cstdint>
 #include <cstring>
 #include <dlfcn.h>
+#include <link.h>
 #include <memory>
 
 #include <pl/memory/Hook.hpp>
-#include <pl/memory/Signature.hpp>
 
 namespace levioffhand::runtime {
 namespace {
@@ -29,47 +30,40 @@ constexpr std::uintptr_t kBaseUseItemRva = 0xEF75578;
 constexpr std::uintptr_t kReleaseUsingItemRva = 0xEF76108;
 constexpr ActionSlotToken kOffhandSlotIdentity = 34;
 
-constexpr char kAttackSignature[] =
-    "FF 43 07 D1 "
-    "FD 7B 17 A9 "
-    "FC C3 00 F9 "
-    "FA 67 19 A9";
+constexpr std::array<std::uint8_t, 16> kAttackFingerprint{
+    0xFF, 0x43, 0x07, 0xD1, 0xFD, 0x7B, 0x17, 0xA9,
+    0xFC, 0xC3, 0x00, 0xF9, 0xFA, 0x67, 0x19, 0xA9,
+};
 
-constexpr char kStartDestroyBlockSignature[] =
-    "FF 83 01 D1 "
-    "FD 7B 01 A9 "
-    "F9 13 00 F9 "
-    "F8 5F 03 A9";
+constexpr std::array<std::uint8_t, 16> kStartDestroyBlockFingerprint{
+    0xFF, 0x83, 0x01, 0xD1, 0xFD, 0x7B, 0x01, 0xA9,
+    0xF9, 0x13, 0x00, 0xF9, 0xF8, 0x5F, 0x03, 0xA9,
+};
 
-constexpr char kDestroyBlockSignature[] =
-    "FF 03 02 D1 "
-    "FD 7B 04 A9 "
-    "F8 5F 05 A9 "
-    "F6 57 06 A9";
+constexpr std::array<std::uint8_t, 16> kDestroyBlockFingerprint{
+    0xFF, 0x03, 0x02, 0xD1, 0xFD, 0x7B, 0x04, 0xA9,
+    0xF8, 0x5F, 0x05, 0xA9, 0xF6, 0x57, 0x06, 0xA9,
+};
 
-constexpr char kContinueDestroyBlockSignature[] =
-    "FF 83 03 D1 "
-    "E9 23 07 6D "
-    "FD 7B 08 A9 "
-    "FC 6F 09 A9";
+constexpr std::array<std::uint8_t, 16> kContinueDestroyBlockFingerprint{
+    0xFF, 0x83, 0x03, 0xD1, 0xE9, 0x23, 0x07, 0x6D,
+    0xFD, 0x7B, 0x08, 0xA9, 0xFC, 0x6F, 0x09, 0xA9,
+};
 
-constexpr char kStopDestroyBlockSignature[] =
-    "FD 7B BE A9 "
-    "F3 0B 00 F9 "
-    "FD 03 00 91 "
-    "F3 03 00 AA";
+constexpr std::array<std::uint8_t, 16> kStopDestroyBlockFingerprint{
+    0xFD, 0x7B, 0xBE, 0xA9, 0xF3, 0x0B, 0x00, 0xF9,
+    0xFD, 0x03, 0x00, 0x91, 0xF3, 0x03, 0x00, 0xAA,
+};
 
-constexpr char kBaseUseItemSignature[] =
-    "FF 43 04 D1 "
-    "FD 7B 0D A9 "
-    "FC 5F 0E A9 "
-    "F6 57 0F A9";
+constexpr std::array<std::uint8_t, 16> kBaseUseItemFingerprint{
+    0xFF, 0x43, 0x04, 0xD1, 0xFD, 0x7B, 0x0D, 0xA9,
+    0xFC, 0x5F, 0x0E, 0xA9, 0xF6, 0x57, 0x0F, 0xA9,
+};
 
-constexpr char kReleaseUsingItemSignature[] =
-    "FF 03 04 D1 "
-    "FD 7B 0C A9 "
-    "F7 6B 00 F9 "
-    "F6 57 0E A9";
+constexpr std::array<std::uint8_t, 16> kReleaseUsingItemFingerprint{
+    0xFF, 0x03, 0x04, 0xD1, 0xFD, 0x7B, 0x0C, 0xA9,
+    0xF7, 0x6B, 0x00, 0xF9, 0xF6, 0x57, 0x0E, 0xA9,
+};
 
 using AttackFn = bool (*)(
     void* gameMode,
@@ -156,39 +150,59 @@ private:
         std::strstr(info.dli_fname, kMinecraftLibrary) != nullptr;
 }
 
-[[nodiscard]] std::uintptr_t moduleBaseOf(std::uintptr_t address) noexcept {
-    if (address == 0) {
-        return 0;
-    }
+struct ModuleSearchState {
+    std::uintptr_t base{0};
+};
 
-    Dl_info info{};
+int moduleSearchCallback(
+    dl_phdr_info* info,
+    std::size_t,
+    void* rawState
+) noexcept {
     if (
-        dladdr(reinterpret_cast<void*>(address), &info) == 0 ||
-        info.dli_fbase == nullptr ||
-        info.dli_fname == nullptr ||
-        std::strstr(info.dli_fname, kMinecraftLibrary) == nullptr
+        info == nullptr ||
+        info->dlpi_name == nullptr ||
+        std::strstr(info->dlpi_name, kMinecraftLibrary) == nullptr
     ) {
         return 0;
     }
-    return reinterpret_cast<std::uintptr_t>(info.dli_fbase);
+
+    auto* state = static_cast<ModuleSearchState*>(rawState);
+    state->base = static_cast<std::uintptr_t>(info->dlpi_addr);
+    return 1;
 }
 
+[[nodiscard]] std::uintptr_t minecraftModuleBase() noexcept {
+    ModuleSearchState state{};
+    dl_iterate_phdr(&moduleSearchCallback, &state);
+    return state.base;
+}
+
+template <std::size_t N>
 [[nodiscard]] std::uintptr_t resolveExactTarget(
-    const char* signature,
-    std::uintptr_t expectedRva
+    std::uintptr_t expectedRva,
+    const std::array<std::uint8_t, N>& fingerprint
 ) noexcept {
-    const std::uintptr_t target = pl::memory::resolveSignature(
-        signature,
-        kMinecraftLibrary
-    );
+    const std::uintptr_t base = minecraftModuleBase();
+    if (base == 0) {
+        return 0;
+    }
+
+    const std::uintptr_t target = base + expectedRva;
     if (!belongsToMinecraft(target)) {
         return 0;
     }
 
-    const std::uintptr_t base = moduleBaseOf(target);
-    if (base == 0 || target < base || target - base != expectedRva) {
+    if (
+        std::memcmp(
+            reinterpret_cast<const void*>(target),
+            fingerprint.data(),
+            fingerprint.size()
+        ) != 0
+    ) {
         return 0;
     }
+
     return target;
 }
 
@@ -248,27 +262,27 @@ bool HandActionRouter::install(pl::mod::ModContext& context) noexcept {
         return false;
     }
 
-    mAttackTarget = resolveExactTarget(kAttackSignature, kAttackRva);
+    mAttackTarget = resolveExactTarget(kAttackRva, kAttackFingerprint);
     mStartDestroyBlockTarget = resolveExactTarget(
-        kStartDestroyBlockSignature,
-        kStartDestroyBlockRva
+        kStartDestroyBlockRva,
+        kStartDestroyBlockFingerprint
     );
     mDestroyBlockTarget = resolveExactTarget(
-        kDestroyBlockSignature,
-        kDestroyBlockRva
+        kDestroyBlockRva,
+        kDestroyBlockFingerprint
     );
     mContinueDestroyBlockTarget = resolveExactTarget(
-        kContinueDestroyBlockSignature,
-        kContinueDestroyBlockRva
+        kContinueDestroyBlockRva,
+        kContinueDestroyBlockFingerprint
     );
     mStopDestroyBlockTarget = resolveExactTarget(
-        kStopDestroyBlockSignature,
-        kStopDestroyBlockRva
+        kStopDestroyBlockRva,
+        kStopDestroyBlockFingerprint
     );
-    mTarget = resolveExactTarget(kBaseUseItemSignature, kBaseUseItemRva);
+    mTarget = resolveExactTarget(kBaseUseItemRva, kBaseUseItemFingerprint);
     mReleaseUsingItemTarget = resolveExactTarget(
-        kReleaseUsingItemSignature,
-        kReleaseUsingItemRva
+        kReleaseUsingItemRva,
+        kReleaseUsingItemFingerprint
     );
     mSelectedItemTarget = probe.selectedItemTarget();
 
@@ -283,7 +297,17 @@ bool HandActionRouter::install(pl::mod::ModContext& context) noexcept {
         !belongsToMinecraft(mSelectedItemTarget)
     ) {
         context.logger().warn(
-            "[HandActionRouter] exact 1.26.45.1 action targets failed validation"
+            "[HandActionRouter] exact 1.26.45.1 action targets failed validation: "
+            "attack=0x{:x} start=0x{:x} destroy=0x{:x} continue=0x{:x} "
+            "stop=0x{:x} use=0x{:x} release=0x{:x} selected=0x{:x}",
+            mAttackTarget,
+            mStartDestroyBlockTarget,
+            mDestroyBlockTarget,
+            mContinueDestroyBlockTarget,
+            mStopDestroyBlockTarget,
+            mTarget,
+            mReleaseUsingItemTarget,
+            mSelectedItemTarget
         );
         probe.uninstall(context);
         mAttackTarget = 0;
