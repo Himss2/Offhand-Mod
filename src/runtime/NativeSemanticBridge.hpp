@@ -34,6 +34,7 @@ private:
         const void* target
     ) noexcept;
 
+    static void attackCallbackDetour(void* callbackObject) noexcept;
     static float destroyRateContextDetour(const void* context) noexcept;
     static const void* selectedItemDetour(const void* player) noexcept;
     static void releaseUsingItemDetour(void* gameMode) noexcept;
@@ -43,16 +44,19 @@ private:
     static NativeSemanticBridge* sInstance;
 
     std::unique_ptr<pl::memory::HookHandle> mUpperUseHook;
+    std::unique_ptr<pl::memory::HookHandle> mAttackCallbackHook;
     std::unique_ptr<pl::memory::HookHandle> mDestroyRateHook;
     std::unique_ptr<pl::memory::HookHandle> mSelectedItemHook;
     std::unique_ptr<pl::memory::HookHandle> mReleaseUsingItemHook;
 
     void* mUpperUseOriginal{nullptr};
+    void* mAttackCallbackOriginal{nullptr};
     void* mDestroyRateOriginal{nullptr};
     void* mSelectedItemOriginal{nullptr};
     void* mReleaseUsingItemOriginal{nullptr};
 
     std::uintptr_t mUpperUseTarget{0};
+    std::uintptr_t mAttackCallbackTarget{0};
     std::uintptr_t mDestroyRateTarget{0};
     std::uintptr_t mSelectedItemTarget{0};
     std::uintptr_t mReleaseUsingItemTarget{0};
@@ -61,6 +65,7 @@ private:
     std::atomic_bool mLoggedUpperUseOffhand{false};
     std::atomic_bool mLoggedDestroyRateOffhand{false};
     std::atomic_bool mLoggedAttackSelected{false};
+    std::atomic_bool mLoggedAttackCallback{false};
 };
 
 } // namespace levioffhand::runtime
