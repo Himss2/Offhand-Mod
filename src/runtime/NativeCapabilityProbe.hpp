@@ -27,6 +27,7 @@ public:
         const void* lhs,
         const void* rhs
     ) const noexcept;
+    [[nodiscard]] bool realCombatCapability(const void* stack) const noexcept;
 
     [[nodiscard]] std::uintptr_t selectedItemTarget() const noexcept;
 
@@ -39,8 +40,10 @@ private:
     using PlayerIsUsingItemFn = bool (*)(const void* player);
     using ItemInUseStackFn = const void* (*)(const void* player);
     using StackDiffersForUseFn = bool (*)(const void* lhs, const void* rhs);
+    using GetAttackDamageFn = int (*)(const void* item);
 
     [[nodiscard]] bool validatePlayerObject(const void* player) const noexcept;
+    [[nodiscard]] const void* itemFromStack(const void* stack) const noexcept;
 
     SelectedItemFn mGetSelectedItem{nullptr};
     OffhandItemFn mGetOffhandSlot{nullptr};
