@@ -71,8 +71,58 @@ jobs:
           patch -p1 < /tmp/v0267-overlay.patch
           test "$(git hash-object src/render/OffhandBlockRenderPatch.cpp)" = "3a3ea8cde3a0ae3df2376fff3c1bd0a9aa3c43be"
           test "$(git hash-object src/render/NativeAttachmentFix.hpp)" = "deb12b1f33aa36e91d143d996ea92c415604f128"
-          test "$(git hash-object manifest.json)" = "de4cd95aafb6d9b732000f1560b1a1c9fe4e61ec"
           grep -q '"version": "0.2.67"' manifest.json
+
+      - name: Run v0.2.67 legacy regression suite
+        run: bash tests/run_native_attachment_fix_tests.sh
+
+      - name: Restore v0.2.68 action subsystem from main
+        run: |
+          git checkout HEAD -- \
+            CMakeLists.txt \
+            manifest.json \
+            scripts/build.sh \
+            src/LeviOffhandMod.cpp \
+            src/runtime/HandActionPolicy.hpp \
+            src/runtime/HandActionRouterCore.hpp \
+            src/runtime/ActionHandContext.hpp \
+            src/runtime/ActionHandContext.cpp \
+            src/runtime/NativeCapabilityProbe.hpp \
+            src/runtime/NativeCapabilityProbe.cpp \
+            src/runtime/HandActionRouter.hpp \
+            src/runtime/HandActionRouter.cpp \
+            tests/v0268_action_routing_source_contract.py \
+            tests/v0268_action_routing_binary_contract.py \
+            tests/v0268_hand_action_policy_test.cpp \
+            tests/v0268_action_hand_context_test.cpp \
+            tests/v0268_hand_action_router_core_test.cpp
+          grep -q '"version": "0.2.68"' manifest.json
+          grep -q 'NativeCapabilityProbe.cpp' CMakeLists.txt
+          grep -q 'HandActionRouter.cpp' CMakeLists.txt
+
+      - name: Run v0.2.68 action routing tests
+        run: |
+          python3 tests/v0268_action_routing_source_contract.py
+
+          g++ -std=c++20 -Wall -Wextra -Wpedantic -Werror \
+            -fsanitize=address,undefined -fno-omit-frame-pointer \
+            -Isrc tests/v0268_hand_action_policy_test.cpp \
+            -o /tmp/v0268-policy
+          ASAN_OPTIONS=detect_leaks=0 /tmp/v0268-policy
+
+          g++ -std=c++20 -Wall -Wextra -Wpedantic -Werror -pthread \
+            -fsanitize=address,undefined -fno-omit-frame-pointer \
+            -Isrc tests/v0268_action_hand_context_test.cpp \
+            src/runtime/ActionHandContext.cpp \
+            -o /tmp/v0268-context
+          ASAN_OPTIONS=detect_leaks=0 /tmp/v0268-context
+
+          g++ -std=c++20 -Wall -Wextra -Wpedantic -Werror -pthread \
+            -fsanitize=address,undefined -fno-omit-frame-pointer \
+            -Isrc tests/v0268_hand_action_router_core_test.cpp \
+            src/runtime/ActionHandContext.cpp \
+            -o /tmp/v0268-router-core
+          ASAN_OPTIONS=detect_leaks=0 /tmp/v0268-router-core
 
       - name: Set up Android SDK
         uses: android-actions/setup-android@v3
@@ -88,36 +138,33 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y ninja-build zip
 
-      - name: Run native attachment tests
-        run: bash tests/run_native_attachment_fix_tests.sh
-
-      - name: Build
+      - name: Build v0.2.68
         env:
           LEVI_NDK_VERSION: "28.2.13676358"
         run: bash ./scripts/build.sh
 
       - name: Inspect output
         run: |
-          unzip -t dist/arm64-v8a/levi-offhand-v0.2.67.levipack
-          unzip -l dist/arm64-v8a/levi-offhand-v0.2.67.levipack
+          unzip -t dist/arm64-v8a/levi-offhand-v0.2.68.levipack
+          unzip -l dist/arm64-v8a/levi-offhand-v0.2.68.levipack
           file build/android-arm64-v8a-Release/out/arm64-v8a/liblevi_offhand.so
           python3 - <<'PY2'
           import json, zipfile
-          path='dist/arm64-v8a/levi-offhand-v0.2.67.levipack'
+          path='dist/arm64-v8a/levi-offhand-v0.2.68.levipack'
           with zipfile.ZipFile(path) as z:
               assert set(z.namelist()) == {'manifest.json','liblevi_offhand.so'}
               manifest=json.loads(z.read('manifest.json'))
-              assert manifest['version']=='0.2.67'
+              assert manifest['version']=='0.2.68'
           PY2
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
-          name: levi-offhand-arm64-v0.2.67
-          path: dist/arm64-v8a/levi-offhand-v0.2.67.levipack
+          name: levi-offhand-arm64-v0.2.68
+          path: dist/arm64-v8a/levi-offhand-v0.2.68.levipack
 
       - name: Publish tagged release
         if: startsWith(github.ref, 'refs/tags/v')
         uses: softprops/action-gh-release@v2
         with:
-          files: dist/arm64-v8a/levi-offhand-v0.2.67.levipack
+          files: dist/arm64-v8a/levi-offhand-v0.2.68.levipack
