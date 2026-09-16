@@ -28,11 +28,13 @@ DESTROY_RATE_CONTEXT_PROLOGUE = bytes.fromhex(
     "ff 03 02 d1 e9 23 02 6d fd 7b 03 a9 f9 23 00 f9"
 )
 DESTROY_RATE_CONTEXT_CALLER = {0xF0BBD90: DESTROY_RATE_CONTEXT_RVA}
-# After the context's registry/cache prelude, this exact LDP proves:
-# context+0x08 = Block*, context+0x10 = ItemStack*.
+# This exact pair-load proves context+0x08 = Block* and context+0x10 = ItemStack*.
 DESTROY_RATE_STACK_LOAD_RVA = 0xF08CD18
-DESTROY_RATE_STACK_LOAD = 0xA9414E88  # ldp x8, x19, [x20,#0x10? decoded pair base +8]
+DESTROY_RATE_STACK_LOAD = 0xA940CE88  # ldp x8, x19, [x20,#0x8]
 DESTROY_RATE_STACK_BLOCK_CALL = {0xF08CDA4: 0xF89A340}
+
+PLAYER_GAMEMODE_GETTER_RVA = 0xF0CD850
+PLAYER_GAMEMODE_GETTER = bytes.fromhex("00 f4 44 f9 c0 03 5f d6")
 
 CAN_DESTROY_SPECIAL_RELOCS = {
     0x122E2028: 0xF665914,  # Item base -> false
@@ -136,6 +138,12 @@ def main() -> int:
         if actual != target:
             fail(f"block+stack destroy-rate call mismatch at 0x{callsite:X}: {actual!r}")
 
+    if data[
+        PLAYER_GAMEMODE_GETTER_RVA:
+        PLAYER_GAMEMODE_GETTER_RVA + len(PLAYER_GAMEMODE_GETTER)
+    ] != PLAYER_GAMEMODE_GETTER:
+        fail("Player game-mode getter fingerprint mismatch")
+
     relocs = relative_relocations(path)
     for address, expected in CAN_DESTROY_SPECIAL_RELOCS.items():
         actual = relocs.get(address)
@@ -150,7 +158,8 @@ def main() -> int:
 
     print(
         "v0.2.68 semantic bridge binary contract passed: upper-use dispatcher, "
-        "destroy-rate context stack slot, and canDestroySpecial ABI"
+        "destroy-rate context stack slot, Player game-mode ownership, and "
+        "canDestroySpecial ABI"
     )
     return 0
 
