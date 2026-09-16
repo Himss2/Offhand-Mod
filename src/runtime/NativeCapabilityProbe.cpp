@@ -32,8 +32,11 @@ constexpr std::size_t kItemStackItemOffset = sizeof(void*);
 // Exact native virtual slots for 1.26.45.1. These are also guarded by the
 // binary relocation contract so a game update cannot silently reuse them.
 constexpr std::size_t kBlockSourceGetBlockSlot = 2;
+constexpr std::size_t kItemCanDestroySpecialSlot = 34;
 constexpr std::size_t kItemGetAttackDamageSlot = 38;
 constexpr std::size_t kItemGetDestroySpeedSlot = 89;
+
+using CanDestroySpecialFn = bool (*)(const void* item, const void* block);
 
 constexpr std::array<std::uint8_t, 16> kSelectedItemFingerprint{
     0x08, 0xB8, 0x42, 0xF9, 0x09, 0xC1, 0x42, 0x39,
@@ -426,19 +429,37 @@ bool NativeCapabilityProbe::realMiningCapability(
         return false;
     }
 
-    const void* function = nullptr;
     const auto* vtableBytes = static_cast<const std::byte*>(vtable);
+
+    const void* canDestroyFunction = nullptr;
     std::memcpy(
-        &function,
-        vtableBytes + kItemGetDestroySpeedSlot * sizeof(void*),
-        sizeof(function)
+        &canDestroyFunction,
+        vtableBytes + kItemCanDestroySpecialSlot * sizeof(void*),
+        sizeof(canDestroyFunction)
     );
-    if (!belongsToMinecraft(reinterpret_cast<std::uintptr_t>(function))) {
+    if (!belongsToMinecraft(reinterpret_cast<std::uintptr_t>(canDestroyFunction))) {
+        return false;
+    }
+
+    const auto canDestroySpecial = reinterpret_cast<CanDestroySpecialFn>(
+        const_cast<void*>(canDestroyFunction)
+    );
+    if (canDestroySpecial(item, block)) {
+        return true;
+    }
+
+    const void* speedFunction = nullptr;
+    std::memcpy(
+        &speedFunction,
+        vtableBytes + kItemGetDestroySpeedSlot * sizeof(void*),
+        sizeof(speedFunction)
+    );
+    if (!belongsToMinecraft(reinterpret_cast<std::uintptr_t>(speedFunction))) {
         return false;
     }
 
     const auto getDestroySpeed = reinterpret_cast<GetDestroySpeedFn>(
-        const_cast<void*>(function)
+        const_cast<void*>(speedFunction)
     );
     return getDestroySpeed(item, stack, block) > 1.0F;
 }
