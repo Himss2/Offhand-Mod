@@ -2,9 +2,12 @@
 
 #include <android/log.h>
 
+#include <array>
 #include <cstddef>
+#include <cstdint>
 #include <cstring>
 #include <dlfcn.h>
+#include <link.h>
 
 namespace levioffhand::runtime {
 namespace {
@@ -12,16 +15,71 @@ namespace {
 constexpr char kMinecraftLibrary[] = "libminecraftpe.so";
 constexpr char kLogTag[] = "Levi Offhand";
 
-// GameMode is a polymorphic class.  On the exact 1.26.45.1 ABI the first
-// data member after the vptr is Player& mPlayer.  Every action detour still
-// validates the recovered Player object's vtable before using this pointer.
+// Exact Minecraft Bedrock Android 1.26.45.1 RVAs. These are guarded by
+// instruction fingerprints below and are never resolved by dynamic symbol
+// lookup because the shipping binary does not export the required accessors.
+constexpr std::uintptr_t kSelectedItemRva = 0xF0B900C;
+constexpr std::uintptr_t kOffhandSlotRva = 0xEC9D62C;
+constexpr std::uintptr_t kStackIsNullRva = 0xF63E760;
+constexpr std::uintptr_t kPlayerIsUsingItemRva = 0xF0B8094;
+constexpr std::uintptr_t kItemInUseStackRva = 0xF0B80B4;
+constexpr std::uintptr_t kStackDiffersForUseRva = 0xF6443F4;
+
+// GameMode is polymorphic; on the exact target ABI the first data member
+// after its vptr is Player& mPlayer.
 constexpr std::size_t kGameModePlayerOffset = sizeof(void*);
 
-constexpr char kSelectedItemSymbol[] = "_ZNK6Player15getSelectedItemEv";
-constexpr char kOffhandSlotSymbol[] = "_ZNK5Actor14getOffhandSlotEv";
-constexpr char kStackIsNullSymbol[] = "_ZNK13ItemStackBase6isNullEv";
-constexpr char kStackGetIdSymbol[] = "_ZNK13ItemStackBase5getIdEv";
-constexpr char kPlayerIsUsingItemSymbol[] = "_ZNK6Player11isUsingItemEv";
+constexpr std::array<std::uint8_t, 16> kSelectedItemFingerprint{
+    0x08, 0xB8, 0x42, 0xF9, 0x09, 0xC1, 0x42, 0x39,
+    0x89, 0x00, 0x00, 0x34, 0xE0, 0xB1, 0x01, 0xF0,
+};
+constexpr std::array<std::uint8_t, 16> kOffhandSlotFingerprint{
+    0xFD, 0x7B, 0xBF, 0xA9, 0xFD, 0x03, 0x00, 0x91,
+    0x00, 0x20, 0x00, 0x91, 0x03, 0x30, 0x10, 0x94,
+};
+constexpr std::array<std::uint8_t, 16> kStackIsNullFingerprint{
+    0x08, 0x8C, 0x40, 0x39, 0x08, 0x05, 0x00, 0x34,
+    0xFD, 0x7B, 0xBE, 0xA9, 0xF3, 0x0B, 0x00, 0xF9,
+};
+constexpr std::array<std::uint8_t, 16> kPlayerIsUsingItemFingerprint{
+    0xFD, 0x7B, 0xBF, 0xA9, 0xFD, 0x03, 0x00, 0x91,
+    0x00, 0x60, 0x1B, 0x91, 0xB0, 0x19, 0x16, 0x94,
+};
+constexpr std::array<std::uint8_t, 8> kItemInUseStackFingerprint{
+    0x00, 0x60, 0x1B, 0x91, 0xC0, 0x03, 0x5F, 0xD6,
+};
+constexpr std::array<std::uint8_t, 16> kStackDiffersForUseFingerprint{
+    0x08, 0x88, 0x40, 0x39, 0x29, 0x88, 0x40, 0x39,
+    0x1F, 0x01, 0x09, 0x6B, 0x01, 0x01, 0x00, 0x54,
+};
+
+struct ModuleSearchState {
+    std::uintptr_t base{0};
+};
+
+int moduleSearchCallback(
+    dl_phdr_info* info,
+    std::size_t,
+    void* rawState
+) noexcept {
+    if (
+        info == nullptr ||
+        info->dlpi_name == nullptr ||
+        std::strstr(info->dlpi_name, kMinecraftLibrary) == nullptr
+    ) {
+        return 0;
+    }
+
+    auto* state = static_cast<ModuleSearchState*>(rawState);
+    state->base = static_cast<std::uintptr_t>(info->dlpi_addr);
+    return 1;
+}
+
+[[nodiscard]] std::uintptr_t minecraftModuleBase() noexcept {
+    ModuleSearchState state{};
+    dl_iterate_phdr(&moduleSearchCallback, &state);
+    return state.base;
+}
 
 [[nodiscard]] bool belongsToMinecraft(std::uintptr_t address) noexcept {
     if (address == 0) {
@@ -34,17 +92,32 @@ constexpr char kPlayerIsUsingItemSymbol[] = "_ZNK6Player11isUsingItemEv";
         std::strstr(info.dli_fname, kMinecraftLibrary) != nullptr;
 }
 
-template <typename Fn>
-[[nodiscard]] Fn resolveMinecraftExport(const char* symbol) noexcept {
-    void* raw = dlsym(RTLD_DEFAULT, symbol);
-    if (raw == nullptr) {
-        return nullptr;
+template <std::size_t N>
+[[nodiscard]] std::uintptr_t resolveExactTarget(
+    std::uintptr_t rva,
+    const std::array<std::uint8_t, N>& fingerprint
+) noexcept {
+    const std::uintptr_t base = minecraftModuleBase();
+    if (base == 0) {
+        return 0;
     }
-    const auto address = reinterpret_cast<std::uintptr_t>(raw);
-    if (!belongsToMinecraft(address)) {
-        return nullptr;
+
+    const std::uintptr_t target = base + rva;
+    if (!belongsToMinecraft(target)) {
+        return 0;
     }
-    return reinterpret_cast<Fn>(raw);
+
+    if (
+        std::memcmp(
+            reinterpret_cast<const void*>(target),
+            fingerprint.data(),
+            fingerprint.size()
+        ) != 0
+    ) {
+        return 0;
+    }
+
+    return target;
 }
 
 } // namespace
@@ -59,32 +132,63 @@ bool NativeCapabilityProbe::install(pl::mod::ModContext& context) noexcept {
         return true;
     }
 
-    mGetSelectedItem = resolveMinecraftExport<SelectedItemFn>(kSelectedItemSymbol);
-    mGetOffhandSlot = resolveMinecraftExport<OffhandItemFn>(kOffhandSlotSymbol);
-    mStackIsNull = resolveMinecraftExport<StackIsNullFn>(kStackIsNullSymbol);
-    mStackGetId = resolveMinecraftExport<StackGetIdFn>(kStackGetIdSymbol);
-    mPlayerIsUsingItem = resolveMinecraftExport<PlayerIsUsingItemFn>(
-        kPlayerIsUsingItemSymbol
+    const auto selectedItemTarget = resolveExactTarget(
+        kSelectedItemRva,
+        kSelectedItemFingerprint
+    );
+    const auto offhandSlotTarget = resolveExactTarget(
+        kOffhandSlotRva,
+        kOffhandSlotFingerprint
+    );
+    const auto stackIsNullTarget = resolveExactTarget(
+        kStackIsNullRva,
+        kStackIsNullFingerprint
+    );
+    const auto playerIsUsingTarget = resolveExactTarget(
+        kPlayerIsUsingItemRva,
+        kPlayerIsUsingItemFingerprint
+    );
+    const auto itemInUseStackTarget = resolveExactTarget(
+        kItemInUseStackRva,
+        kItemInUseStackFingerprint
+    );
+    const auto stackDiffersTarget = resolveExactTarget(
+        kStackDiffersForUseRva,
+        kStackDiffersForUseFingerprint
     );
 
-    mSelectedItemTarget = reinterpret_cast<std::uintptr_t>(mGetSelectedItem);
+    mGetSelectedItem = reinterpret_cast<SelectedItemFn>(selectedItemTarget);
+    mGetOffhandSlot = reinterpret_cast<OffhandItemFn>(offhandSlotTarget);
+    mStackIsNull = reinterpret_cast<StackIsNullFn>(stackIsNullTarget);
+    mPlayerIsUsingItem = reinterpret_cast<PlayerIsUsingItemFn>(
+        playerIsUsingTarget
+    );
+    mItemInUseStack = reinterpret_cast<ItemInUseStackFn>(
+        itemInUseStackTarget
+    );
+    mStackDiffersForUse = reinterpret_cast<StackDiffersForUseFn>(
+        stackDiffersTarget
+    );
+    mSelectedItemTarget = selectedItemTarget;
+
     mAvailable =
         mGetSelectedItem != nullptr &&
         mGetOffhandSlot != nullptr &&
         mStackIsNull != nullptr &&
-        mStackGetId != nullptr &&
-        mPlayerIsUsingItem != nullptr;
+        mPlayerIsUsingItem != nullptr &&
+        mItemInUseStack != nullptr &&
+        mStackDiffersForUse != nullptr;
 
     if (!mAvailable) {
         context.logger().warn(
-            "[NativeCapabilityProbe] fail-closed: one or more exact native accessors are not exported"
+            "[NativeCapabilityProbe] fail-closed: exact 1.26.45.1 hand accessor fingerprint mismatch"
         );
         uninstall(context);
         return false;
     }
 
     context.logger().info(
-        "[NativeCapabilityProbe] main/offhand stack accessors resolved"
+        "[NativeCapabilityProbe] exact-RVA main/offhand/use accessors resolved"
     );
     return true;
 }
@@ -93,8 +197,9 @@ void NativeCapabilityProbe::uninstall(pl::mod::ModContext& context) noexcept {
     mGetSelectedItem = nullptr;
     mGetOffhandSlot = nullptr;
     mStackIsNull = nullptr;
-    mStackGetId = nullptr;
     mPlayerIsUsingItem = nullptr;
+    mItemInUseStack = nullptr;
+    mStackDiffersForUse = nullptr;
     mSelectedItemTarget = 0;
     mAvailable = false;
     context.logger().info("[NativeCapabilityProbe] accessors released");
@@ -114,9 +219,6 @@ bool NativeCapabilityProbe::validatePlayerObject(const void* player) const noexc
         return false;
     }
 
-    // The object itself is heap memory, but its vtable must live in
-    // libminecraftpe.so.  This prevents calling Player methods on an arbitrary
-    // pointer if the target layout ever changes.
     const void* vtable = nullptr;
     std::memcpy(&vtable, player, sizeof(vtable));
     return belongsToMinecraft(reinterpret_cast<std::uintptr_t>(vtable));
@@ -168,11 +270,25 @@ bool NativeCapabilityProbe::playerIsUsingItem(const void* player) const noexcept
         mPlayerIsUsingItem(player);
 }
 
-std::int16_t NativeCapabilityProbe::stackItemId(const void* stack) const noexcept {
-    if (stack == nullptr || mStackGetId == nullptr) {
-        return 0;
+const void* NativeCapabilityProbe::itemInUseStack(const void* player) const noexcept {
+    if (!available() || player == nullptr || mItemInUseStack == nullptr) {
+        return nullptr;
     }
-    return mStackGetId(stack);
+    return mItemInUseStack(player);
+}
+
+bool NativeCapabilityProbe::stackMatchesForUse(
+    const void* lhs,
+    const void* rhs
+) const noexcept {
+    if (
+        lhs == nullptr ||
+        rhs == nullptr ||
+        mStackDiffersForUse == nullptr
+    ) {
+        return false;
+    }
+    return !mStackDiffersForUse(lhs, rhs);
 }
 
 std::uintptr_t NativeCapabilityProbe::selectedItemTarget() const noexcept {
