@@ -20,9 +20,16 @@ namespace {
 constexpr char kMinecraftLibrary[] = "libminecraftpe.so";
 constexpr char kLogTag[] = "Levi Offhand";
 
+constexpr std::uintptr_t kAttackRva = 0xEF721E4;
 constexpr std::uintptr_t kBaseUseItemRva = 0xEF75578;
 constexpr std::uintptr_t kReleaseUsingItemRva = 0xEF76108;
 constexpr ActionSlotToken kOffhandSlotIdentity = 34;
+
+constexpr char kAttackSignature[] =
+    "FF 43 07 D1 "
+    "FD 7B 17 A9 "
+    "FC C3 00 F9 "
+    "FA 67 19 A9";
 
 constexpr char kBaseUseItemSignature[] =
     "FF 43 04 D1 "
@@ -36,6 +43,12 @@ constexpr char kReleaseUsingItemSignature[] =
     "F7 6B 00 F9 "
     "F6 57 0E A9";
 
+using AttackFn = bool (*)(
+    void* gameMode,
+    void* entity,
+    bool playPredictiveSound,
+    const void* hitPosition
+);
 using BaseUseItemFn = bool (*)(void* gameMode, const void* itemStack);
 using SelectedItemFn = const void* (*)(const void* player);
 using ReleaseUsingItemFn = void (*)(void* gameMode);
@@ -44,6 +57,7 @@ thread_local const void* gScopedPlayer = nullptr;
 thread_local const void* gSessionPlayer = nullptr;
 thread_local void* gSessionGameMode = nullptr;
 thread_local bool gInsideBaseUseDetour = false;
+thread_local bool gInsideAttackDetour = false;
 
 class ScopedRoutedPlayer final {
 public:
@@ -163,6 +177,7 @@ bool HandActionRouter::install(pl::mod::ModContext& context) noexcept {
         return false;
     }
 
+    mAttackTarget = resolveExactTarget(kAttackSignature, kAttackRva);
     mTarget = resolveExactTarget(kBaseUseItemSignature, kBaseUseItemRva);
     mReleaseUsingItemTarget = resolveExactTarget(
         kReleaseUsingItemSignature,
@@ -171,6 +186,7 @@ bool HandActionRouter::install(pl::mod::ModContext& context) noexcept {
     mSelectedItemTarget = probe.selectedItemTarget();
 
     if (
+        mAttackTarget == 0 ||
         mTarget == 0 ||
         mReleaseUsingItemTarget == 0 ||
         !belongsToMinecraft(mSelectedItemTarget)
@@ -179,6 +195,7 @@ bool HandActionRouter::install(pl::mod::ModContext& context) noexcept {
             "[HandActionRouter] exact 1.26.45.1 action targets failed validation"
         );
         probe.uninstall(context);
+        mAttackTarget = 0;
         mTarget = 0;
         mReleaseUsingItemTarget = 0;
         mSelectedItemTarget = 0;
@@ -187,6 +204,7 @@ bool HandActionRouter::install(pl::mod::ModContext& context) noexcept {
 
     sInstance = this;
     mOriginal = nullptr;
+    mAttackOriginal = nullptr;
     mSelectedItemOriginal = nullptr;
     mReleaseUsingItemOriginal = nullptr;
 
@@ -222,6 +240,18 @@ bool HandActionRouter::install(pl::mod::ModContext& context) noexcept {
         return false;
     }
 
+    mAttackHook = std::make_unique<pl::memory::HookHandle>(
+        reinterpret_cast<void*>(mAttackTarget),
+        reinterpret_cast<void*>(&HandActionRouter::attackDetour),
+        &mAttackOriginal,
+        pl::memory::HookPriority::Normal
+    );
+    if (!mAttackHook || !mAttackHook->installed() || mAttackOriginal == nullptr) {
+        context.logger().warn("[HandActionRouter] _attack hook failed");
+        uninstall(context);
+        return false;
+    }
+
     mBaseUseItemHook = std::make_unique<pl::memory::HookHandle>(
         reinterpret_cast<void*>(mTarget),
         reinterpret_cast<void*>(&HandActionRouter::baseUseItemDetour),
@@ -241,12 +271,17 @@ bool HandActionRouter::install(pl::mod::ModContext& context) noexcept {
     mFeatureEnabled.store(true, std::memory_order_release);
     mLoggedOffhandUse.store(false, std::memory_order_relaxed);
     mLoggedLongUse.store(false, std::memory_order_relaxed);
+    mLoggedOffhandAttack.store(false, std::memory_order_relaxed);
 
     context.logger().info(
         "[HandActionRouter] Java-like item-use routing active: main -> offhand"
     );
     context.logger().info(
-        "[HandActionRouter] baseUseItem RVA=0x{:x}, release RVA=0x{:x}",
+        "[HandActionRouter] real-combat attack routing active: main -> offhand -> vanilla punch"
+    );
+    context.logger().info(
+        "[HandActionRouter] attack RVA=0x{:x}, baseUseItem RVA=0x{:x}, release RVA=0x{:x}",
+        kAttackRva,
         kBaseUseItemRva,
         kReleaseUsingItemRva
     );
@@ -261,6 +296,10 @@ void HandActionRouter::uninstall(pl::mod::ModContext& context) noexcept {
         mBaseUseItemHook->reset();
         mBaseUseItemHook.reset();
     }
+    if (mAttackHook) {
+        mAttackHook->reset();
+        mAttackHook.reset();
+    }
     if (mReleaseUsingItemHook) {
         mReleaseUsingItemHook->reset();
         mReleaseUsingItemHook.reset();
@@ -271,8 +310,10 @@ void HandActionRouter::uninstall(pl::mod::ModContext& context) noexcept {
     }
 
     mOriginal = nullptr;
+    mAttackOriginal = nullptr;
     mSelectedItemOriginal = nullptr;
     mReleaseUsingItemOriginal = nullptr;
+    mAttackTarget = 0;
     mTarget = 0;
     mSelectedItemTarget = 0;
     mReleaseUsingItemTarget = 0;
@@ -299,11 +340,14 @@ bool HandActionRouter::installed() const noexcept {
     return
         mBaseUseItemHook != nullptr &&
         mBaseUseItemHook->installed() &&
+        mAttackHook != nullptr &&
+        mAttackHook->installed() &&
         mReleaseUsingItemHook != nullptr &&
         mReleaseUsingItemHook->installed() &&
         mSelectedItemHook != nullptr &&
         mSelectedItemHook->installed() &&
         mOriginal != nullptr &&
+        mAttackOriginal != nullptr &&
         mReleaseUsingItemOriginal != nullptr &&
         mSelectedItemOriginal != nullptr &&
         NativeCapabilityProbe::instance().available();
@@ -412,6 +456,75 @@ bool HandActionRouter::baseUseItemDetour(
     }
 
     return result.handled;
+}
+
+bool HandActionRouter::attackDetour(
+    void* gameMode,
+    void* entity,
+    bool playPredictiveSound,
+    const void* hitPosition
+) noexcept {
+    auto* instance = sInstance;
+    if (instance == nullptr || instance->mAttackOriginal == nullptr) {
+        return false;
+    }
+
+    const auto original = reinterpret_cast<AttackFn>(instance->mAttackOriginal);
+    if (
+        !instance->featureEnabled() ||
+        gInsideAttackDetour ||
+        currentActionSession().active()
+    ) {
+        return original(gameMode, entity, playPredictiveSound, hitPosition);
+    }
+
+    auto& probe = NativeCapabilityProbe::instance();
+    const void* player = probe.playerFromGameMode(gameMode);
+    const void* mainStack = probe.mainhandStack(gameMode);
+    if (player == nullptr || mainStack == nullptr) {
+        return original(gameMode, entity, playPredictiveSound, hitPosition);
+    }
+
+    const void* offStack = probe.offhandStackForPlayer(player);
+    const bool mainReal = probe.realCombatCapability(mainStack);
+    const bool offReal =
+        offStack != nullptr &&
+        !probe.stackIsNull(offStack) &&
+        probe.realCombatCapability(offStack);
+
+    ScopedBool reentryGuard(gInsideAttackDetour);
+    ScopedRoutedPlayer routedPlayer(player);
+
+    const AttackRouteResult result = routeAttackAction(
+        mainReal,
+        offReal,
+        [&]() noexcept {
+            return original(gameMode, entity, playPredictiveSound, hitPosition);
+        },
+        [&]() noexcept {
+            return original(gameMode, entity, playPredictiveSound, hitPosition);
+        },
+        [&]() noexcept {
+            return original(gameMode, entity, playPredictiveSound, hitPosition);
+        }
+    );
+
+    if (!result.usedFallback && result.hand == ActionHand::OffHand) {
+        bool expected = false;
+        if (instance->mLoggedOffhandAttack.compare_exchange_strong(
+                expected,
+                true,
+                std::memory_order_relaxed
+            )) {
+            __android_log_print(
+                ANDROID_LOG_INFO,
+                kLogTag,
+                "[HandActionRouter] attack selected OFFHAND real combat capability"
+            );
+        }
+    }
+
+    return result.nativeResult;
 }
 
 const void* HandActionRouter::selectedItemDetour(
