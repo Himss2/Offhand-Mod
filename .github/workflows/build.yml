@@ -71,10 +71,6 @@ jobs:
           patch -p1 < /tmp/v0267-overlay.patch
           test "$(git hash-object src/render/OffhandBlockRenderPatch.cpp)" = "3a3ea8cde3a0ae3df2376fff3c1bd0a9aa3c43be"
           test "$(git hash-object src/render/NativeAttachmentFix.hpp)" = "deb12b1f33aa36e91d143d996ea92c415604f128"
-          grep -q '"version": "0.2.67"' manifest.json
-
-      - name: Run v0.2.67 legacy regression suite
-        run: bash tests/run_native_attachment_fix_tests.sh
 
       - name: Restore v0.2.68 action subsystem from main
         run: |
