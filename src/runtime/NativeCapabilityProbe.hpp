@@ -22,7 +22,11 @@ public:
 
     [[nodiscard]] bool stackIsNull(const void* stack) const noexcept;
     [[nodiscard]] bool playerIsUsingItem(const void* player) const noexcept;
-    [[nodiscard]] std::int16_t stackItemId(const void* stack) const noexcept;
+    [[nodiscard]] const void* itemInUseStack(const void* player) const noexcept;
+    [[nodiscard]] bool stackMatchesForUse(
+        const void* lhs,
+        const void* rhs
+    ) const noexcept;
 
     [[nodiscard]] std::uintptr_t selectedItemTarget() const noexcept;
 
@@ -32,16 +36,18 @@ private:
     using SelectedItemFn = const void* (*)(const void* player);
     using OffhandItemFn = const void* (*)(const void* actor);
     using StackIsNullFn = bool (*)(const void* stack);
-    using StackGetIdFn = std::int16_t (*)(const void* stack);
     using PlayerIsUsingItemFn = bool (*)(const void* player);
+    using ItemInUseStackFn = const void* (*)(const void* player);
+    using StackDiffersForUseFn = bool (*)(const void* lhs, const void* rhs);
 
     [[nodiscard]] bool validatePlayerObject(const void* player) const noexcept;
 
     SelectedItemFn mGetSelectedItem{nullptr};
     OffhandItemFn mGetOffhandSlot{nullptr};
     StackIsNullFn mStackIsNull{nullptr};
-    StackGetIdFn mStackGetId{nullptr};
     PlayerIsUsingItemFn mPlayerIsUsingItem{nullptr};
+    ItemInUseStackFn mItemInUseStack{nullptr};
+    StackDiffersForUseFn mStackDiffersForUse{nullptr};
     std::uintptr_t mSelectedItemTarget{0};
     bool mAvailable{false};
 };
