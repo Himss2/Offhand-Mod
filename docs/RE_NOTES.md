@@ -53,6 +53,15 @@ renderer/storage code:
   `0xEF72684`, FDE `0xEF72684..0xEF729FC`. ABI evidence includes the face in
   `w2`, output boolean in `x3` (cleared at `0xEF72704`), and the verified helper
   call at `0xEF72734 -> 0xEF729FC`.
+- `GameMode::destroyBlock(BlockPos const&, unsigned char)`: RVA `0xEF72C18`.
+  The native body resolves the dimension BlockSource at `0xEF72C4C ->
+  0xEC844CC` and directly reads `Player::getSelectedItem` at `0xEF72C5C ->
+  0xF0B900C`, which is the key finalization path for the routed effective stack.
+- `GameMode::continueDestroyBlock(BlockPos const&, unsigned char, Vec3 const&,
+  bool&)`: RVA `0xEF72F9C`. The ABI places player position in `x3` and the
+  destroyed-output reference in `x4`; the output is cleared near entry. The
+  body resolves the same dimension BlockSource at `0xEF73004 -> 0xEC844CC`.
+- `GameMode::stopDestroyBlock(BlockPos const&)`: RVA `0xEF7398C`.
 - `GameMode::baseUseItem(ItemStack const&)`: RVA `0xEF75578`, FDE
   `0xEF75578..0xEF7590C`; lambda vptr references at `0xEF75684 -> 0x12270308`
   and `0xEF756B0 -> 0x12270388`.
@@ -63,7 +72,14 @@ renderer/storage code:
   `0xEF76108..0xEF764EC`; lambda vptr references at
   `0xEF76298 -> 0x12270508` and `0xEF762A4 -> 0x12270588`.
 
-### Exact native hand/use accessors
+The GameMode vtable independently locks the destroy lifecycle order:
+
+- `0x1226EDC0 -> 0xEF72684` start
+- `0x1226EDC8 -> 0xEF72C18` finalize/destroy
+- `0x1226EDD0 -> 0xEF72F9C` continue
+- `0x1226EDD8 -> 0xEF7398C` stop/cancel
+
+### Exact native hand/use/block accessors
 
 The Android shipping binary does not expose the required C++ accessors through
 `dlsym`, so v0.2.68 resolves module-base + exact RVA and fingerprints the target
@@ -75,9 +91,14 @@ instructions before enabling Java-like actions:
 - `Player::isUsingItem`: `0xF0B8094`
 - active item-use stack accessor (`Player + 0x6D8`): `0xF0B80B4`
 - native stack-difference comparator used for active use: `0xF6443F4`
+- `Actor::getDimensionBlockSource` path: `0xEC844CC`
 
-The long-use offhand session is therefore validated against Minecraft's actual
-active-use stack rather than an item ID or a stale `ItemStack*` identity.
+The returned BlockSource object's vtable slot 2 (`+0x10`) is the exact
+`getBlock(BlockPos const&)` path used by the native destroy functions. v0.2.68
+uses it to obtain the actual target `Block const*` before hand arbitration.
+
+The long-use offhand session is validated against Minecraft's actual active-use
+stack rather than an item ID or a stale `ItemStack*` identity.
 
 ### Real combat capability — Item virtual slot 38
 
@@ -102,25 +123,27 @@ The routing order is mainhand real combat -> offhand real combat -> unchanged
 mainhand vanilla generic punch. The selected-item redirection exists only inside
 the scoped offhand attack transaction.
 
-### Mining lifecycle status
+### Target-sensitive mining capability — Item virtual slot 89
 
-Additional RE now gives strong ABI evidence for:
+Item vtable slot 89 (`+0x2C8`) is
+`getDestroySpeed(ItemStackBase const&, Block const&)`. Exact relocation evidence:
 
-- likely `GameMode::destroyBlock(BlockPos const&, unsigned char)`: `0xEF72C18`
-- likely `GameMode::continueDestroyBlock(BlockPos const&, unsigned char,
-  Vec3 const&, bool&)`: `0xEF72F9C`; `x3` carries player position and `x4` the
-  output boolean, which is cleared near entry.
-- likely `GameMode::stopDestroyBlock(BlockPos const&)`: `0xEF7398C`
-- likely `GameMode::_creativeDestroyBlock`: `0xEF72AF4`
-- likely `GameMode::getDestroyRate(Block const&)`: `0xEF73694`
+- base `Item`: `0x122E21E0 -> 0xF665908`; implementation returns `1.0f`.
+- `WeaponItem`: `0x122C6480 -> 0xF4C7970`.
+- `DiggerItem`: `0x122E4208 -> 0xF6B3FB0`.
+- `TridentItem`: `0x122C52D8 -> 0xF665908`, therefore the base `1.0f` path.
 
-Tool suitability also has a promising native boundary: Item vtable slot 89
-(offset `0x2C8`) is `getDestroySpeed(ItemStackBase const&, Block const&)`.
-Relocations include base Item `0x122E21E0 -> 0xF665908` (returns 1.0),
-WeaponItem `0x122C6480 -> 0xF4C7970`, and DiggerItem
-`0x122E4208 -> 0xF6B3FB0`.
+v0.2.68 treats native destroy speed `> 1.0f` for the actual target Block as a
+meaningful mining capability. Arbitration is therefore target-sensitive and has
+no item-name table: mainhand suitable -> offhand suitable -> unchanged vanilla
+mainhand fallback.
 
-Mining routing remains deliberately **fail-closed** for now. The continue,
-finalize and cancel functions plus the target-Block resolver still need exact
-binary-contract fingerprints before production hooks are installed. No nearby
-RVA is enabled from inference alone.
+When offhand wins, its real Item identity plus offhand slot `34` and a hash of
+the target `BlockPos` are pinned in `ActionSessionKind::Mining`. The same
+selected-item scope is preserved through `startDestroyBlock`,
+`continueDestroyBlock`, `destroyBlock`, and `stopDestroyBlock`. A stack/target
+change cancels the session and falls back to vanilla rather than silently
+switching hands. Because the original native GameMode functions still execute,
+break progress, native status/enchantment modifiers, final drops, durability,
+and transaction behavior stay in Minecraft's own pipeline rather than being
+reimplemented by the mod.
