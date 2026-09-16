@@ -91,7 +91,8 @@ jobs:
             tests/v0268_action_routing_binary_contract.py \
             tests/v0268_hand_action_policy_test.cpp \
             tests/v0268_action_hand_context_test.cpp \
-            tests/v0268_hand_action_router_core_test.cpp
+            tests/v0268_hand_action_router_core_test.cpp \
+            tests/v0268_semantic_bridge_source_contract.py
           grep -q '"version": "0.2.68"' manifest.json
           grep -q 'NativeCapabilityProbe.cpp' CMakeLists.txt
           grep -q 'HandActionRouter.cpp' CMakeLists.txt
@@ -99,6 +100,7 @@ jobs:
       - name: Run v0.2.68 action routing tests
         run: |
           python3 tests/v0268_action_routing_source_contract.py
+          python3 tests/v0268_semantic_bridge_source_contract.py
 
           g++ -std=c++20 -Wall -Wextra -Wpedantic -Werror \
             -fsanitize=address,undefined -fno-omit-frame-pointer \
