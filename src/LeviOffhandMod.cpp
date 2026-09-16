@@ -2,6 +2,7 @@
 #include "runtime/NativeOffhandPolicy.hpp"
 #include "runtime/AutoInsertRouting.hpp"
 #include "runtime/HandActionRouter.hpp"
+#include "runtime/NativeSemanticBridge.hpp"
 
 #include <android/log.h>
 #include <string_view>
@@ -25,6 +26,7 @@ void onModuleToggle(
         return;
     }
 
+    runtime::NativeSemanticBridge::instance().setFeatureEnabled(enabled);
     runtime::HandActionRouter::instance().setFeatureEnabled(enabled);
     runtime::NativeOffhandPolicy::instance().setFeatureEnabled(enabled);
     runtime::AutoInsertRouting::instance().setFeatureEnabled(enabled);
@@ -54,8 +56,8 @@ public:
 
     bool enable(pl::mod::ModContext& context) {
         // Stable storage remains the required baseline. Java-like action
-        // routing is installed only after storage is healthy and is allowed to
-        // fail closed without disabling the storage feature.
+        // routing and its semantic bridge are layered afterward and may fail
+        // closed without disabling stable offhand storage.
         if(!runtime::AutoInsertRouting::instance().install(context)) {
             context.logger().error(
                 "Levi Offhand: automatic routing installation failed"
@@ -76,6 +78,15 @@ public:
         if(!actionInstalled) {
             context.logger().warn(
                 "Levi Offhand: Java-like action routing unavailable; storage remains active"
+            );
+        }
+
+        const bool semanticInstalled=
+            actionInstalled &&
+            runtime::NativeSemanticBridge::instance().install(context);
+        if(actionInstalled && !semanticInstalled) {
+            context.logger().warn(
+                "Levi Offhand: semantic action bridge unavailable; base action router remains active"
             );
         }
 
@@ -105,6 +116,9 @@ public:
                 "Levi Offhand: Mod Menu registration failed"
             );
             patch.uninstall(context);
+            if(semanticInstalled) {
+                runtime::NativeSemanticBridge::instance().uninstall(context);
+            }
             if(actionInstalled) {
                 runtime::HandActionRouter::instance().uninstall(context);
             }
@@ -124,6 +138,11 @@ public:
                 "Offhand long-use sessions keep their hand through releaseUsingItem"
             );
         }
+        if(semanticInstalled) {
+            context.logger().info(
+                "Semantic offhand bridge active: upper-use retry and native mining-rate redirect"
+            );
+        }
         context.logger().info(
             "Native-only Bow/Trident renderer active for Minecraft 1.26.45.1"
         );
@@ -138,6 +157,7 @@ public:
 
     bool disable(pl::mod::ModContext& context) {
         unregisterModMenu();
+        runtime::NativeSemanticBridge::instance().setFeatureEnabled(false);
         runtime::HandActionRouter::instance().setFeatureEnabled(false);
         Patch::instance().uninstall(context);
         runtime::NativeOffhandPolicy::instance().setFeatureEnabled(false);
@@ -147,6 +167,7 @@ public:
 
     bool unload(pl::mod::ModContext& context) {
         unregisterModMenu();
+        runtime::NativeSemanticBridge::instance().uninstall(context);
         runtime::HandActionRouter::instance().uninstall(context);
         Patch::instance().uninstall(context);
         runtime::AutoInsertRouting::instance().uninstall(context);
