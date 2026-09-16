@@ -58,11 +58,13 @@ def main() -> int:
 
     router = RUNTIME / "HandActionRouter.cpp"
     probe = RUNTIME / "NativeCapabilityProbe.cpp"
-    if not router.exists() or not probe.exists():
-        raise AssertionError("v0.2.68 production router/probe source is missing")
+    core = RUNTIME / "HandActionRouterCore.hpp"
+    if not router.exists() or not probe.exists() or not core.exists():
+        raise AssertionError("v0.2.68 production router/probe/core source is missing")
 
     router_text = router.read_text(errors="replace")
     probe_text = probe.read_text(errors="replace")
+    core_text = core.read_text(errors="replace")
 
     # Runtime regression: the GameMode entry prologues used by this exact
     # binary occur many times, so HandActionRouter must never perform a global
@@ -81,6 +83,18 @@ def main() -> int:
     ):
         if token not in router_text:
             raise AssertionError(f"HandActionRouter exact-RVA resolver missing {token!r}")
+
+    # Temporary low-volume device diagnostics are required until the first
+    # device run proves which semantic layer is failing. They live in the pure
+    # router core so reaching these markers proves the native detour made it
+    # past its precondition checks. Host tests compile the non-Android branch.
+    for token in (
+        "[ActionDiag] use route",
+        "[ActionDiag] attack route mainReal=%d offReal=%d",
+        "[ActionDiag] mining route mainSuitable=%d offSuitable=%d",
+    ):
+        if token not in core_text:
+            raise AssertionError(f"runtime action diagnostic missing {token!r}")
 
     for token in (
         "kBaseUseItemRva = 0xEF75578",
@@ -251,7 +265,7 @@ def main() -> int:
     print(
         "v0.2.68 action routing source contract passed: "
         "exact-RVA hand/action access, MAIN-first item-use, native active-stack validation, "
-        "native combat routing, and target-sensitive pinned mining lifecycle"
+        "native combat routing, target-sensitive pinned mining lifecycle, and device diagnostics"
     )
     return 0
 
