@@ -37,4 +37,43 @@ template <typename MainAttempt, typename OffAttempt, typename Fallback>
     return UseRouteResult{ActionHand::MainHand, false, true};
 }
 
+struct AttackRouteResult {
+    ActionHand hand{ActionHand::MainHand};
+    bool nativeResult{false};
+    bool usedFallback{false};
+};
+
+template <typename MainAttempt, typename OffAttempt, typename Fallback>
+[[nodiscard]] AttackRouteResult routeAttackAction(
+    bool mainHasRealCombatCapability,
+    bool offHasRealCombatCapability,
+    MainAttempt&& mainAttempt,
+    OffAttempt&& offAttempt,
+    Fallback&& fallback
+) {
+    if (mainHasRealCombatCapability) {
+        ScopedActionHand scope(ActionHand::MainHand, ActionKind::AttackEntity);
+        return AttackRouteResult{
+            ActionHand::MainHand,
+            static_cast<bool>(std::forward<MainAttempt>(mainAttempt)()),
+            false,
+        };
+    }
+
+    if (offHasRealCombatCapability) {
+        ScopedActionHand scope(ActionHand::OffHand, ActionKind::AttackEntity);
+        return AttackRouteResult{
+            ActionHand::OffHand,
+            static_cast<bool>(std::forward<OffAttempt>(offAttempt)()),
+            false,
+        };
+    }
+
+    return AttackRouteResult{
+        ActionHand::MainHand,
+        static_cast<bool>(std::forward<Fallback>(fallback)()),
+        true,
+    };
+}
+
 } // namespace levioffhand::runtime
