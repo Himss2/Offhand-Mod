@@ -15,9 +15,6 @@ namespace {
 constexpr char kMinecraftLibrary[] = "libminecraftpe.so";
 constexpr char kLogTag[] = "Levi Offhand";
 
-// Exact Minecraft Bedrock Android 1.26.45.1 RVAs. These are guarded by
-// instruction fingerprints below and are never resolved by dynamic symbol
-// lookup because the shipping binary does not export the required accessors.
 constexpr std::uintptr_t kSelectedItemRva = 0xF0B900C;
 constexpr std::uintptr_t kOffhandSlotRva = 0xEC9D62C;
 constexpr std::uintptr_t kStackIsNullRva = 0xF63E760;
@@ -25,9 +22,15 @@ constexpr std::uintptr_t kPlayerIsUsingItemRva = 0xF0B8094;
 constexpr std::uintptr_t kItemInUseStackRva = 0xF0B80B4;
 constexpr std::uintptr_t kStackDiffersForUseRva = 0xF6443F4;
 
-// GameMode is polymorphic; on the exact target ABI the first data member
-// after its vptr is Player& mPlayer.
 constexpr std::size_t kGameModePlayerOffset = sizeof(void*);
+
+// Exact ItemStackBase ABI: vptr at +0x0, WeakPtr<Item> at +0x8. WeakPtr holds
+// SharedCounter<Item>* and the SharedCounter's first field is Item*.
+constexpr std::size_t kItemStackItemOffset = sizeof(void*);
+
+// Item vtable slot proven against the 1.26.45.1 base/Weapon/Digger/Trident
+// relocation tables. Base Item::getAttackDamage() returns exactly zero.
+constexpr std::size_t kItemGetAttackDamageSlot = 38;
 
 constexpr std::array<std::uint8_t, 16> kSelectedItemFingerprint{
     0x08, 0xB8, 0x42, 0xF9, 0x09, 0xC1, 0x42, 0x39,
@@ -188,7 +191,7 @@ bool NativeCapabilityProbe::install(pl::mod::ModContext& context) noexcept {
     }
 
     context.logger().info(
-        "[NativeCapabilityProbe] exact-RVA main/offhand/use accessors resolved"
+        "[NativeCapabilityProbe] exact-RVA hand/use accessors and Item combat ABI resolved"
     );
     return true;
 }
@@ -222,6 +225,33 @@ bool NativeCapabilityProbe::validatePlayerObject(const void* player) const noexc
     const void* vtable = nullptr;
     std::memcpy(&vtable, player, sizeof(vtable));
     return belongsToMinecraft(reinterpret_cast<std::uintptr_t>(vtable));
+}
+
+const void* NativeCapabilityProbe::itemFromStack(const void* stack) const noexcept {
+    if (stack == nullptr || stackIsNull(stack)) {
+        return nullptr;
+    }
+
+    const void* counter = nullptr;
+    const auto* stackBytes = static_cast<const std::byte*>(stack);
+    std::memcpy(&counter, stackBytes + kItemStackItemOffset, sizeof(counter));
+    if (counter == nullptr) {
+        return nullptr;
+    }
+
+    const void* item = nullptr;
+    std::memcpy(&item, counter, sizeof(item));
+    if (item == nullptr) {
+        return nullptr;
+    }
+
+    const void* vtable = nullptr;
+    std::memcpy(&vtable, item, sizeof(vtable));
+    if (!belongsToMinecraft(reinterpret_cast<std::uintptr_t>(vtable))) {
+        return nullptr;
+    }
+
+    return item;
 }
 
 const void* NativeCapabilityProbe::playerFromGameMode(void* gameMode) const noexcept {
@@ -289,6 +319,35 @@ bool NativeCapabilityProbe::stackMatchesForUse(
         return false;
     }
     return !mStackDiffersForUse(lhs, rhs);
+}
+
+bool NativeCapabilityProbe::realCombatCapability(const void* stack) const noexcept {
+    const void* item = itemFromStack(stack);
+    if (item == nullptr) {
+        return false;
+    }
+
+    const void* vtable = nullptr;
+    std::memcpy(&vtable, item, sizeof(vtable));
+    if (!belongsToMinecraft(reinterpret_cast<std::uintptr_t>(vtable))) {
+        return false;
+    }
+
+    const void* function = nullptr;
+    const auto* vtableBytes = static_cast<const std::byte*>(vtable);
+    std::memcpy(
+        &function,
+        vtableBytes + kItemGetAttackDamageSlot * sizeof(void*),
+        sizeof(function)
+    );
+    if (!belongsToMinecraft(reinterpret_cast<std::uintptr_t>(function))) {
+        return false;
+    }
+
+    const auto getAttackDamage = reinterpret_cast<GetAttackDamageFn>(
+        const_cast<void*>(function)
+    );
+    return getAttackDamage(item) > 0;
 }
 
 std::uintptr_t NativeCapabilityProbe::selectedItemTarget() const noexcept {
