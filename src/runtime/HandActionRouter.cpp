@@ -21,6 +21,10 @@ constexpr char kMinecraftLibrary[] = "libminecraftpe.so";
 constexpr char kLogTag[] = "Levi Offhand";
 
 constexpr std::uintptr_t kAttackRva = 0xEF721E4;
+constexpr std::uintptr_t kStartDestroyBlockRva = 0xEF72684;
+constexpr std::uintptr_t kDestroyBlockRva = 0xEF72C18;
+constexpr std::uintptr_t kContinueDestroyBlockRva = 0xEF72F9C;
+constexpr std::uintptr_t kStopDestroyBlockRva = 0xEF7398C;
 constexpr std::uintptr_t kBaseUseItemRva = 0xEF75578;
 constexpr std::uintptr_t kReleaseUsingItemRva = 0xEF76108;
 constexpr ActionSlotToken kOffhandSlotIdentity = 34;
@@ -30,6 +34,30 @@ constexpr char kAttackSignature[] =
     "FD 7B 17 A9 "
     "FC C3 00 F9 "
     "FA 67 19 A9";
+
+constexpr char kStartDestroyBlockSignature[] =
+    "FF 83 01 D1 "
+    "FD 7B 01 A9 "
+    "F9 13 00 F9 "
+    "F8 5F 03 A9";
+
+constexpr char kDestroyBlockSignature[] =
+    "FF 03 02 D1 "
+    "FD 7B 04 A9 "
+    "F8 5F 05 A9 "
+    "F6 57 06 A9";
+
+constexpr char kContinueDestroyBlockSignature[] =
+    "FF 83 03 D1 "
+    "E9 23 07 6D "
+    "FD 7B 08 A9 "
+    "FC 6F 09 A9";
+
+constexpr char kStopDestroyBlockSignature[] =
+    "FD 7B BE A9 "
+    "F3 0B 00 F9 "
+    "FD 03 00 91 "
+    "F3 03 00 AA";
 
 constexpr char kBaseUseItemSignature[] =
     "FF 43 04 D1 "
@@ -49,6 +77,28 @@ using AttackFn = bool (*)(
     bool playPredictiveSound,
     const void* hitPosition
 );
+using StartDestroyBlockFn = bool (*)(
+    void* gameMode,
+    const void* blockPos,
+    unsigned char face,
+    bool* hasDestroyedBlock
+);
+using DestroyBlockFn = bool (*)(
+    void* gameMode,
+    const void* blockPos,
+    unsigned char face
+);
+using ContinueDestroyBlockFn = bool (*)(
+    void* gameMode,
+    const void* blockPos,
+    unsigned char face,
+    const void* playerPos,
+    bool* hasDestroyedBlock
+);
+using StopDestroyBlockFn = void (*)(
+    void* gameMode,
+    const void* blockPos
+);
 using BaseUseItemFn = bool (*)(void* gameMode, const void* itemStack);
 using SelectedItemFn = const void* (*)(const void* player);
 using ReleaseUsingItemFn = void (*)(void* gameMode);
@@ -56,8 +106,10 @@ using ReleaseUsingItemFn = void (*)(void* gameMode);
 thread_local const void* gScopedPlayer = nullptr;
 thread_local const void* gSessionPlayer = nullptr;
 thread_local void* gSessionGameMode = nullptr;
+thread_local ActionTargetToken gSessionTargetIdentity = 0;
 thread_local bool gInsideBaseUseDetour = false;
 thread_local bool gInsideAttackDetour = false;
+thread_local bool gInsideMiningDetour = false;
 
 class ScopedRoutedPlayer final {
 public:
@@ -143,6 +195,7 @@ private:
 void clearSessionIdentity() noexcept {
     gSessionPlayer = nullptr;
     gSessionGameMode = nullptr;
+    gSessionTargetIdentity = 0;
 }
 
 [[nodiscard]] ActionIdentityToken identityForActiveUseStack(
@@ -151,6 +204,24 @@ void clearSessionIdentity() noexcept {
     return static_cast<ActionIdentityToken>(
         reinterpret_cast<std::uintptr_t>(itemInUseStack)
     );
+}
+
+[[nodiscard]] ActionTargetToken targetIdentityForBlockPos(
+    const void* blockPos
+) noexcept {
+    if (blockPos == nullptr) {
+        return 0;
+    }
+
+    std::uint8_t bytes[12]{};
+    std::memcpy(bytes, blockPos, sizeof(bytes));
+
+    std::uint64_t hash = 14695981039346656037ULL;
+    for (const std::uint8_t byte : bytes) {
+        hash ^= byte;
+        hash *= 1099511628211ULL;
+    }
+    return static_cast<ActionTargetToken>(hash);
 }
 
 } // namespace
@@ -172,12 +243,28 @@ bool HandActionRouter::install(pl::mod::ModContext& context) noexcept {
     auto& probe = NativeCapabilityProbe::instance();
     if (!probe.install(context)) {
         context.logger().warn(
-            "[HandActionRouter] native hand access unavailable; Java-like actions disabled"
+            "[HandActionRouter] native capability access unavailable; Java-like actions disabled"
         );
         return false;
     }
 
     mAttackTarget = resolveExactTarget(kAttackSignature, kAttackRva);
+    mStartDestroyBlockTarget = resolveExactTarget(
+        kStartDestroyBlockSignature,
+        kStartDestroyBlockRva
+    );
+    mDestroyBlockTarget = resolveExactTarget(
+        kDestroyBlockSignature,
+        kDestroyBlockRva
+    );
+    mContinueDestroyBlockTarget = resolveExactTarget(
+        kContinueDestroyBlockSignature,
+        kContinueDestroyBlockRva
+    );
+    mStopDestroyBlockTarget = resolveExactTarget(
+        kStopDestroyBlockSignature,
+        kStopDestroyBlockRva
+    );
     mTarget = resolveExactTarget(kBaseUseItemSignature, kBaseUseItemRva);
     mReleaseUsingItemTarget = resolveExactTarget(
         kReleaseUsingItemSignature,
@@ -187,6 +274,10 @@ bool HandActionRouter::install(pl::mod::ModContext& context) noexcept {
 
     if (
         mAttackTarget == 0 ||
+        mStartDestroyBlockTarget == 0 ||
+        mDestroyBlockTarget == 0 ||
+        mContinueDestroyBlockTarget == 0 ||
+        mStopDestroyBlockTarget == 0 ||
         mTarget == 0 ||
         mReleaseUsingItemTarget == 0 ||
         !belongsToMinecraft(mSelectedItemTarget)
@@ -196,6 +287,10 @@ bool HandActionRouter::install(pl::mod::ModContext& context) noexcept {
         );
         probe.uninstall(context);
         mAttackTarget = 0;
+        mStartDestroyBlockTarget = 0;
+        mDestroyBlockTarget = 0;
+        mContinueDestroyBlockTarget = 0;
+        mStopDestroyBlockTarget = 0;
         mTarget = 0;
         mReleaseUsingItemTarget = 0;
         mSelectedItemTarget = 0;
@@ -205,9 +300,15 @@ bool HandActionRouter::install(pl::mod::ModContext& context) noexcept {
     sInstance = this;
     mOriginal = nullptr;
     mAttackOriginal = nullptr;
+    mStartDestroyBlockOriginal = nullptr;
+    mDestroyBlockOriginal = nullptr;
+    mContinueDestroyBlockOriginal = nullptr;
+    mStopDestroyBlockOriginal = nullptr;
     mSelectedItemOriginal = nullptr;
     mReleaseUsingItemOriginal = nullptr;
 
+    // The selected-item adapter is support infrastructure for every routed
+    // action, so publish it before any semantic action hook.
     mSelectedItemHook = std::make_unique<pl::memory::HookHandle>(
         reinterpret_cast<void*>(mSelectedItemTarget),
         reinterpret_cast<void*>(&HandActionRouter::selectedItemDetour),
@@ -252,6 +353,71 @@ bool HandActionRouter::install(pl::mod::ModContext& context) noexcept {
         return false;
     }
 
+    mStartDestroyBlockHook = std::make_unique<pl::memory::HookHandle>(
+        reinterpret_cast<void*>(mStartDestroyBlockTarget),
+        reinterpret_cast<void*>(&HandActionRouter::startDestroyBlockDetour),
+        &mStartDestroyBlockOriginal,
+        pl::memory::HookPriority::Normal
+    );
+    if (
+        !mStartDestroyBlockHook ||
+        !mStartDestroyBlockHook->installed() ||
+        mStartDestroyBlockOriginal == nullptr
+    ) {
+        context.logger().warn("[HandActionRouter] startDestroyBlock hook failed");
+        uninstall(context);
+        return false;
+    }
+
+    mDestroyBlockHook = std::make_unique<pl::memory::HookHandle>(
+        reinterpret_cast<void*>(mDestroyBlockTarget),
+        reinterpret_cast<void*>(&HandActionRouter::destroyBlockDetour),
+        &mDestroyBlockOriginal,
+        pl::memory::HookPriority::Normal
+    );
+    if (
+        !mDestroyBlockHook ||
+        !mDestroyBlockHook->installed() ||
+        mDestroyBlockOriginal == nullptr
+    ) {
+        context.logger().warn("[HandActionRouter] destroyBlock hook failed");
+        uninstall(context);
+        return false;
+    }
+
+    mContinueDestroyBlockHook = std::make_unique<pl::memory::HookHandle>(
+        reinterpret_cast<void*>(mContinueDestroyBlockTarget),
+        reinterpret_cast<void*>(&HandActionRouter::continueDestroyBlockDetour),
+        &mContinueDestroyBlockOriginal,
+        pl::memory::HookPriority::Normal
+    );
+    if (
+        !mContinueDestroyBlockHook ||
+        !mContinueDestroyBlockHook->installed() ||
+        mContinueDestroyBlockOriginal == nullptr
+    ) {
+        context.logger().warn("[HandActionRouter] continueDestroyBlock hook failed");
+        uninstall(context);
+        return false;
+    }
+
+    mStopDestroyBlockHook = std::make_unique<pl::memory::HookHandle>(
+        reinterpret_cast<void*>(mStopDestroyBlockTarget),
+        reinterpret_cast<void*>(&HandActionRouter::stopDestroyBlockDetour),
+        &mStopDestroyBlockOriginal,
+        pl::memory::HookPriority::Normal
+    );
+    if (
+        !mStopDestroyBlockHook ||
+        !mStopDestroyBlockHook->installed() ||
+        mStopDestroyBlockOriginal == nullptr
+    ) {
+        context.logger().warn("[HandActionRouter] stopDestroyBlock hook failed");
+        uninstall(context);
+        return false;
+    }
+
+    // baseUseItem is the broadest semantic entry and is published last.
     mBaseUseItemHook = std::make_unique<pl::memory::HookHandle>(
         reinterpret_cast<void*>(mTarget),
         reinterpret_cast<void*>(&HandActionRouter::baseUseItemDetour),
@@ -272,6 +438,7 @@ bool HandActionRouter::install(pl::mod::ModContext& context) noexcept {
     mLoggedOffhandUse.store(false, std::memory_order_relaxed);
     mLoggedLongUse.store(false, std::memory_order_relaxed);
     mLoggedOffhandAttack.store(false, std::memory_order_relaxed);
+    mLoggedOffhandMining.store(false, std::memory_order_relaxed);
 
     context.logger().info(
         "[HandActionRouter] Java-like item-use routing active: main -> offhand"
@@ -280,10 +447,15 @@ bool HandActionRouter::install(pl::mod::ModContext& context) noexcept {
         "[HandActionRouter] real-combat attack routing active: main -> offhand -> vanilla punch"
     );
     context.logger().info(
-        "[HandActionRouter] attack RVA=0x{:x}, baseUseItem RVA=0x{:x}, release RVA=0x{:x}",
+        "[HandActionRouter] target-sensitive mining routing active across start/continue/destroy/stop"
+    );
+    context.logger().info(
+        "[HandActionRouter] attack=0x{:x}, start=0x{:x}, destroy=0x{:x}, continue=0x{:x}, stop=0x{:x}",
         kAttackRva,
-        kBaseUseItemRva,
-        kReleaseUsingItemRva
+        kStartDestroyBlockRva,
+        kDestroyBlockRva,
+        kContinueDestroyBlockRva,
+        kStopDestroyBlockRva
     );
     return true;
 }
@@ -292,9 +464,26 @@ void HandActionRouter::uninstall(pl::mod::ModContext& context) noexcept {
     cancelActiveSession();
     mFeatureEnabled.store(false, std::memory_order_release);
 
+    // Stop new semantic entries first, then remove their support hooks.
     if (mBaseUseItemHook) {
         mBaseUseItemHook->reset();
         mBaseUseItemHook.reset();
+    }
+    if (mStopDestroyBlockHook) {
+        mStopDestroyBlockHook->reset();
+        mStopDestroyBlockHook.reset();
+    }
+    if (mContinueDestroyBlockHook) {
+        mContinueDestroyBlockHook->reset();
+        mContinueDestroyBlockHook.reset();
+    }
+    if (mDestroyBlockHook) {
+        mDestroyBlockHook->reset();
+        mDestroyBlockHook.reset();
+    }
+    if (mStartDestroyBlockHook) {
+        mStartDestroyBlockHook->reset();
+        mStartDestroyBlockHook.reset();
     }
     if (mAttackHook) {
         mAttackHook->reset();
@@ -311,12 +500,22 @@ void HandActionRouter::uninstall(pl::mod::ModContext& context) noexcept {
 
     mOriginal = nullptr;
     mAttackOriginal = nullptr;
+    mStartDestroyBlockOriginal = nullptr;
+    mDestroyBlockOriginal = nullptr;
+    mContinueDestroyBlockOriginal = nullptr;
+    mStopDestroyBlockOriginal = nullptr;
     mSelectedItemOriginal = nullptr;
     mReleaseUsingItemOriginal = nullptr;
+
     mAttackTarget = 0;
+    mStartDestroyBlockTarget = 0;
+    mDestroyBlockTarget = 0;
+    mContinueDestroyBlockTarget = 0;
+    mStopDestroyBlockTarget = 0;
     mTarget = 0;
     mSelectedItemTarget = 0;
     mReleaseUsingItemTarget = 0;
+
     sInstance = nullptr;
     clearSessionIdentity();
     currentActionSession().cancel();
@@ -342,12 +541,24 @@ bool HandActionRouter::installed() const noexcept {
         mBaseUseItemHook->installed() &&
         mAttackHook != nullptr &&
         mAttackHook->installed() &&
+        mStartDestroyBlockHook != nullptr &&
+        mStartDestroyBlockHook->installed() &&
+        mDestroyBlockHook != nullptr &&
+        mDestroyBlockHook->installed() &&
+        mContinueDestroyBlockHook != nullptr &&
+        mContinueDestroyBlockHook->installed() &&
+        mStopDestroyBlockHook != nullptr &&
+        mStopDestroyBlockHook->installed() &&
         mReleaseUsingItemHook != nullptr &&
         mReleaseUsingItemHook->installed() &&
         mSelectedItemHook != nullptr &&
         mSelectedItemHook->installed() &&
         mOriginal != nullptr &&
         mAttackOriginal != nullptr &&
+        mStartDestroyBlockOriginal != nullptr &&
+        mDestroyBlockOriginal != nullptr &&
+        mContinueDestroyBlockOriginal != nullptr &&
+        mStopDestroyBlockOriginal != nullptr &&
         mReleaseUsingItemOriginal != nullptr &&
         mSelectedItemOriginal != nullptr &&
         NativeCapabilityProbe::instance().available();
@@ -438,6 +649,7 @@ bool HandActionRouter::baseUseItemDetour(
                 ) {
                     gSessionPlayer = player;
                     gSessionGameMode = gameMode;
+                    gSessionTargetIdentity = 0;
                     expected = false;
                     if (instance->mLoggedLongUse.compare_exchange_strong(
                             expected,
@@ -527,6 +739,314 @@ bool HandActionRouter::attackDetour(
     return result.nativeResult;
 }
 
+bool HandActionRouter::startDestroyBlockDetour(
+    void* gameMode,
+    const void* blockPos,
+    unsigned char face,
+    bool* hasDestroyedBlock
+) noexcept {
+    auto* instance = sInstance;
+    if (instance == nullptr || instance->mStartDestroyBlockOriginal == nullptr) {
+        return false;
+    }
+
+    const auto original = reinterpret_cast<StartDestroyBlockFn>(
+        instance->mStartDestroyBlockOriginal
+    );
+    if (!instance->featureEnabled() || gInsideMiningDetour) {
+        return original(gameMode, blockPos, face, hasDestroyedBlock);
+    }
+
+    auto& session = currentActionSession();
+    if (session.active()) {
+        if (session.kind() != ActionSessionKind::Mining) {
+            return original(gameMode, blockPos, face, hasDestroyedBlock);
+        }
+        session.cancel();
+        clearSessionIdentity();
+    }
+
+    auto& probe = NativeCapabilityProbe::instance();
+    const void* player = probe.playerFromGameMode(gameMode);
+    const void* mainStack = probe.mainhandStack(gameMode);
+    if (
+        player == nullptr ||
+        mainStack == nullptr ||
+        blockPos == nullptr ||
+        hasDestroyedBlock == nullptr
+    ) {
+        return original(gameMode, blockPos, face, hasDestroyedBlock);
+    }
+
+    const void* targetBlock = probe.blockAt(player, blockPos);
+    if (targetBlock == nullptr) {
+        return original(gameMode, blockPos, face, hasDestroyedBlock);
+    }
+
+    const void* offStack = probe.offhandStackForPlayer(player);
+    const bool mainSuitable = probe.realMiningCapability(mainStack, targetBlock);
+    const bool offSuitable =
+        offStack != nullptr &&
+        !probe.stackIsNull(offStack) &&
+        probe.realMiningCapability(offStack, targetBlock);
+
+    ScopedBool reentryGuard(gInsideMiningDetour);
+    ScopedRoutedPlayer routedPlayer(player);
+
+    const MiningRouteResult result = routeMiningStart(
+        mainSuitable,
+        offSuitable,
+        [&]() noexcept {
+            return original(gameMode, blockPos, face, hasDestroyedBlock);
+        },
+        [&]() noexcept {
+            return original(gameMode, blockPos, face, hasDestroyedBlock);
+        },
+        [&]() noexcept {
+            return original(gameMode, blockPos, face, hasDestroyedBlock);
+        },
+        *hasDestroyedBlock
+    );
+
+    if (
+        !result.usedFallback &&
+        result.nativeResult &&
+        result.hand == ActionHand::OffHand &&
+        !*hasDestroyedBlock
+    ) {
+        const ActionIdentityToken stackIdentity = static_cast<ActionIdentityToken>(
+            probe.stackItemIdentity(offStack)
+        );
+        const ActionTargetToken targetIdentity = targetIdentityForBlockPos(blockPos);
+        if (
+            stackIdentity != 0 &&
+            session.tryBegin(
+                ActionSessionKind::Mining,
+                ActionHand::OffHand,
+                stackIdentity,
+                kOffhandSlotIdentity,
+                targetIdentity,
+                0
+            )
+        ) {
+            gSessionPlayer = player;
+            gSessionGameMode = gameMode;
+            gSessionTargetIdentity = targetIdentity;
+
+            bool expected = false;
+            if (instance->mLoggedOffhandMining.compare_exchange_strong(
+                    expected,
+                    true,
+                    std::memory_order_relaxed
+                )) {
+                __android_log_print(
+                    ANDROID_LOG_INFO,
+                    kLogTag,
+                    "[HandActionRouter] mining selected OFFHAND native destroy-speed capability"
+                );
+            }
+        }
+    }
+
+    return result.nativeResult;
+}
+
+bool HandActionRouter::continueDestroyBlockDetour(
+    void* gameMode,
+    const void* blockPos,
+    unsigned char face,
+    const void* playerPos,
+    bool* hasDestroyedBlock
+) noexcept {
+    auto* instance = sInstance;
+    if (instance == nullptr || instance->mContinueDestroyBlockOriginal == nullptr) {
+        return false;
+    }
+
+    const auto original = reinterpret_cast<ContinueDestroyBlockFn>(
+        instance->mContinueDestroyBlockOriginal
+    );
+    if (!instance->featureEnabled() || gInsideMiningDetour) {
+        return original(gameMode, blockPos, face, playerPos, hasDestroyedBlock);
+    }
+
+    auto& session = currentActionSession();
+    if (
+        !session.active() ||
+        session.kind() != ActionSessionKind::Mining ||
+        session.hand() != ActionHand::OffHand
+    ) {
+        return original(gameMode, blockPos, face, playerPos, hasDestroyedBlock);
+    }
+
+    auto& probe = NativeCapabilityProbe::instance();
+    const void* player = probe.playerFromGameMode(gameMode);
+    const void* offStack = probe.offhandStackForPlayer(player);
+    const ActionTargetToken targetIdentity = targetIdentityForBlockPos(blockPos);
+    const ActionIdentityToken stackIdentity = static_cast<ActionIdentityToken>(
+        probe.stackItemIdentity(offStack)
+    );
+    if (
+        gameMode != gSessionGameMode ||
+        player == nullptr ||
+        player != gSessionPlayer ||
+        offStack == nullptr ||
+        probe.stackIsNull(offStack) ||
+        targetIdentity != gSessionTargetIdentity ||
+        !session.matches(
+            stackIdentity,
+            kOffhandSlotIdentity,
+            targetIdentity
+        )
+    ) {
+        session.cancel();
+        clearSessionIdentity();
+        return original(gameMode, blockPos, face, playerPos, hasDestroyedBlock);
+    }
+
+    ScopedBool reentryGuard(gInsideMiningDetour);
+    ScopedActionHand actionScope(ActionHand::OffHand, ActionKind::MineBlock);
+    ScopedRoutedPlayer routedPlayer(player);
+    const bool nativeResult = original(
+        gameMode,
+        blockPos,
+        face,
+        playerPos,
+        hasDestroyedBlock
+    );
+
+    if (hasDestroyedBlock != nullptr && *hasDestroyedBlock) {
+        session.finish();
+        clearSessionIdentity();
+    }
+    return nativeResult;
+}
+
+bool HandActionRouter::destroyBlockDetour(
+    void* gameMode,
+    const void* blockPos,
+    unsigned char face
+) noexcept {
+    auto* instance = sInstance;
+    if (instance == nullptr || instance->mDestroyBlockOriginal == nullptr) {
+        return false;
+    }
+
+    const auto original = reinterpret_cast<DestroyBlockFn>(
+        instance->mDestroyBlockOriginal
+    );
+    if (!instance->featureEnabled() || gInsideMiningDetour) {
+        return original(gameMode, blockPos, face);
+    }
+
+    auto& session = currentActionSession();
+    if (
+        !session.active() ||
+        session.kind() != ActionSessionKind::Mining ||
+        session.hand() != ActionHand::OffHand
+    ) {
+        return original(gameMode, blockPos, face);
+    }
+
+    auto& probe = NativeCapabilityProbe::instance();
+    const void* player = probe.playerFromGameMode(gameMode);
+    const void* offStack = probe.offhandStackForPlayer(player);
+    const ActionTargetToken targetIdentity = targetIdentityForBlockPos(blockPos);
+    const ActionIdentityToken stackIdentity = static_cast<ActionIdentityToken>(
+        probe.stackItemIdentity(offStack)
+    );
+    if (
+        gameMode != gSessionGameMode ||
+        player == nullptr ||
+        player != gSessionPlayer ||
+        offStack == nullptr ||
+        probe.stackIsNull(offStack) ||
+        targetIdentity != gSessionTargetIdentity ||
+        !session.matches(
+            stackIdentity,
+            kOffhandSlotIdentity,
+            targetIdentity
+        )
+    ) {
+        session.cancel();
+        clearSessionIdentity();
+        return original(gameMode, blockPos, face);
+    }
+
+    ScopedBool reentryGuard(gInsideMiningDetour);
+    ScopedActionHand actionScope(ActionHand::OffHand, ActionKind::MineBlock);
+    ScopedRoutedPlayer routedPlayer(player);
+    const bool nativeResult = original(gameMode, blockPos, face);
+
+    session.finish();
+    clearSessionIdentity();
+    return nativeResult;
+}
+
+void HandActionRouter::stopDestroyBlockDetour(
+    void* gameMode,
+    const void* blockPos
+) noexcept {
+    auto* instance = sInstance;
+    if (instance == nullptr || instance->mStopDestroyBlockOriginal == nullptr) {
+        return;
+    }
+
+    const auto original = reinterpret_cast<StopDestroyBlockFn>(
+        instance->mStopDestroyBlockOriginal
+    );
+    if (!instance->featureEnabled() || gInsideMiningDetour) {
+        original(gameMode, blockPos);
+        return;
+    }
+
+    auto& session = currentActionSession();
+    if (
+        !session.active() ||
+        session.kind() != ActionSessionKind::Mining ||
+        session.hand() != ActionHand::OffHand
+    ) {
+        original(gameMode, blockPos);
+        return;
+    }
+
+    auto& probe = NativeCapabilityProbe::instance();
+    const void* player = probe.playerFromGameMode(gameMode);
+    const void* offStack = probe.offhandStackForPlayer(player);
+    const ActionTargetToken targetIdentity = targetIdentityForBlockPos(blockPos);
+    const ActionIdentityToken stackIdentity = static_cast<ActionIdentityToken>(
+        probe.stackItemIdentity(offStack)
+    );
+    if (
+        gameMode != gSessionGameMode ||
+        player == nullptr ||
+        player != gSessionPlayer ||
+        offStack == nullptr ||
+        probe.stackIsNull(offStack) ||
+        targetIdentity != gSessionTargetIdentity ||
+        !session.matches(
+            stackIdentity,
+            kOffhandSlotIdentity,
+            targetIdentity
+        )
+    ) {
+        session.cancel();
+        clearSessionIdentity();
+        original(gameMode, blockPos);
+        return;
+    }
+
+    {
+        ScopedBool reentryGuard(gInsideMiningDetour);
+        ScopedActionHand actionScope(ActionHand::OffHand, ActionKind::MineBlock);
+        ScopedRoutedPlayer routedPlayer(player);
+        original(gameMode, blockPos);
+    }
+
+    session.cancel();
+    clearSessionIdentity();
+}
+
 const void* HandActionRouter::selectedItemDetour(
     const void* player
 ) noexcept {
@@ -576,15 +1096,35 @@ const void* HandActionRouter::selectedItemDetour(
     }
 
     if (session.active() && player == gSessionPlayer) {
-        const void* itemInUseStack = probe.itemInUseStack(player);
-        const ActionIdentityToken currentIdentity =
-            identityForActiveUseStack(itemInUseStack);
-        if (
-            itemInUseStack == nullptr ||
-            probe.stackIsNull(itemInUseStack) ||
-            !probe.stackMatchesForUse(itemInUseStack, offStack) ||
-            !session.matches(currentIdentity, kOffhandSlotIdentity, 0)
-        ) {
+        if (session.kind() == ActionSessionKind::UsingItem) {
+            const void* itemInUseStack = probe.itemInUseStack(player);
+            const ActionIdentityToken currentIdentity =
+                identityForActiveUseStack(itemInUseStack);
+            if (
+                itemInUseStack == nullptr ||
+                probe.stackIsNull(itemInUseStack) ||
+                !probe.stackMatchesForUse(itemInUseStack, offStack) ||
+                !session.matches(currentIdentity, kOffhandSlotIdentity, 0)
+            ) {
+                session.cancel();
+                clearSessionIdentity();
+                return original(player);
+            }
+        } else if (session.kind() == ActionSessionKind::Mining) {
+            const ActionIdentityToken currentIdentity =
+                static_cast<ActionIdentityToken>(probe.stackItemIdentity(offStack));
+            if (
+                !session.matches(
+                    currentIdentity,
+                    kOffhandSlotIdentity,
+                    gSessionTargetIdentity
+                )
+            ) {
+                session.cancel();
+                clearSessionIdentity();
+                return original(player);
+            }
+        } else {
             session.cancel();
             clearSessionIdentity();
             return original(player);
@@ -607,6 +1147,7 @@ void HandActionRouter::releaseUsingItemDetour(void* gameMode) noexcept {
     if (
         !instance->featureEnabled() ||
         !session.active() ||
+        session.kind() != ActionSessionKind::UsingItem ||
         session.hand() != ActionHand::OffHand ||
         gameMode != gSessionGameMode ||
         gSessionPlayer == nullptr
@@ -633,6 +1174,7 @@ void HandActionRouter::cancelActiveSession() noexcept {
     }
 
     if (
+        session.kind() == ActionSessionKind::UsingItem &&
         session.hand() == ActionHand::OffHand &&
         gSessionGameMode != nullptr &&
         gSessionPlayer != nullptr &&
