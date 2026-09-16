@@ -102,6 +102,8 @@ add_library(
 
     src/runtime/HandActionRouter.cpp
 
+    src/runtime/NativeSemanticBridge.cpp
+
     src/render/OffhandBlockRenderPatch.cpp
 )
 
