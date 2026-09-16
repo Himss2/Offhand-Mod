@@ -1,6 +1,7 @@
 #include "render/OffhandBlockRenderPatch.hpp"
 #include "runtime/NativeOffhandPolicy.hpp"
 #include "runtime/AutoInsertRouting.hpp"
+#include "runtime/HandActionRouter.hpp"
 
 #include <android/log.h>
 #include <string_view>
@@ -24,6 +25,7 @@ void onModuleToggle(
         return;
     }
 
+    runtime::HandActionRouter::instance().setFeatureEnabled(enabled);
     runtime::NativeOffhandPolicy::instance().setFeatureEnabled(enabled);
     runtime::AutoInsertRouting::instance().setFeatureEnabled(enabled);
     Patch::instance().setFeatureEnabled(enabled);
@@ -51,9 +53,9 @@ public:
     }
 
     bool enable(pl::mod::ModContext& context) {
-        // Install the routing guard before enabling native capability.
-        // If the policy patch fails, removing the guard is safe because no
-        // new offhand capability was committed by this enable attempt.
+        // Stable storage remains the required baseline. Java-like action
+        // routing is installed only after storage is healthy and is allowed to
+        // fail closed without disabling the storage feature.
         if(!runtime::AutoInsertRouting::instance().install(context)) {
             context.logger().error(
                 "Levi Offhand: automatic routing installation failed"
@@ -69,6 +71,14 @@ public:
             return false;
         }
 
+        const bool actionInstalled=
+            runtime::HandActionRouter::instance().install(context);
+        if(!actionInstalled) {
+            context.logger().warn(
+                "Levi Offhand: Java-like action routing unavailable; storage remains active"
+            );
+        }
+
         auto& patch=Patch::instance();
         const bool visualInstalled=patch.install(context);
 
@@ -82,8 +92,8 @@ public:
             pl::modmenu::ModuleBuilder(kModuleId,"Offhand")
                 .modId(context.id())
                 .description(
-                    "Native arbitrary offhand storage with protected automatic routing "
-                    "and native-only Bow/Trident rendering."
+                    "Native arbitrary offhand storage with protected automatic routing, "
+                    "Java-like hand action routing, and native Bow/Trident rendering."
                 )
                 .defaultEnabled(true)
                 .hideInHudEditor(true)
@@ -95,6 +105,9 @@ public:
                 "Levi Offhand: Mod Menu registration failed"
             );
             patch.uninstall(context);
+            if(actionInstalled) {
+                runtime::HandActionRouter::instance().uninstall(context);
+            }
             runtime::NativeOffhandPolicy::instance().setFeatureEnabled(false);
             runtime::AutoInsertRouting::instance().setFeatureEnabled(false);
             return false;
@@ -103,25 +116,21 @@ public:
         mModMenuRegistered=true;
 
         context.logger().info("Levi Offhand registered in Mod Menu");
+        if(actionInstalled) {
+            context.logger().info(
+                "Java-like use routing active: MAINHAND first, OFFHAND when MAIN passes"
+            );
+            context.logger().info(
+                "Offhand long-use sessions keep their hand through releaseUsingItem"
+            );
+        }
         context.logger().info(
             "Native-only Bow/Trident renderer active for Minecraft 1.26.45.1"
-        );
-        context.logger().info(
-            "Bow slot6 keeps native animation and resolves its owner to leftitem"
-        );
-        context.logger().info(
-            "Trident slot6 keeps native mode-3 binding and mirrors only FPP pole pose"
-        );
-        context.logger().info(
-            "Decorated Pot/Copper calibration frozen as default values"
         );
         context.logger().info("Levi Offhand ready");
 
         if(visualInstalled) {
             context.logger().info("Ordinary/special block split active");
-            context.logger().info(
-                "Correct Android UseAnimation diagnostic active"
-            );
         }
 
         return true;
@@ -129,6 +138,7 @@ public:
 
     bool disable(pl::mod::ModContext& context) {
         unregisterModMenu();
+        runtime::HandActionRouter::instance().setFeatureEnabled(false);
         Patch::instance().uninstall(context);
         runtime::NativeOffhandPolicy::instance().setFeatureEnabled(false);
         runtime::AutoInsertRouting::instance().setFeatureEnabled(false);
@@ -137,6 +147,7 @@ public:
 
     bool unload(pl::mod::ModContext& context) {
         unregisterModMenu();
+        runtime::HandActionRouter::instance().uninstall(context);
         Patch::instance().uninstall(context);
         runtime::AutoInsertRouting::instance().uninstall(context);
         runtime::NativeOffhandPolicy::instance().uninstall(context);
