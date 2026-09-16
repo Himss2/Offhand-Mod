@@ -2,9 +2,62 @@
 
 #include "runtime/ActionHandContext.hpp"
 
+#ifdef __ANDROID__
+#include <android/log.h>
+#include <atomic>
+#endif
+
 #include <utility>
 
 namespace levioffhand::runtime {
+
+#ifdef __ANDROID__
+namespace detail {
+
+inline constexpr char kActionDiagTag[] = "Levi Offhand";
+
+inline void logUseRouteOnce() noexcept {
+    static std::atomic_bool logged{false};
+    bool expected = false;
+    if (logged.compare_exchange_strong(expected, true, std::memory_order_relaxed)) {
+        __android_log_print(
+            ANDROID_LOG_INFO,
+            kActionDiagTag,
+            "[ActionDiag] use route"
+        );
+    }
+}
+
+inline void logAttackRouteOnce(bool mainReal, bool offReal) noexcept {
+    static std::atomic_bool logged{false};
+    bool expected = false;
+    if (logged.compare_exchange_strong(expected, true, std::memory_order_relaxed)) {
+        __android_log_print(
+            ANDROID_LOG_INFO,
+            kActionDiagTag,
+            "[ActionDiag] attack route mainReal=%d offReal=%d",
+            mainReal ? 1 : 0,
+            offReal ? 1 : 0
+        );
+    }
+}
+
+inline void logMiningRouteOnce(bool mainSuitable, bool offSuitable) noexcept {
+    static std::atomic_bool logged{false};
+    bool expected = false;
+    if (logged.compare_exchange_strong(expected, true, std::memory_order_relaxed)) {
+        __android_log_print(
+            ANDROID_LOG_INFO,
+            kActionDiagTag,
+            "[ActionDiag] mining route mainSuitable=%d offSuitable=%d",
+            mainSuitable ? 1 : 0,
+            offSuitable ? 1 : 0
+        );
+    }
+}
+
+} // namespace detail
+#endif
 
 struct UseRouteResult {
     ActionHand hand{ActionHand::MainHand};
@@ -19,6 +72,10 @@ template <typename MainAttempt, typename OffAttempt, typename Fallback>
     Fallback&& fallback,
     ActionKind kind = ActionKind::UseAir
 ) {
+#ifdef __ANDROID__
+    detail::logUseRouteOnce();
+#endif
+
     {
         ScopedActionHand scope(ActionHand::MainHand, kind);
         if (std::forward<MainAttempt>(mainAttempt)()) {
@@ -51,6 +108,13 @@ template <typename MainAttempt, typename OffAttempt, typename Fallback>
     OffAttempt&& offAttempt,
     Fallback&& fallback
 ) {
+#ifdef __ANDROID__
+    detail::logAttackRouteOnce(
+        mainHasRealCombatCapability,
+        offHasRealCombatCapability
+    );
+#endif
+
     if (mainHasRealCombatCapability) {
         ScopedActionHand scope(ActionHand::MainHand, ActionKind::AttackEntity);
         return AttackRouteResult{
@@ -92,6 +156,10 @@ template <typename MainAttempt, typename OffAttempt, typename Fallback>
     bool& destroyedOut
 ) {
     (void)destroyedOut;
+
+#ifdef __ANDROID__
+    detail::logMiningRouteOnce(mainSuitableForTarget, offSuitableForTarget);
+#endif
 
     if (mainSuitableForTarget) {
         ScopedActionHand scope(ActionHand::MainHand, ActionKind::MineBlock);
