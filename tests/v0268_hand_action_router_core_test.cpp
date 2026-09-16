@@ -178,5 +178,99 @@ int main() {
         assert(!currentScopedAction().has_value());
     }
 
+    // Mining: suitability is target-sensitive, but MAIN still wins ties.
+    {
+        std::vector<Call> calls;
+        bool destroyed = false;
+        const auto result = routeMiningStart(
+            true,
+            true,
+            [&]() {
+                calls.push_back(Call::Main);
+                const auto scope = currentScopedAction();
+                assert(scope.has_value());
+                assert(scope->hand == ActionHand::MainHand);
+                assert(scope->kind == ActionKind::MineBlock);
+                return true;
+            },
+            [&]() {
+                calls.push_back(Call::Off);
+                return true;
+            },
+            [&]() {
+                calls.push_back(Call::Fallback);
+                return false;
+            },
+            destroyed
+        );
+        assert(result.nativeResult);
+        assert(result.hand == ActionHand::MainHand);
+        assert(!result.usedFallback);
+        assert((calls == std::vector<Call>{Call::Main}));
+        assert(!currentScopedAction().has_value());
+    }
+
+    // Mining: unsuitable mainhand + suitable offhand pins the offhand candidate.
+    {
+        std::vector<Call> calls;
+        bool destroyed = false;
+        const auto result = routeMiningStart(
+            false,
+            true,
+            [&]() {
+                calls.push_back(Call::Main);
+                return true;
+            },
+            [&]() {
+                calls.push_back(Call::Off);
+                const auto scope = currentScopedAction();
+                assert(scope.has_value());
+                assert(scope->hand == ActionHand::OffHand);
+                assert(scope->kind == ActionKind::MineBlock);
+                return true;
+            },
+            [&]() {
+                calls.push_back(Call::Fallback);
+                return false;
+            },
+            destroyed
+        );
+        assert(result.nativeResult);
+        assert(result.hand == ActionHand::OffHand);
+        assert(!result.usedFallback);
+        assert((calls == std::vector<Call>{Call::Off}));
+        assert(!currentScopedAction().has_value());
+    }
+
+    // Mining: no suitable tool must preserve vanilla mainhand mining exactly once.
+    {
+        std::vector<Call> calls;
+        bool destroyed = false;
+        const auto result = routeMiningStart(
+            false,
+            false,
+            [&]() {
+                calls.push_back(Call::Main);
+                return true;
+            },
+            [&]() {
+                calls.push_back(Call::Off);
+                return true;
+            },
+            [&]() {
+                calls.push_back(Call::Fallback);
+                const auto scope = currentScopedAction();
+                assert(!scope.has_value());
+                return false;
+            },
+            destroyed
+        );
+        assert(!result.nativeResult);
+        assert(result.hand == ActionHand::MainHand);
+        assert(result.usedFallback);
+        assert((calls == std::vector<Call>{Call::Fallback}));
+        assert(!currentScopedAction().has_value());
+    }
+
     return 0;
 }
