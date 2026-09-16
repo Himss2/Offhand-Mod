@@ -64,6 +64,24 @@ def main() -> int:
     router_text = router.read_text(errors="replace")
     probe_text = probe.read_text(errors="replace")
 
+    # Runtime regression: the GameMode entry prologues used by this exact
+    # binary occur many times, so HandActionRouter must never perform a global
+    # resolveSignature() scan and then hope the first match has the right RVA.
+    # Resolve module-base + exact RVA and verify bytes in-place, exactly like
+    # NativeCapabilityProbe already does.
+    if "pl::memory::resolveSignature(" in router_text:
+        raise AssertionError(
+            "HandActionRouter must not use ambiguous global signature scanning; "
+            "resolve exact RVA + fingerprint instead"
+        )
+    for token in (
+        "minecraftModuleBase(",
+        "std::memcmp(",
+        "resolveExactTarget(",
+    ):
+        if token not in router_text:
+            raise AssertionError(f"HandActionRouter exact-RVA resolver missing {token!r}")
+
     for token in (
         "kBaseUseItemRva = 0xEF75578",
         "kReleaseUsingItemRva = 0xEF76108",
@@ -232,7 +250,7 @@ def main() -> int:
 
     print(
         "v0.2.68 action routing source contract passed: "
-        "exact-RVA hand access, MAIN-first item-use, native active-stack validation, "
+        "exact-RVA hand/action access, MAIN-first item-use, native active-stack validation, "
         "native combat routing, and target-sensitive pinned mining lifecycle"
     )
     return 0
