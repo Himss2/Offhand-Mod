@@ -29,6 +29,18 @@ public:
     ) const noexcept;
     [[nodiscard]] bool realCombatCapability(const void* stack) const noexcept;
 
+    [[nodiscard]] const void* blockAt(
+        const void* player,
+        const void* blockPos
+    ) const noexcept;
+    [[nodiscard]] bool realMiningCapability(
+        const void* stack,
+        const void* block
+    ) const noexcept;
+    [[nodiscard]] std::uintptr_t stackItemIdentity(
+        const void* stack
+    ) const noexcept;
+
     [[nodiscard]] std::uintptr_t selectedItemTarget() const noexcept;
 
 private:
@@ -40,7 +52,17 @@ private:
     using PlayerIsUsingItemFn = bool (*)(const void* player);
     using ItemInUseStackFn = const void* (*)(const void* player);
     using StackDiffersForUseFn = bool (*)(const void* lhs, const void* rhs);
+    using ActorBlockSourceFn = void* (*)(const void* actor);
+    using BlockSourceGetBlockFn = const void* (*)(
+        const void* blockSource,
+        const void* blockPos
+    );
     using GetAttackDamageFn = int (*)(const void* item);
+    using GetDestroySpeedFn = float (*)(
+        const void* item,
+        const void* stack,
+        const void* block
+    );
 
     [[nodiscard]] bool validatePlayerObject(const void* player) const noexcept;
     [[nodiscard]] const void* itemFromStack(const void* stack) const noexcept;
@@ -51,6 +73,7 @@ private:
     PlayerIsUsingItemFn mPlayerIsUsingItem{nullptr};
     ItemInUseStackFn mItemInUseStack{nullptr};
     StackDiffersForUseFn mStackDiffersForUse{nullptr};
+    ActorBlockSourceFn mGetBlockSource{nullptr};
     std::uintptr_t mSelectedItemTarget{0};
     bool mAvailable{false};
 };
