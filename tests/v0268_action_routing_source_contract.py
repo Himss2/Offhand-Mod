@@ -79,18 +79,17 @@ def main() -> int:
         if token not in router_text:
             raise AssertionError(f"HandActionRouter missing required marker {token!r}")
 
-    # The selected-item hook is allowed only as a scoped/session adapter. It
-    # must prove an offhand action context before returning the actual offhand
-    # stack, never replace selected-item globally.
     selected = function_body(router_text, "HandActionRouter::selectedItemDetour(")
     for token in (
         "currentScopedAction()",
         "ActionHand::OffHand",
         "currentActionSession()",
         "offhandStackForPlayer",
+        "itemInUseStack",
+        "stackMatchesForUse",
     ):
         if token not in selected:
-            raise AssertionError(f"selected-item detour is not scope-guarded: missing {token!r}")
+            raise AssertionError(f"selected-item detour is not native/scope-guarded: missing {token!r}")
     if "if (!offhandOwned)" not in selected or "return original(player);" not in selected:
         raise AssertionError("selected-item detour lacks explicit vanilla passthrough")
 
@@ -100,22 +99,39 @@ def main() -> int:
     if "playerIsUsingItem(player)" not in base_use:
         raise AssertionError("long-use sessions must be entered only from native Player use state")
 
-    for token in (
+    required_probe_markers = (
+        "kSelectedItemRva = 0xF0B900C",
+        "kOffhandSlotRva = 0xEC9D62C",
+        "kStackIsNullRva = 0xF63E760",
+        "kPlayerIsUsingItemRva = 0xF0B8094",
+        "kItemInUseStackRva = 0xF0B80B4",
+        "kStackDiffersForUseRva = 0xF6443F4",
+        "kGameModePlayerOffset = sizeof(void*)",
+        "resolveExactTarget",
+        "validatePlayerObject",
+        "belongsToMinecraft",
+    )
+    for token in required_probe_markers:
+        if token not in probe_text:
+            raise AssertionError(f"NativeCapabilityProbe missing exact ABI marker {token!r}")
+
+    for forbidden in (
+        "dlsym(",
         "_ZNK6Player15getSelectedItemEv",
         "_ZNK5Actor14getOffhandSlotEv",
         "_ZNK13ItemStackBase6isNullEv",
         "_ZNK13ItemStackBase5getIdEv",
         "_ZNK6Player11isUsingItemEv",
-        "kGameModePlayerOffset = sizeof(void*)",
-        "validatePlayerObject",
-        "belongsToMinecraft",
+        "stackItemId(",
     ):
-        if token not in probe_text:
-            raise AssertionError(f"NativeCapabilityProbe missing fail-closed ABI marker {token!r}")
+        if forbidden in probe_text or forbidden in router_text:
+            raise AssertionError(
+                f"v0.2.68 must not depend on unavailable exported accessor {forbidden!r}"
+            )
 
     print(
         "v0.2.68 action routing source contract passed: "
-        "MAIN-first baseUseItem, scoped OFF selected stack, native long-use release"
+        "exact-RVA native hand access, MAIN-first item-use, native active-stack validation"
     )
     return 0
 
