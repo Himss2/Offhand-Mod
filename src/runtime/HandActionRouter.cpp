@@ -131,12 +131,11 @@ void clearSessionIdentity() noexcept {
     gSessionGameMode = nullptr;
 }
 
-[[nodiscard]] ActionIdentityToken identityForStack(
-    NativeCapabilityProbe& probe,
-    const void* stack
+[[nodiscard]] ActionIdentityToken identityForActiveUseStack(
+    const void* itemInUseStack
 ) noexcept {
     return static_cast<ActionIdentityToken>(
-        static_cast<std::uint16_t>(probe.stackItemId(stack))
+        reinterpret_cast<std::uintptr_t>(itemInUseStack)
     );
 }
 
@@ -191,8 +190,6 @@ bool HandActionRouter::install(pl::mod::ModContext& context) noexcept {
     mSelectedItemOriginal = nullptr;
     mReleaseUsingItemOriginal = nullptr;
 
-    // Install the scoped selected-item redirect first so no offhand action can
-    // enter before the native pipeline knows which hand owns the action.
     mSelectedItemHook = std::make_unique<pl::memory::HookHandle>(
         reinterpret_cast<void*>(mSelectedItemTarget),
         reinterpret_cast<void*>(&HandActionRouter::selectedItemDetour),
@@ -225,8 +222,6 @@ bool HandActionRouter::install(pl::mod::ModContext& context) noexcept {
         return false;
     }
 
-    // Publish baseUseItem last.  This is the semantic entry that can create a
-    // new routed action, so all supporting hooks must already be reachable.
     mBaseUseItemHook = std::make_unique<pl::memory::HookHandle>(
         reinterpret_cast<void*>(mTarget),
         reinterpret_cast<void*>(&HandActionRouter::baseUseItemDetour),
@@ -262,7 +257,6 @@ void HandActionRouter::uninstall(pl::mod::ModContext& context) noexcept {
     cancelActiveSession();
     mFeatureEnabled.store(false, std::memory_order_release);
 
-    // Stop new semantic entries before removing the support hooks.
     if (mBaseUseItemHook) {
         mBaseUseItemHook->reset();
         mBaseUseItemHook.reset();
@@ -377,36 +371,41 @@ bool HandActionRouter::baseUseItemDetour(
             );
         }
 
-        // Only create a long-running session if Minecraft itself reports that
-        // the Player entered an active-use state.  Instant item uses end with
-        // the synchronous scope above and never poison later selected lookups.
         if (probe.playerIsUsingItem(player)) {
-            auto& session = currentActionSession();
-            session.cancel();
-            const ActionIdentityToken identity = identityForStack(probe, offStack);
+            const void* itemInUseStack = probe.itemInUseStack(player);
             if (
-                session.tryBegin(
-                    ActionSessionKind::UsingItem,
-                    ActionHand::OffHand,
-                    identity,
-                    kOffhandSlotIdentity,
-                    0,
-                    0
-                )
+                itemInUseStack != nullptr &&
+                !probe.stackIsNull(itemInUseStack) &&
+                probe.stackMatchesForUse(itemInUseStack, offStack)
             ) {
-                gSessionPlayer = player;
-                gSessionGameMode = gameMode;
-                expected = false;
-                if (instance->mLoggedLongUse.compare_exchange_strong(
-                        expected,
-                        true,
-                        std::memory_order_relaxed
-                    )) {
-                    __android_log_print(
-                        ANDROID_LOG_INFO,
-                        kLogTag,
-                        "[HandActionRouter] OFFHAND long-use session locked until release"
-                    );
+                auto& session = currentActionSession();
+                session.cancel();
+                const ActionIdentityToken identity =
+                    identityForActiveUseStack(itemInUseStack);
+                if (
+                    session.tryBegin(
+                        ActionSessionKind::UsingItem,
+                        ActionHand::OffHand,
+                        identity,
+                        kOffhandSlotIdentity,
+                        0,
+                        0
+                    )
+                ) {
+                    gSessionPlayer = player;
+                    gSessionGameMode = gameMode;
+                    expected = false;
+                    if (instance->mLoggedLongUse.compare_exchange_strong(
+                            expected,
+                            true,
+                            std::memory_order_relaxed
+                        )) {
+                        __android_log_print(
+                            ANDROID_LOG_INFO,
+                            kLogTag,
+                            "[HandActionRouter] OFFHAND long-use session locked until release"
+                        );
+                    }
                 }
             }
         }
@@ -464,10 +463,15 @@ const void* HandActionRouter::selectedItemDetour(
     }
 
     if (session.active() && player == gSessionPlayer) {
-        const ActionIdentityToken currentIdentity = identityForStack(probe, offStack);
-        if (!session.matches(currentIdentity, kOffhandSlotIdentity, 0)) {
-            // The active stack was replaced/moved.  Fail closed: stop routing
-            // immediately rather than silently switching the action's hand.
+        const void* itemInUseStack = probe.itemInUseStack(player);
+        const ActionIdentityToken currentIdentity =
+            identityForActiveUseStack(itemInUseStack);
+        if (
+            itemInUseStack == nullptr ||
+            probe.stackIsNull(itemInUseStack) ||
+            !probe.stackMatchesForUse(itemInUseStack, offStack) ||
+            !session.matches(currentIdentity, kOffhandSlotIdentity, 0)
+        ) {
             session.cancel();
             clearSessionIdentity();
             return original(player);
