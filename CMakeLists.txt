@@ -98,6 +98,10 @@ add_library(
 
     src/runtime/ActionHandContext.cpp
 
+    src/runtime/NativeCapabilityProbe.cpp
+
+    src/runtime/HandActionRouter.cpp
+
     src/render/OffhandBlockRenderPatch.cpp
 )
 
