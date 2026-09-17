@@ -21,13 +21,15 @@ def main() -> int:
 
     if not bridge_hpp.exists() or not bridge_cpp.exists():
         raise AssertionError(
-            "NativeSemanticBridge production source is required for the proven "
-            "upper-use, attack-callback, and destroy-rate boundaries"
+            "NativeSemanticBridge legacy source must remain available for later "
+            "26.50.1 ABI revalidation"
         )
 
     bridge = bridge_cpp.read_text(errors="replace")
     probe = probe_cpp.read_text(errors="replace")
 
+    # Keep the proven 1.26.45.1 implementation intact as RE reference. It is
+    # deliberately not installed by the staged 26.50.1 runtime path.
     for token in (
         "kUpperUseDispatcherRva = 0x9432794",
         "kAttackCallbackRva = 0xEF886A8",
@@ -51,28 +53,23 @@ def main() -> int:
         "[SemanticBridge] destroy-rate context redirected to OFFHAND",
         "[ActionDiag] attack selected-item bridge=OFFHAND",
     ):
-        require(bridge, token, "NativeSemanticBridge")
+        require(bridge, token, "NativeSemanticBridge legacy source")
 
-    # The upper dispatcher must first run unchanged and retry only after the
-    # native MAIN path returns unhandled. The retry owns an OFFHAND action scope,
-    # while the selected-item hook supplies the actual offhand stack.
     for token in (
         "const bool mainHandled = original(controller, inputFlags, interaction, target)",
         "if (mainHandled || player == nullptr)",
         "ScopedActionHand actionScope(ActionHand::OffHand, ActionKind::UseAir)",
         "offHandled = original(controller, inputFlags, interaction, target)",
     ):
-        require(bridge, token, "NativeSemanticBridge upper-use retry")
+        require(bridge, token, "NativeSemanticBridge legacy upper-use retry")
 
-    # The native destroy-rate context must be copied and edited locally. The
-    # original Minecraft context/inventory may not be mutated to fake selection.
     for token in (
         "std::array<std::byte, kDestroyRateContextCopySize> localContext",
         "std::memcpy(localContext.data(), context, localContext.size())",
         "localContext.data() + kDestroyRateStackOffset",
         "original(localContext.data())",
     ):
-        require(bridge, token, "NativeSemanticBridge destroy-rate redirect")
+        require(bridge, token, "NativeSemanticBridge legacy destroy-rate redirect")
 
     for forbidden in (
         "swapMainhand",
@@ -84,26 +81,34 @@ def main() -> int:
         if forbidden in bridge:
             raise AssertionError(f"semantic bridge contains forbidden token {forbidden!r}")
 
-    # Device evidence proved getDestroySpeed()>1 alone misclassified a real
-    # Pickaxe+Stone pair. Suitability must also query native canDestroySpecial.
     for token in (
         "kItemCanDestroySpecialSlot = 34",
         "CanDestroySpecialFn",
         "canDestroySpecial",
         "canDestroySpecial(item, block)",
     ):
-        require(probe, token, "NativeCapabilityProbe mining suitability")
+        require(probe, token, "NativeCapabilityProbe legacy mining suitability")
 
     require(cmake, "src/runtime/NativeSemanticBridge.cpp", "CMakeLists.txt")
-    require(mod, '#include "runtime/NativeSemanticBridge.hpp"', "LeviOffhandMod")
-    require(mod, "NativeSemanticBridge::instance().install(context)", "LeviOffhandMod")
-    require(mod, "NativeSemanticBridge::instance().setFeatureEnabled(enabled)", "LeviOffhandMod")
-    require(mod, "NativeSemanticBridge::instance().uninstall(context)", "LeviOffhandMod")
+    require(cmake, "src/runtime/RightUseRouter.cpp", "CMakeLists.txt")
+    require(mod, '#include "runtime/RightUseRouter.hpp"', "LeviOffhandMod")
+    require(mod, "RightUseRouter::instance().install(context)", "LeviOffhandMod")
+
+    # Do not activate old semantic attack/mining hooks against 26.50.1 until
+    # their complete ABI has been independently revalidated.
+    for forbidden in (
+        '#include "runtime/NativeSemanticBridge.hpp"',
+        "NativeSemanticBridge::instance().install(context)",
+        "HandActionRouter::instance().install(context)",
+    ):
+        if forbidden in mod:
+            raise AssertionError(
+                f"26.50.1 staged runtime must not activate legacy action path {forbidden!r}"
+            )
 
     print(
-        "v0.2.68 semantic bridge source contract passed: native mining suitability, "
-        "scoped destroy-rate stack redirect, upper-use retry, deferred attack callback, "
-        "release ownership, and player-owned selected-item routing"
+        "v0.2.68/26.50.1 semantic staging contract passed: legacy RE source retained, "
+        "legacy attack/mining bridge inactive, verified RightUseRouter active"
     )
     return 0
 
