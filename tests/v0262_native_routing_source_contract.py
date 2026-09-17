@@ -87,12 +87,20 @@ assert mod_text.index("AutoInsertRouting::instance().install(context)") < mod_te
 disable_start = mod_text.index("bool disable(pl::mod::ModContext& context)")
 unload_start = mod_text.index("bool unload(pl::mod::ModContext& context)")
 disable_body = mod_text[disable_start:unload_start]
+
+# v0.2.68 keeps installed components alive until unload, but disables them
+# through the local singleton references established in disable().  Accept the
+# current spelling instead of requiring the older fully-qualified call form.
 assert "AutoInsertRouting::instance().uninstall(context)" not in disable_body, (
-    "disable must retain routing guard until process restart"
+    "disable must retain routing guard until unload"
 )
 assert "NativeOffhandPolicy::instance().uninstall(context)" not in disable_body, (
     "disable must revert through feature toggle, not tear down storage state"
 )
-assert "AutoInsertRouting::instance().setFeatureEnabled(false)" in disable_body
-assert "NativeOffhandPolicy::instance().setFeatureEnabled(false)" in disable_body
+assert "auto& autoInsert=runtime::AutoInsertRouting::instance();" in disable_body
+assert "if(autoInsert.installed())" in disable_body
+assert "autoInsert.setFeatureEnabled(false);" in disable_body
+assert "auto& policy=runtime::NativeOffhandPolicy::instance();" in disable_body
+assert "if(policy.installed())" in disable_body
+assert "policy.setFeatureEnabled(false);" in disable_body
 print("v0.2.62 lifecycle fail-safe contract passed")
