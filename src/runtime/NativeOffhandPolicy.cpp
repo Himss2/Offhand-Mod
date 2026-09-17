@@ -29,7 +29,7 @@ constexpr char kLogTag[] = "Levi Offhand";
  * Item::Item default flag initialization:
  *   RVA 0xFF7D070  mov w8,#0x50
  *
- * Both forms initialize Item + 0x112 with 0x50.  Changing the immediate to
+ * Both forms initialize Item + 0x112 with 0x50. Changing the immediate to
  * 0xD0 preserves the existing low flags and adds mAllowOffHand (bit 7).
  */
 constexpr std::uintptr_t kItemDefaultFlagsRva126451 = 0xF65A3BC;
@@ -51,7 +51,7 @@ constexpr char kItemConstructorFlagSignature126451[] =
     "08 01 09 2A "
     "BF 2E 00 B9";
 
-// Unique in libminecraftpe.so 1.26.51.1.  The target instruction is +0x08.
+// Unique in libminecraftpe.so 1.26.51.1. The target instruction is +0x08.
 constexpr char kItemConstructorFlagSignature126511[] =
     "00 E4 00 6F "
     "F5 03 13 AA "
@@ -62,9 +62,7 @@ constexpr char kItemConstructorFlagSignature126511[] =
     "A0 06 80 3D "
     "A8 AA 00 39";
 
-constexpr char kVanillaW9Instruction[] = "09 0A 80 52";
 constexpr char kPatchedW9Instruction[] = "09 1A 80 52";
-constexpr char kVanillaW8Instruction[] = "08 0A 80 52";
 constexpr char kPatchedW8Instruction[] = "08 1A 80 52";
 constexpr char kAllOffhandPatchName[] = "levi_offhand.item_allow_offhand";
 
@@ -113,10 +111,7 @@ constexpr std::array<std::uint8_t, 4> kPatchedW8Bytes{0x08, 0x1A, 0x80, 0x52};
     );
     if (belongsToMinecraft(currentBase)) {
         const auto target = currentBase + kCurrentPatchOffsetFromSignature;
-        if (
-            target - reinterpret_cast<std::uintptr_t>(nullptr) != 0 &&
-            (supportedVanillaInstruction(target) || supportedPatchedInstruction(target))
-        ) {
+        if (supportedVanillaInstruction(target) || supportedPatchedInstruction(target)) {
             return target;
         }
     }
