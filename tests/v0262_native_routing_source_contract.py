@@ -27,9 +27,17 @@ forbidden = (
 
 required = {
     "src/runtime/NativeOffhandPolicy.cpp": (
+        # 1.26.45.1 verified legacy policy.
         "0xF65A3BC",
         "09 0A 80 52",
         "09 1A 80 52",
+        # 1.26.51.1 moved allow-offhand semantics to Item+0x1C8 and the
+        # ItemStackBase native query at this exact RVA.
+        "kAllowOffhandQueryRva126511 = 0xFFA60F0",
+        "08 21 47 39",
+        "20 00 80 52 C0 03 5F D6",
+        "kAllowOffhandQuerySignature126511",
+        "kPatchedAllowQueryPrefix",
         "levi_offhand.item_allow_offhand",
     ),
     "src/runtime/AutoInsertRouting.cpp": (
@@ -60,6 +68,13 @@ for rel, tokens in required.items():
     for token in tokens:
         assert token in text, f"missing {token!r} in {rel}"
 
+policy_text = texts["src/runtime/NativeOffhandPolicy.cpp"]
+assert "0xFF7D070" not in policy_text, (
+    "1.26.51.1 must not treat the obsolete Item+0x112 constructor flag as allow-offhand"
+)
+assert "Item+0x1C8" in policy_text
+assert "isCurrentQueryTarget(current)" in policy_text
+
 assert not (ROOT / "src/runtime/OffhandValidationHook.cpp").exists()
 assert not (ROOT / "src/runtime/OffhandValidationHook.hpp").exists()
 print("v0.2.62 native routing source contract passed")
@@ -67,7 +82,7 @@ print("v0.2.62 native routing source contract passed")
 mod_text = texts["src/LeviOffhandMod.cpp"]
 assert mod_text.index("AutoInsertRouting::instance().install(context)") < mod_text.index(
     "NativeOffhandPolicy::instance().install(context)"
-), "routing guard must install before native capability for fail-safe rollback"
+), "routing guard probe must run before native capability"
 
 disable_start = mod_text.index("bool disable(pl::mod::ModContext& context)")
 unload_start = mod_text.index("bool unload(pl::mod::ModContext& context)")
