@@ -21,9 +21,19 @@ namespace {
 constexpr char kMinecraftLibrary[] = "libminecraftpe.so";
 constexpr char kLogTag[] = "Levi Offhand";
 
-// Minecraft Bedrock Android 26.50.1 (arm64-v8a)
+// Minecraft Bedrock Android 1.26.51.1 (arm64-v8a)
 // GNU Build ID: 712509dc14ccc233e91f267937dfb46ecdcc4b68
 // SHA-256: b8a6351503d330628335a80e8131acd45291fa9a747465f0f34a31b2346847b4
+//
+// Native hand enum recovered from the 1.26.51.1 binary:
+//   0 = main hand
+//   1 = off hand
+// Both GameMode::baseUseItem and the native use-on-block path carry this
+// enum explicitly, so no physical inventory swap is necessary.
+constexpr unsigned char kMainHand = 0;
+constexpr unsigned char kOffHand = 1;
+
+constexpr std::uintptr_t kUseItemOnBlockRva = 0xF8A1CC4;
 constexpr std::uintptr_t kBaseUseItemRva = 0xF8A285C;
 constexpr std::uintptr_t kReleaseUsingItemRva = 0xF8A3204;
 constexpr std::uintptr_t kSelectedItemRva = 0xF9F7824;
@@ -35,6 +45,10 @@ constexpr std::uintptr_t kStackDiffersForUseRva = 0xFFA5B04;
 
 constexpr std::size_t kGameModePlayerOffset = sizeof(void*);
 
+constexpr std::array<std::uint8_t, 16> kUseItemOnBlockFingerprint{
+    0xFD, 0x7B, 0xBA, 0xA9, 0xFC, 0x6F, 0x01, 0xA9,
+    0xFA, 0x67, 0x02, 0xA9, 0xF8, 0x5F, 0x03, 0xA9,
+};
 constexpr std::array<std::uint8_t, 16> kBaseUseItemFingerprint{
     0xFF, 0x43, 0x04, 0xD1, 0xFD, 0x7B, 0x0D, 0xA9,
     0xFC, 0x5F, 0x0E, 0xA9, 0xF6, 0x57, 0x0F, 0xA9,
@@ -68,6 +82,16 @@ constexpr std::array<std::uint8_t, 16> kStackDiffersForUseFingerprint{
 };
 
 using BaseUseItemFn = bool (*)(void*, const void*, unsigned char);
+using UseItemOnBlockFn = std::uint32_t (*)(
+    void*,
+    const void*,
+    const void*,
+    int,
+    const void*,
+    unsigned char,
+    std::uintptr_t,
+    bool
+);
 using ReleaseUsingItemFn = void (*)(void*);
 using SelectedItemFn = const void* (*)(const void*);
 using OffhandItemFn = const void* (*)(const void*);
@@ -83,6 +107,7 @@ ItemInUseStackFn gItemInUseStack = nullptr;
 StackDiffersForUseFn gStackDiffersForUse = nullptr;
 
 thread_local bool gInsideBaseUse = false;
+thread_local bool gInsideBlockUse = false;
 thread_local const void* gScopedPlayer = nullptr;
 thread_local const void* gSessionPlayer = nullptr;
 thread_local void* gSessionGameMode = nullptr;
@@ -229,6 +254,9 @@ bool RightUseRouter::install(pl::mod::ModContext& context) noexcept {
     const auto differsTarget = resolveExactTarget(
         kStackDiffersForUseRva, kStackDiffersForUseFingerprint
     );
+    const auto blockUseTarget = resolveExactTarget(
+        kUseItemOnBlockRva, kUseItemOnBlockFingerprint
+    );
     const auto useTarget = resolveExactTarget(
         kBaseUseItemRva, kBaseUseItemFingerprint
     );
@@ -239,10 +267,10 @@ bool RightUseRouter::install(pl::mod::ModContext& context) noexcept {
     if (
         selectedTarget == 0 || offhandTarget == 0 || nullTarget == 0 ||
         usingTarget == 0 || inUseTarget == 0 || differsTarget == 0 ||
-        useTarget == 0 || releaseTarget == 0
+        blockUseTarget == 0 || useTarget == 0 || releaseTarget == 0
     ) {
         context.logger().warn(
-            "[RightUseRouter] Minecraft 26.50.1 fingerprint validation failed; right-use disabled"
+            "[RightUseRouter] Minecraft 1.26.51.1 fingerprint validation failed; right-use disabled"
         );
         return false;
     }
@@ -256,6 +284,7 @@ bool RightUseRouter::install(pl::mod::ModContext& context) noexcept {
     mSelectedItemTarget = selectedTarget;
     mReleaseUsingItemTarget = releaseTarget;
     mBaseUseItemTarget = useTarget;
+    mUseItemOnBlockTarget = blockUseTarget;
     sInstance = this;
 
     mSelectedItemHook = std::make_unique<pl::memory::HookHandle>(
@@ -294,11 +323,27 @@ bool RightUseRouter::install(pl::mod::ModContext& context) noexcept {
         return false;
     }
 
+    mUseItemOnBlockHook = std::make_unique<pl::memory::HookHandle>(
+        reinterpret_cast<void*>(mUseItemOnBlockTarget),
+        reinterpret_cast<void*>(&RightUseRouter::useItemOnBlockDetour),
+        &mUseItemOnBlockOriginal,
+        pl::memory::HookPriority::Normal
+    );
+    if (
+        !mUseItemOnBlockHook || !mUseItemOnBlockHook->installed() ||
+        mUseItemOnBlockOriginal == nullptr
+    ) {
+        context.logger().warn("[RightUseRouter] use-on-block hook failed");
+        uninstall(context);
+        return false;
+    }
+
     mFeatureEnabled.store(true, std::memory_order_release);
     mLoggedOffhandUse.store(false, std::memory_order_relaxed);
+    mLoggedBlockUse.store(false, std::memory_order_relaxed);
     mLoggedLongUse.store(false, std::memory_order_relaxed);
     context.logger().info(
-        "[RightUseRouter] Minecraft 26.50.1 offhand-first right-use active; left-click remains vanilla mainhand"
+        "[RightUseRouter] Minecraft 1.26.51.1 native offhand-first right-use active; left-click remains vanilla mainhand"
     );
     return true;
 }
@@ -307,6 +352,10 @@ void RightUseRouter::uninstall(pl::mod::ModContext& context) noexcept {
     mFeatureEnabled.store(false, std::memory_order_release);
     clearSession();
 
+    if (mUseItemOnBlockHook) {
+        mUseItemOnBlockHook->reset();
+        mUseItemOnBlockHook.reset();
+    }
     if (mBaseUseItemHook) {
         mBaseUseItemHook->reset();
         mBaseUseItemHook.reset();
@@ -320,9 +369,11 @@ void RightUseRouter::uninstall(pl::mod::ModContext& context) noexcept {
         mSelectedItemHook.reset();
     }
 
+    mUseItemOnBlockOriginal = nullptr;
     mBaseUseItemOriginal = nullptr;
     mReleaseUsingItemOriginal = nullptr;
     mSelectedItemOriginal = nullptr;
+    mUseItemOnBlockTarget = 0;
     mBaseUseItemTarget = 0;
     mReleaseUsingItemTarget = 0;
     mSelectedItemTarget = 0;
@@ -351,15 +402,17 @@ bool RightUseRouter::installed() const noexcept {
     return mSelectedItemHook != nullptr && mSelectedItemHook->installed() &&
         mReleaseUsingItemHook != nullptr && mReleaseUsingItemHook->installed() &&
         mBaseUseItemHook != nullptr && mBaseUseItemHook->installed() &&
+        mUseItemOnBlockHook != nullptr && mUseItemOnBlockHook->installed() &&
         mSelectedItemOriginal != nullptr &&
         mReleaseUsingItemOriginal != nullptr &&
-        mBaseUseItemOriginal != nullptr;
+        mBaseUseItemOriginal != nullptr &&
+        mUseItemOnBlockOriginal != nullptr;
 }
 
 bool RightUseRouter::baseUseItemDetour(
     void* gameMode,
     const void* itemStack,
-    unsigned char useContext
+    unsigned char hand
 ) noexcept {
     auto* instance = sInstance;
     if (instance == nullptr || instance->mBaseUseItemOriginal == nullptr) {
@@ -367,13 +420,15 @@ bool RightUseRouter::baseUseItemDetour(
     }
 
     const auto original = reinterpret_cast<BaseUseItemFn>(instance->mBaseUseItemOriginal);
-    if (!instance->featureEnabled() || gInsideBaseUse) {
-        return original(gameMode, itemStack, useContext);
+    if (
+        !instance->featureEnabled() || gInsideBaseUse || hand == kOffHand
+    ) {
+        return original(gameMode, itemStack, hand);
     }
 
     const void* player = playerFromGameMode(gameMode);
     if (player == nullptr || instance->mSelectedItemOriginal == nullptr) {
-        return original(gameMode, itemStack, useContext);
+        return original(gameMode, itemStack, hand);
     }
 
     const auto selectedOriginal = reinterpret_cast<SelectedItemFn>(
@@ -382,15 +437,16 @@ bool RightUseRouter::baseUseItemDetour(
     const void* mainStack = selectedOriginal(player);
     const void* offStack = gGetOffhandSlot != nullptr ? gGetOffhandSlot(player) : nullptr;
 
-    // 26.50.1's only direct caller passes a local ItemStack copy (sp+0x60),
+    // 1.26.51.1's upper dispatcher passes a local ItemStack copy (sp+0x60),
     // so pointer identity with Player::getSelectedItem is invalid. Match using
-    // Minecraft's own stack comparator instead.
+    // Minecraft's own stack comparator. The third ABI argument is the native
+    // hand enum: 0=main, 1=offhand.
     if (
         itemStack == nullptr || mainStack == nullptr ||
         !stacksMatch(itemStack, mainStack) ||
         offStack == nullptr || stackIsNull(offStack)
     ) {
-        return original(gameMode, itemStack, useContext);
+        return original(gameMode, itemStack, hand);
     }
 
     ScopedBool reentry(gInsideBaseUse);
@@ -398,12 +454,10 @@ bool RightUseRouter::baseUseItemDetour(
 
     const auto result = routeUseAction(
         [&]() noexcept {
-            // Preserve the exact caller-provided stack copy and the third ABI
-            // argument for the vanilla/mainhand attempt.
-            return original(gameMode, itemStack, useContext);
+            return original(gameMode, itemStack, hand);
         },
         [&]() noexcept {
-            return original(gameMode, offStack, useContext);
+            return original(gameMode, offStack, kOffHand);
         },
         []() noexcept {},
         ActionKind::UseAir
@@ -417,7 +471,7 @@ bool RightUseRouter::baseUseItemDetour(
             __android_log_print(
                 ANDROID_LOG_INFO,
                 kLogTag,
-                "[RightUseRouter] right-use handled by OFFHAND before MAINHAND"
+                "[RightUseRouter] air/self-use handled by OFFHAND (native hand=1)"
             );
         }
 
@@ -444,6 +498,81 @@ bool RightUseRouter::baseUseItemDetour(
     }
 
     return result.handled;
+}
+
+std::uint32_t RightUseRouter::useItemOnBlockDetour(
+    void* gameMode,
+    const void* interaction,
+    const void* blockPos,
+    int face,
+    const void* hitPos,
+    unsigned char hand,
+    std::uintptr_t extra,
+    bool flag
+) noexcept {
+    auto* instance = sInstance;
+    if (instance == nullptr || instance->mUseItemOnBlockOriginal == nullptr) {
+        return 0;
+    }
+
+    const auto original = reinterpret_cast<UseItemOnBlockFn>(
+        instance->mUseItemOnBlockOriginal
+    );
+    if (
+        !instance->featureEnabled() || gInsideBlockUse || hand == kOffHand
+    ) {
+        return original(
+            gameMode, interaction, blockPos, face, hitPos, hand, extra, flag
+        );
+    }
+
+    const void* player = playerFromGameMode(gameMode);
+    const void* offStack =
+        player != nullptr && gGetOffhandSlot != nullptr
+        ? gGetOffhandSlot(player)
+        : nullptr;
+    if (player == nullptr || stackIsNull(offStack)) {
+        return original(
+            gameMode, interaction, blockPos, face, hitPos, hand, extra, flag
+        );
+    }
+
+    ScopedBool reentry(gInsideBlockUse);
+    ScopedActionHand actionScope(ActionHand::OffHand, ActionKind::UseBlock);
+    ScopedPlayer routedPlayer(player);
+
+    // Preserve Minecraft's complete native use-on-block transaction (target,
+    // face, hit vector, placement checks, inventory decrement, sound/network
+    // side effects) and change only the native hand selector.
+    const std::uint32_t offResult = original(
+        gameMode,
+        interaction,
+        blockPos,
+        face,
+        hitPos,
+        kOffHand,
+        extra,
+        flag
+    );
+    if (offResult != 0) {
+        bool expected = false;
+        if (instance->mLoggedBlockUse.compare_exchange_strong(
+                expected, true, std::memory_order_relaxed
+            )) {
+            __android_log_print(
+                ANDROID_LOG_INFO,
+                kLogTag,
+                "[RightUseRouter] block-use/place handled by OFFHAND (native hand=1)"
+            );
+        }
+        return offResult;
+    }
+
+    // Offhand did not consume the interaction: preserve the original vanilla
+    // hand and let Minecraft handle the mainhand fallback normally.
+    return original(
+        gameMode, interaction, blockPos, face, hitPos, hand, extra, flag
+    );
 }
 
 const void* RightUseRouter::selectedItemDetour(const void* player) noexcept {
@@ -473,9 +602,6 @@ const void* RightUseRouter::selectedItemDetour(const void* player) noexcept {
         return original(player);
     }
 
-    // An explicit scoped transaction (including releaseUsingItem) owns the
-    // effective hand for its whole native call. Session validation is only
-    // needed for unscoped lookups between start and release.
     if (scopedOffhand) {
         return offStack;
     }
