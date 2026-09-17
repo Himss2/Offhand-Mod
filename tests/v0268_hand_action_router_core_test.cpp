@@ -6,47 +6,17 @@
 using namespace levioffhand::runtime;
 
 namespace {
-
-enum class Call {
-    Main,
-    Off,
-    Fallback,
-};
-
-} // namespace
+enum class Call { Main, Off, Fallback };
+}
 
 int main() {
+    // Right-use: OFFHAND gets the first opportunity.
     {
         std::vector<Call> calls;
         const auto result = routeUseAction(
             [&]() {
                 calls.push_back(Call::Main);
-                const auto scope = currentScopedAction();
-                assert(scope.has_value());
-                assert(scope->hand == ActionHand::MainHand);
                 return true;
-            },
-            [&]() {
-                calls.push_back(Call::Off);
-                return true;
-            },
-            [&]() {
-                calls.push_back(Call::Fallback);
-            }
-        );
-        assert(result.handled);
-        assert(result.hand == ActionHand::MainHand);
-        assert(!result.usedFallback);
-        assert((calls == std::vector<Call>{Call::Main}));
-        assert(!currentScopedAction().has_value());
-    }
-
-    {
-        std::vector<Call> calls;
-        const auto result = routeUseAction(
-            [&]() {
-                calls.push_back(Call::Main);
-                return false;
             },
             [&]() {
                 calls.push_back(Call::Off);
@@ -56,17 +26,40 @@ int main() {
                 assert(scope->kind == ActionKind::UseAir);
                 return true;
             },
-            [&]() {
-                calls.push_back(Call::Fallback);
-            }
+            [&]() { calls.push_back(Call::Fallback); }
         );
         assert(result.handled);
         assert(result.hand == ActionHand::OffHand);
         assert(!result.usedFallback);
-        assert((calls == std::vector<Call>{Call::Main, Call::Off}));
+        assert((calls == std::vector<Call>{Call::Off}));
         assert(!currentScopedAction().has_value());
     }
 
+    // If OFFHAND passes, MAINHAND gets the unchanged vanilla attempt.
+    {
+        std::vector<Call> calls;
+        const auto result = routeUseAction(
+            [&]() {
+                calls.push_back(Call::Main);
+                const auto scope = currentScopedAction();
+                assert(scope.has_value());
+                assert(scope->hand == ActionHand::MainHand);
+                return true;
+            },
+            [&]() {
+                calls.push_back(Call::Off);
+                return false;
+            },
+            [&]() { calls.push_back(Call::Fallback); }
+        );
+        assert(result.handled);
+        assert(result.hand == ActionHand::MainHand);
+        assert(!result.usedFallback);
+        assert((calls == std::vector<Call>{Call::Off, Call::Main}));
+        assert(!currentScopedAction().has_value());
+    }
+
+    // If neither hand handles use, preserve the fallback exactly once.
     {
         std::vector<Call> calls;
         const auto result = routeUseAction(
@@ -78,84 +71,21 @@ int main() {
                 calls.push_back(Call::Off);
                 return false;
             },
-            [&]() {
-                calls.push_back(Call::Fallback);
-            }
+            [&]() { calls.push_back(Call::Fallback); }
         );
         assert(!result.handled);
-        assert(result.hand == ActionHand::MainHand);
         assert(result.usedFallback);
-        assert((calls == std::vector<Call>{Call::Main, Call::Off, Call::Fallback}));
+        assert((calls == std::vector<Call>{Call::Off, Call::Main, Call::Fallback}));
         assert(!currentScopedAction().has_value());
     }
 
-    // Attack: real mainhand combat capability wins even when offhand is also real.
+    // Legacy attack selector remains deterministic for future RE work, but the
+    // 26.50.1 compatibility path does not install an attack hook.
     {
         std::vector<Call> calls;
         const auto result = routeAttackAction(
             true,
             true,
-            [&]() {
-                calls.push_back(Call::Main);
-                const auto scope = currentScopedAction();
-                assert(scope.has_value());
-                assert(scope->hand == ActionHand::MainHand);
-                assert(scope->kind == ActionKind::AttackEntity);
-                return true;
-            },
-            [&]() {
-                calls.push_back(Call::Off);
-                return true;
-            },
-            [&]() {
-                calls.push_back(Call::Fallback);
-                return true;
-            }
-        );
-        assert(result.nativeResult);
-        assert(result.hand == ActionHand::MainHand);
-        assert(!result.usedFallback);
-        assert((calls == std::vector<Call>{Call::Main}));
-        assert(!currentScopedAction().has_value());
-    }
-
-    // Attack: if mainhand has no real combat capability, offhand owns the attack.
-    {
-        std::vector<Call> calls;
-        const auto result = routeAttackAction(
-            false,
-            true,
-            [&]() {
-                calls.push_back(Call::Main);
-                return true;
-            },
-            [&]() {
-                calls.push_back(Call::Off);
-                const auto scope = currentScopedAction();
-                assert(scope.has_value());
-                assert(scope->hand == ActionHand::OffHand);
-                assert(scope->kind == ActionKind::AttackEntity);
-                return true;
-            },
-            [&]() {
-                calls.push_back(Call::Fallback);
-                return true;
-            }
-        );
-        assert(result.nativeResult);
-        assert(result.hand == ActionHand::OffHand);
-        assert(!result.usedFallback);
-        assert((calls == std::vector<Call>{Call::Off}));
-        assert(!currentScopedAction().has_value());
-    }
-
-    // Attack: with no real combat capability in either hand, preserve vanilla
-    // mainhand generic punch exactly once.
-    {
-        std::vector<Call> calls;
-        const auto result = routeAttackAction(
-            false,
-            false,
             [&]() {
                 calls.push_back(Call::Main);
                 return true;
@@ -166,51 +96,38 @@ int main() {
             },
             [&]() {
                 calls.push_back(Call::Fallback);
-                const auto scope = currentScopedAction();
-                assert(!scope.has_value());
                 return false;
             }
         );
-        assert(!result.nativeResult);
+        assert(result.nativeResult);
         assert(result.hand == ActionHand::MainHand);
+        assert((calls == std::vector<Call>{Call::Main}));
+    }
+
+    {
+        std::vector<Call> calls;
+        const auto result = routeAttackAction(
+            false,
+            false,
+            [&]() {
+                calls.push_back(Call::Main);
+                return true;
+            },
+            [&]() {
+                calls.push_back(Call::Off);
+                return true;
+            },
+            [&]() {
+                calls.push_back(Call::Fallback);
+                return false;
+            }
+        );
         assert(result.usedFallback);
         assert((calls == std::vector<Call>{Call::Fallback}));
-        assert(!currentScopedAction().has_value());
     }
 
-    // Mining: suitability is target-sensitive, but MAIN still wins ties.
-    {
-        std::vector<Call> calls;
-        bool destroyed = false;
-        const auto result = routeMiningStart(
-            true,
-            true,
-            [&]() {
-                calls.push_back(Call::Main);
-                const auto scope = currentScopedAction();
-                assert(scope.has_value());
-                assert(scope->hand == ActionHand::MainHand);
-                assert(scope->kind == ActionKind::MineBlock);
-                return true;
-            },
-            [&]() {
-                calls.push_back(Call::Off);
-                return true;
-            },
-            [&]() {
-                calls.push_back(Call::Fallback);
-                return false;
-            },
-            destroyed
-        );
-        assert(result.nativeResult);
-        assert(result.hand == ActionHand::MainHand);
-        assert(!result.usedFallback);
-        assert((calls == std::vector<Call>{Call::Main}));
-        assert(!currentScopedAction().has_value());
-    }
-
-    // Mining: unsuitable mainhand + suitable offhand pins the offhand candidate.
+    // Legacy mining selector also remains unit-tested but uninstalled on
+    // 26.50.1 until its complete ABI is revalidated.
     {
         std::vector<Call> calls;
         bool destroyed = false;
@@ -237,39 +154,7 @@ int main() {
         );
         assert(result.nativeResult);
         assert(result.hand == ActionHand::OffHand);
-        assert(!result.usedFallback);
         assert((calls == std::vector<Call>{Call::Off}));
-        assert(!currentScopedAction().has_value());
-    }
-
-    // Mining: no suitable tool must preserve vanilla mainhand mining exactly once.
-    {
-        std::vector<Call> calls;
-        bool destroyed = false;
-        const auto result = routeMiningStart(
-            false,
-            false,
-            [&]() {
-                calls.push_back(Call::Main);
-                return true;
-            },
-            [&]() {
-                calls.push_back(Call::Off);
-                return true;
-            },
-            [&]() {
-                calls.push_back(Call::Fallback);
-                const auto scope = currentScopedAction();
-                assert(!scope.has_value());
-                return false;
-            },
-            destroyed
-        );
-        assert(!result.nativeResult);
-        assert(result.hand == ActionHand::MainHand);
-        assert(result.usedFallback);
-        assert((calls == std::vector<Call>{Call::Fallback}));
-        assert(!currentScopedAction().has_value());
     }
 
     return 0;

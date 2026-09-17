@@ -1,8 +1,7 @@
 #include "render/OffhandBlockRenderPatch.hpp"
 #include "runtime/NativeOffhandPolicy.hpp"
 #include "runtime/AutoInsertRouting.hpp"
-#include "runtime/HandActionRouter.hpp"
-#include "runtime/NativeSemanticBridge.hpp"
+#include "runtime/RightUseRouter.hpp"
 
 #include <android/log.h>
 #include <string_view>
@@ -18,18 +17,26 @@ constexpr char kLogTag[]="Levi Offhand";
 
 using Patch=render::OffhandBlockRenderPatch;
 
-void onModuleToggle(
-    std::string_view moduleId,
-    bool enabled
-) {
+void onModuleToggle(std::string_view moduleId, bool enabled) {
     if(moduleId!=kModuleId) {
         return;
     }
 
-    runtime::NativeSemanticBridge::instance().setFeatureEnabled(enabled);
-    runtime::HandActionRouter::instance().setFeatureEnabled(enabled);
-    runtime::NativeOffhandPolicy::instance().setFeatureEnabled(enabled);
-    runtime::AutoInsertRouting::instance().setFeatureEnabled(enabled);
+    auto& rightUse=runtime::RightUseRouter::instance();
+    if(rightUse.installed()) {
+        rightUse.setFeatureEnabled(enabled);
+    }
+
+    auto& policy=runtime::NativeOffhandPolicy::instance();
+    if(policy.installed()) {
+        policy.setFeatureEnabled(enabled);
+    }
+
+    auto& autoInsert=runtime::AutoInsertRouting::instance();
+    if(autoInsert.installed()) {
+        autoInsert.setFeatureEnabled(enabled);
+    }
+
     Patch::instance().setFeatureEnabled(enabled);
 
     __android_log_print(
@@ -55,47 +62,44 @@ public:
     }
 
     bool enable(pl::mod::ModContext& context) {
-        // Stable storage remains the required baseline. Java-like action
-        // routing and its semantic bridge are layered afterward and may fail
-        // closed without disabling stable offhand storage.
-        if(!runtime::AutoInsertRouting::instance().install(context)) {
-            context.logger().error(
-                "Levi Offhand: automatic routing installation failed"
-            );
-            return false;
-        }
-
-        if(!runtime::NativeOffhandPolicy::instance().install(context)) {
-            runtime::AutoInsertRouting::instance().uninstall(context);
-            context.logger().error(
-                "Levi Offhand: native offhand policy installation failed"
-            );
-            return false;
-        }
-
-        const bool actionInstalled=
-            runtime::HandActionRouter::instance().install(context);
-        if(!actionInstalled) {
+        // 26.50.1 compatibility is staged. Right-use is independent from the
+        // older storage/renderer signatures so one stale subsystem must not
+        // prevent the verified gameplay hook from being tested.
+        const bool autoInsertInstalled=
+            runtime::AutoInsertRouting::instance().install(context);
+        if(!autoInsertInstalled) {
             context.logger().warn(
-                "Levi Offhand: Java-like action routing unavailable; storage remains active"
+                "Levi Offhand: legacy auto-insert guard unavailable on this game build"
             );
         }
 
-        const bool semanticInstalled=
-            actionInstalled &&
-            runtime::NativeSemanticBridge::instance().install(context);
-        if(actionInstalled && !semanticInstalled) {
+        bool policyInstalled=false;
+        if(autoInsertInstalled) {
+            policyInstalled=runtime::NativeOffhandPolicy::instance().install(context);
+            if(!policyInstalled) {
+                context.logger().warn(
+                    "Levi Offhand: legacy arbitrary-offhand policy unavailable on this game build"
+                );
+            }
+        } else {
             context.logger().warn(
-                "Levi Offhand: semantic action bridge unavailable; base action router remains active"
+                "Levi Offhand: arbitrary-offhand policy intentionally skipped because its auto-insert guard is unavailable"
+            );
+        }
+
+        const bool rightUseInstalled=
+            runtime::RightUseRouter::instance().install(context);
+        if(!rightUseInstalled) {
+            context.logger().warn(
+                "Levi Offhand: Minecraft 26.50.1 right-use routing unavailable"
             );
         }
 
         auto& patch=Patch::instance();
         const bool visualInstalled=patch.install(context);
-
         if(!visualInstalled) {
-            context.logger().error(
-                "Levi Offhand: visual unavailable; stable storage remains active"
+            context.logger().warn(
+                "Levi Offhand: legacy visual patch unavailable on this game build"
             );
         }
 
@@ -103,8 +107,8 @@ public:
             pl::modmenu::ModuleBuilder(kModuleId,"Offhand")
                 .modId(context.id())
                 .description(
-                    "Native arbitrary offhand storage with protected automatic routing, "
-                    "Java-like hand action routing, and native Bow/Trident rendering."
+                    "Offhand compatibility with Minecraft 26.50.1 right-use routing; "
+                    "left-click remains native mainhand."
                 )
                 .defaultEnabled(true)
                 .hideInHudEditor(true)
@@ -112,63 +116,56 @@ public:
                 .registerModule();
 
         if(!registered) {
-            context.logger().error(
-                "Levi Offhand: Mod Menu registration failed"
-            );
+            context.logger().error("Levi Offhand: Mod Menu registration failed");
             patch.uninstall(context);
-            if(semanticInstalled) {
-                runtime::NativeSemanticBridge::instance().uninstall(context);
+            if(rightUseInstalled) {
+                runtime::RightUseRouter::instance().uninstall(context);
             }
-            if(actionInstalled) {
-                runtime::HandActionRouter::instance().uninstall(context);
+            if(policyInstalled) {
+                runtime::NativeOffhandPolicy::instance().uninstall(context);
             }
-            runtime::NativeOffhandPolicy::instance().setFeatureEnabled(false);
-            runtime::AutoInsertRouting::instance().setFeatureEnabled(false);
+            if(autoInsertInstalled) {
+                runtime::AutoInsertRouting::instance().uninstall(context);
+            }
             return false;
         }
 
         mModMenuRegistered=true;
-
         context.logger().info("Levi Offhand registered in Mod Menu");
-        if(actionInstalled) {
+        if(rightUseInstalled) {
             context.logger().info(
-                "Java-like use routing active: MAINHAND first, OFFHAND when MAIN passes"
-            );
-            context.logger().info(
-                "Offhand long-use sessions keep their hand through releaseUsingItem"
+                "Minecraft 26.50.1 right-use active: OFFHAND first, MAINHAND fallback; left-click untouched"
             );
         }
-        if(semanticInstalled) {
-            context.logger().info(
-                "Semantic offhand bridge active: upper-use retry and native mining-rate redirect"
-            );
-        }
-        context.logger().info(
-            "Native-only Bow/Trident renderer active for Minecraft 1.26.45.1"
-        );
         context.logger().info("Levi Offhand ready");
-
-        if(visualInstalled) {
-            context.logger().info("Ordinary/special block split active");
-        }
-
         return true;
     }
 
     bool disable(pl::mod::ModContext& context) {
         unregisterModMenu();
-        runtime::NativeSemanticBridge::instance().setFeatureEnabled(false);
-        runtime::HandActionRouter::instance().setFeatureEnabled(false);
+
+        auto& rightUse=runtime::RightUseRouter::instance();
+        if(rightUse.installed()) {
+            rightUse.setFeatureEnabled(false);
+        }
+
         Patch::instance().uninstall(context);
-        runtime::NativeOffhandPolicy::instance().setFeatureEnabled(false);
-        runtime::AutoInsertRouting::instance().setFeatureEnabled(false);
+
+        auto& policy=runtime::NativeOffhandPolicy::instance();
+        if(policy.installed()) {
+            policy.setFeatureEnabled(false);
+        }
+
+        auto& autoInsert=runtime::AutoInsertRouting::instance();
+        if(autoInsert.installed()) {
+            autoInsert.setFeatureEnabled(false);
+        }
         return true;
     }
 
     bool unload(pl::mod::ModContext& context) {
         unregisterModMenu();
-        runtime::NativeSemanticBridge::instance().uninstall(context);
-        runtime::HandActionRouter::instance().uninstall(context);
+        runtime::RightUseRouter::instance().uninstall(context);
         Patch::instance().uninstall(context);
         runtime::AutoInsertRouting::instance().uninstall(context);
         runtime::NativeOffhandPolicy::instance().uninstall(context);
