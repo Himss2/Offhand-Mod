@@ -23,7 +23,7 @@ inline void logUseRouteOnce() noexcept {
         __android_log_print(
             ANDROID_LOG_INFO,
             kActionDiagTag,
-            "[ActionDiag] use route"
+            "[ActionDiag] use route offhand-first"
         );
     }
 }
@@ -76,17 +76,19 @@ template <typename MainAttempt, typename OffAttempt, typename Fallback>
     detail::logUseRouteOnce();
 #endif
 
-    {
-        ScopedActionHand scope(ActionHand::MainHand, kind);
-        if (std::forward<MainAttempt>(mainAttempt)()) {
-            return UseRouteResult{ActionHand::MainHand, true, false};
-        }
-    }
-
+    // Java-like right click: give the offhand the first chance to handle use.
+    // If it cannot handle the action, preserve the vanilla/mainhand path.
     {
         ScopedActionHand scope(ActionHand::OffHand, kind);
         if (std::forward<OffAttempt>(offAttempt)()) {
             return UseRouteResult{ActionHand::OffHand, true, false};
+        }
+    }
+
+    {
+        ScopedActionHand scope(ActionHand::MainHand, kind);
+        if (std::forward<MainAttempt>(mainAttempt)()) {
+            return UseRouteResult{ActionHand::MainHand, true, false};
         }
     }
 
