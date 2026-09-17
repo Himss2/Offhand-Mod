@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -42,16 +43,34 @@ def main() -> int:
     core_path = RUNTIME / "HandActionRouterCore.hpp"
     levi_path = ROOT / "src" / "LeviOffhandMod.cpp"
     cmake_path = ROOT / "CMakeLists.txt"
+    manifest_path = ROOT / "manifest.json"
 
-    for path in (router_path, header_path, core_path, levi_path, cmake_path):
+    for path in (
+        router_path,
+        header_path,
+        core_path,
+        levi_path,
+        cmake_path,
+        manifest_path,
+    ):
         if not path.exists():
-            raise AssertionError(f"required 26.50.1 right-use file missing: {path}")
+            raise AssertionError(f"required 26.50.1/26.51.1 right-use file missing: {path}")
 
     router = router_path.read_text(errors="replace")
     header = header_path.read_text(errors="replace")
     core = core_path.read_text(errors="replace")
     levi = levi_path.read_text(errors="replace")
     cmake = cmake_path.read_text(errors="replace")
+    manifest = json.loads(manifest_path.read_text(errors="replace"))
+
+    supported_versions = set(manifest.get("minecraft_versions", []))
+    required_versions = {"1.26.45.1", "1.26.50.1", "1.26.51.1"}
+    missing_versions = required_versions - supported_versions
+    if missing_versions:
+        raise AssertionError(
+            "manifest missing supported Minecraft versions: "
+            + ", ".join(sorted(missing_versions))
+        )
 
     combined = "\n".join((router, header))
     for token, reason in PROHIBITED.items():
@@ -131,7 +150,7 @@ def main() -> int:
 
     require(cmake, "src/runtime/RightUseRouter.cpp")
 
-    print("v0268/26.50.1 right-use source contract: PASS")
+    print("v0268/26.50.1+26.51.1 right-use source contract: PASS")
     return 0
 
 
