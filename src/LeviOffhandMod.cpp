@@ -62,9 +62,9 @@ public:
     }
 
     bool enable(pl::mod::ModContext& context) {
-        // 26.50.1 compatibility is staged. Right-use is independent from the
-        // older storage/renderer signatures so one stale subsystem must not
-        // prevent the verified gameplay hook from being tested.
+        // 1.26.51.1 compatibility is staged by subsystem. Storage policy and
+        // right-use validate their own native signatures independently so a
+        // stale legacy helper must not disable the entire mod.
         const bool autoInsertInstalled=
             runtime::AutoInsertRouting::instance().install(context);
         if(!autoInsertInstalled) {
@@ -73,17 +73,15 @@ public:
             );
         }
 
-        bool policyInstalled=false;
-        if(autoInsertInstalled) {
-            policyInstalled=runtime::NativeOffhandPolicy::instance().install(context);
-            if(!policyInstalled) {
-                context.logger().warn(
-                    "Levi Offhand: legacy arbitrary-offhand policy unavailable on this game build"
-                );
-            }
-        } else {
+        const bool policyInstalled=
+            runtime::NativeOffhandPolicy::instance().install(context);
+        if(!policyInstalled) {
             context.logger().warn(
-                "Levi Offhand: arbitrary-offhand policy intentionally skipped because its auto-insert guard is unavailable"
+                "Levi Offhand: arbitrary-offhand policy unavailable on this game build"
+            );
+        } else if(!autoInsertInstalled) {
+            context.logger().warn(
+                "Levi Offhand: arbitrary-offhand placement restored, but automatic insertion guard still needs 1.26.51.1 revalidation"
             );
         }
 
@@ -91,7 +89,7 @@ public:
             runtime::RightUseRouter::instance().install(context);
         if(!rightUseInstalled) {
             context.logger().warn(
-                "Levi Offhand: Minecraft 26.50.1 right-use routing unavailable"
+                "Levi Offhand: Minecraft 1.26.51.1 right-use routing unavailable"
             );
         }
 
@@ -107,7 +105,7 @@ public:
             pl::modmenu::ModuleBuilder(kModuleId,"Offhand")
                 .modId(context.id())
                 .description(
-                    "Offhand compatibility with Minecraft 26.50.1 right-use routing; "
+                    "Offhand compatibility with Minecraft 1.26.51.1 right-use routing; "
                     "left-click remains native mainhand."
                 )
                 .defaultEnabled(true)
@@ -132,9 +130,14 @@ public:
 
         mModMenuRegistered=true;
         context.logger().info("Levi Offhand registered in Mod Menu");
+        if(policyInstalled) {
+            context.logger().info(
+                "Minecraft 1.26.51.1 offhand storage policy active"
+            );
+        }
         if(rightUseInstalled) {
             context.logger().info(
-                "Minecraft 26.50.1 right-use active: OFFHAND first, MAINHAND fallback; left-click untouched"
+                "Minecraft 1.26.51.1 right-use active: OFFHAND first, MAINHAND fallback; left-click untouched"
             );
         }
         context.logger().info("Levi Offhand ready");
