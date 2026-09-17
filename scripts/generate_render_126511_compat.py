@@ -155,11 +155,24 @@ def require_signature_name(source: str, name: str) -> None:
 
 def replace_rvas(source: str) -> str:
     for old, new in RVA_REPLACEMENTS.items():
-        # Some constants are optional across historical renderer snapshots
-        # (notably individual spear singleton globals), but every replacement
-        # that is present must move to the validated 1.26.51.1 target.
+        # Historical renderer snapshots do not all use every target.  Replace
+        # only targets that are present; the generated audit map below records
+        # the complete RE mapping without re-enabling retired hooks.
         source = source.replace(old, new)
     return source
+
+
+def compatibility_audit_comment() -> str:
+    lines = [
+        "// GENERATED FILE - DO NOT EDIT.\n",
+        "// Minecraft Bedrock 1.26.51.1 renderer compatibility target map.\n",
+        "// The tracked src/render implementation remains unchanged; only\n",
+        "// binary targets/signatures are translated for this build.\n",
+    ]
+    for old, new in RVA_REPLACEMENTS.items():
+        lines.append(f"//   {old} -> {new}\n")
+    lines.append("\n")
+    return "".join(lines)
 
 
 def translate_cpp(source: str) -> str:
@@ -169,7 +182,7 @@ def translate_cpp(source: str) -> str:
         require_signature_name(source, name)
     for name, raw in SIGNATURE_REPLACEMENTS.items():
         source = replace_signature(source, name, raw)
-    return source
+    return compatibility_audit_comment() + source
 
 
 def translate_header(source: str) -> str:
