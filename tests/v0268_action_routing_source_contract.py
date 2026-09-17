@@ -54,7 +54,7 @@ def main() -> int:
         manifest_path,
     ):
         if not path.exists():
-            raise AssertionError(f"required 26.50.1/26.51.1 right-use file missing: {path}")
+            raise AssertionError(f"required 1.26.51.1 right-use file missing: {path}")
 
     router = router_path.read_text(errors="replace")
     header = header_path.read_text(errors="replace")
@@ -64,12 +64,16 @@ def main() -> int:
     manifest = json.loads(manifest_path.read_text(errors="replace"))
 
     supported_versions = set(manifest.get("minecraft_versions", []))
-    required_versions = {"1.26.45.1", "1.26.50.1", "1.26.51.1"}
+    required_versions = {"1.26.45.1", "1.26.51.1"}
     missing_versions = required_versions - supported_versions
     if missing_versions:
         raise AssertionError(
             "manifest missing supported Minecraft versions: "
             + ", ".join(sorted(missing_versions))
+        )
+    if "1.26.50.1" in supported_versions:
+        raise AssertionError(
+            "manifest must not claim unvalidated Minecraft version 1.26.50.1"
         )
 
     combined = "\n".join((router, header))
@@ -111,7 +115,7 @@ def main() -> int:
         "original(gameMode, itemStack, useContext)",
     )
     if "itemStack != mainStack" in base_use or "itemStack == mainStack" in base_use:
-        raise AssertionError("26.50.1 routing must not use ItemStack pointer identity")
+        raise AssertionError("1.26.51.1 routing must not use ItemStack pointer identity")
 
     route = function_body(core, "UseRouteResult routeUseAction(")
     off = route.index("ScopedActionHand scope(ActionHand::OffHand")
@@ -139,18 +143,18 @@ def main() -> int:
         "NativeSemanticBridge::instance().install(context)",
     ):
         if forbidden in levi:
-            raise AssertionError(f"staged 26.50.1 path must not install {forbidden}")
+            raise AssertionError(f"staged 1.26.51.1 path must not install {forbidden}")
 
     auto_pos = levi.index("AutoInsertRouting::instance().install(context)")
     right_pos = levi.index("RightUseRouter::instance().install(context)")
     if auto_pos > right_pos:
         raise AssertionError("baseline probe should run before right-use")
     if "return false;" in levi[auto_pos:right_pos]:
-        raise AssertionError("legacy storage failure must not abort 26.50.1 right-use install")
+        raise AssertionError("legacy storage failure must not abort 1.26.51.1 right-use install")
 
     require(cmake, "src/runtime/RightUseRouter.cpp")
 
-    print("v0268/26.50.1+26.51.1 right-use source contract: PASS")
+    print("v0268/1.26.51.1 right-use source contract: PASS")
     return 0
 
 
