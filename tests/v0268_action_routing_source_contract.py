@@ -130,6 +130,7 @@ def main() -> int:
         "if (offResult != 0)",
         "original(",
         "hand",
+        "gameMode,\n        offStack,\n        blockPos,\n        face,\n        hitPos,\n        kOffHand,",
     )
     if "swap" in use_block.lower() or "Packet" in use_block:
         raise AssertionError("block-use must stay on Minecraft native hand routing")
