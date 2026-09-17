@@ -80,11 +80,14 @@ def main() -> int:
     for token, reason in PROHIBITED.items():
         if token in combined:
             raise AssertionError(f"prohibited token {token!r}: {reason}")
+    if "26.50.1" in combined:
+        raise AssertionError("right-use source must identify the validated binary as 1.26.51.1")
 
     require(
         router,
         "712509dc14ccc233e91f267937dfb46ecdcc4b68",
         "b8a6351503d330628335a80e8131acd45291fa9a747465f0f34a31b2346847b4",
+        "kUseItemOnBlockRva = 0xF8A1CC4",
         "kBaseUseItemRva = 0xF8A285C",
         "kReleaseUsingItemRva = 0xF8A3204",
         "kSelectedItemRva = 0xF9F7824",
@@ -93,6 +96,8 @@ def main() -> int:
         "kPlayerIsUsingItemRva = 0xF9E8D64",
         "kItemInUseStackRva = 0xF9E8D84",
         "kStackDiffersForUseRva = 0xFFA5B04",
+        "kMainHand = 0",
+        "kOffHand = 1",
         "resolveExactTarget(",
         "std::memcmp(",
     )
@@ -100,22 +105,34 @@ def main() -> int:
     require(
         router,
         "using BaseUseItemFn = bool (*)(void*, const void*, unsigned char);",
-        "unsigned char useContext",
-        "original(gameMode, itemStack, useContext)",
-        "original(gameMode, offStack, useContext)",
+        "using UseItemOnBlockFn = std::uint32_t (*)(",
+        "unsigned char hand",
     )
-    require(header, "unsigned char useContext")
+    require(header, "unsigned char hand")
 
     base_use = function_body(router, "RightUseRouter::baseUseItemDetour(")
     require(
         base_use,
         "stacksMatch(itemStack, mainStack)",
         "routeUseAction(",
-        "original(gameMode, offStack, useContext)",
-        "original(gameMode, itemStack, useContext)",
+        "original(gameMode, offStack, kOffHand)",
+        "original(gameMode, itemStack, hand)",
     )
     if "itemStack != mainStack" in base_use or "itemStack == mainStack" in base_use:
         raise AssertionError("1.26.51.1 routing must not use ItemStack pointer identity")
+
+    use_block = function_body(router, "RightUseRouter::useItemOnBlockDetour(")
+    require(
+        use_block,
+        "ActionKind::UseBlock",
+        "kOffHand",
+        "offResult",
+        "if (offResult != 0)",
+        "original(",
+        "hand",
+    )
+    if "swap" in use_block.lower() or "Packet" in use_block:
+        raise AssertionError("block-use must stay on Minecraft native hand routing")
 
     route = function_body(core, "UseRouteResult routeUseAction(")
     off = route.index("ScopedActionHand scope(ActionHand::OffHand")
@@ -154,7 +171,7 @@ def main() -> int:
 
     require(cmake, "src/runtime/RightUseRouter.cpp")
 
-    print("v0268/1.26.51.1 right-use source contract: PASS")
+    print("v0268/1.26.51.1 native-hand right-use source contract: PASS")
     return 0
 
 
