@@ -88,7 +88,6 @@ if(CMAKE_BUILD_TYPE STREQUAL "Release")
         levi_offhand
         PRIVATE
         -Oz
-        -fno-exceptions
         -fno-rtti
     )
 endif()
