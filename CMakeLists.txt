@@ -33,6 +33,36 @@ set(
     "${CMAKE_BINARY_DIR}/out/${LEVI_OFFHAND_OUTPUT_ABI}"
 )
 
+# Keep the accepted renderer implementation in src/render frozen.  Minecraft
+# 1.26.51.1 compatibility is generated into the build tree by translating only
+# binary targets/signatures; the visual behavior/calibration source stays byte
+# identical to the pre-update renderer.
+find_package(Python3 REQUIRED COMPONENTS Interpreter)
+set(LEVI_OFFHAND_GENERATED_ROOT "${CMAKE_BINARY_DIR}/generated")
+set(
+    LEVI_OFFHAND_RENDER_SOURCE
+    "${CMAKE_BINARY_DIR}/generated/render/OffhandBlockRenderPatch.cpp"
+)
+execute_process(
+    COMMAND
+        "${Python3_EXECUTABLE}"
+        "${CMAKE_CURRENT_LIST_DIR}/scripts/generate_render_126511_compat.py"
+        --source-root "${CMAKE_CURRENT_LIST_DIR}"
+        --output-root "${LEVI_OFFHAND_GENERATED_ROOT}"
+    RESULT_VARIABLE LEVI_OFFHAND_RENDER_GENERATOR_RESULT
+    OUTPUT_VARIABLE LEVI_OFFHAND_RENDER_GENERATOR_OUTPUT
+    ERROR_VARIABLE LEVI_OFFHAND_RENDER_GENERATOR_ERROR
+)
+if(NOT LEVI_OFFHAND_RENDER_GENERATOR_RESULT EQUAL 0)
+    message(
+        FATAL_ERROR
+        "Minecraft 1.26.51.1 renderer compatibility generation failed:\n"
+        "${LEVI_OFFHAND_RENDER_GENERATOR_OUTPUT}"
+        "${LEVI_OFFHAND_RENDER_GENERATOR_ERROR}"
+    )
+endif()
+message(STATUS "${LEVI_OFFHAND_RENDER_GENERATOR_OUTPUT}")
+
 add_library(
     levi_offhand
     SHARED
@@ -44,7 +74,7 @@ add_library(
     src/runtime/HandActionRouter.cpp
     src/runtime/NativeSemanticBridge.cpp
     src/runtime/RightUseRouter.cpp
-    src/render/OffhandBlockRenderPatch.cpp
+    "${LEVI_OFFHAND_RENDER_SOURCE}"
 )
 
 set_target_properties(
@@ -56,6 +86,9 @@ set_target_properties(
 target_include_directories(
     levi_offhand
     PRIVATE
+    # Generated renderer headers must win over src/render while building the
+    # 1.26.51.1 compatibility copy.
+    "${LEVI_OFFHAND_GENERATED_ROOT}"
     "${CMAKE_CURRENT_LIST_DIR}/src"
 )
 
