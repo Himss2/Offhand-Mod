@@ -23,13 +23,21 @@ constexpr char kLogTag[] = "Levi Offhand";
  * Item::Item default flag initialization:
  *   RVA 0xF65A3BC  mov w9,#0x50
  *
- * Item::getAllowOffHand reads bit 7 (0x80) from Item + 0x112.
- * 0x50 -> 0xD0 preserves the existing low flags and adds mAllowOffHand.
+ * Minecraft Bedrock Android 1.26.51.1
+ * Build ID: 712509dc14ccc233e91f267937dfb46ecdcc4b68
+ *
+ * Item::Item default flag initialization:
+ *   RVA 0xFF7D070  mov w8,#0x50
+ *
+ * Both forms initialize Item + 0x112 with 0x50.  Changing the immediate to
+ * 0xD0 preserves the existing low flags and adds mAllowOffHand (bit 7).
  */
-constexpr std::uintptr_t kItemDefaultFlagsRva = 0xF65A3BC;
-constexpr std::uintptr_t kPatchOffsetFromSignature = 0x0C;
+constexpr std::uintptr_t kItemDefaultFlagsRva126451 = 0xF65A3BC;
+constexpr std::uintptr_t kItemDefaultFlagsRva126511 = 0xFF7D070;
+constexpr std::uintptr_t kLegacyPatchOffsetFromSignature = 0x0C;
+constexpr std::uintptr_t kCurrentPatchOffsetFromSignature = 0x08;
 
-constexpr char kItemConstructorFlagSignature[] =
+constexpr char kItemConstructorFlagSignature126451[] =
     "08 DA 94 94 "
     "00 E4 00 6F "
     "F5 03 13 AA "
@@ -43,12 +51,27 @@ constexpr char kItemConstructorFlagSignature[] =
     "08 01 09 2A "
     "BF 2E 00 B9";
 
-constexpr char kVanillaItemFlagsInstruction[] = "09 0A 80 52";
-constexpr char kAllOffhandItemFlagsInstruction[] = "09 1A 80 52";
+// Unique in libminecraftpe.so 1.26.51.1.  The target instruction is +0x08.
+constexpr char kItemConstructorFlagSignature126511[] =
+    "00 E4 00 6F "
+    "F5 03 13 AA "
+    "08 0A 80 52 "
+    "A0 8E 8E 3C "
+    "A0 C2 00 91 "
+    "A0 A2 81 3C "
+    "A0 06 80 3D "
+    "A8 AA 00 39";
+
+constexpr char kVanillaW9Instruction[] = "09 0A 80 52";
+constexpr char kPatchedW9Instruction[] = "09 1A 80 52";
+constexpr char kVanillaW8Instruction[] = "08 0A 80 52";
+constexpr char kPatchedW8Instruction[] = "08 1A 80 52";
 constexpr char kAllOffhandPatchName[] = "levi_offhand.item_allow_offhand";
 
-constexpr std::array<std::uint8_t, 4> kVanillaBytes{0x09, 0x0A, 0x80, 0x52};
-constexpr std::array<std::uint8_t, 4> kPatchedBytes{0x09, 0x1A, 0x80, 0x52};
+constexpr std::array<std::uint8_t, 4> kVanillaW9Bytes{0x09, 0x0A, 0x80, 0x52};
+constexpr std::array<std::uint8_t, 4> kPatchedW9Bytes{0x09, 0x1A, 0x80, 0x52};
+constexpr std::array<std::uint8_t, 4> kVanillaW8Bytes{0x08, 0x0A, 0x80, 0x52};
+constexpr std::array<std::uint8_t, 4> kPatchedW8Bytes{0x08, 0x1A, 0x80, 0x52};
 
 [[nodiscard]] bool belongsToMinecraft(std::uintptr_t address) noexcept {
     if (address == 0) {
@@ -75,6 +98,43 @@ constexpr std::array<std::uint8_t, 4> kPatchedBytes{0x09, 0x1A, 0x80, 0x52};
         std::memcmp(actual.data(), expected.data(), expected.size()) == 0;
 }
 
+[[nodiscard]] bool supportedVanillaInstruction(std::uintptr_t address) noexcept {
+    return bytesEqual(address, kVanillaW8Bytes) || bytesEqual(address, kVanillaW9Bytes);
+}
+
+[[nodiscard]] bool supportedPatchedInstruction(std::uintptr_t address) noexcept {
+    return bytesEqual(address, kPatchedW8Bytes) || bytesEqual(address, kPatchedW9Bytes);
+}
+
+[[nodiscard]] std::uintptr_t resolveItemFlagsInstruction() noexcept {
+    const auto currentBase = pl::memory::resolveSignature(
+        kItemConstructorFlagSignature126511,
+        kMinecraftLibrary
+    );
+    if (belongsToMinecraft(currentBase)) {
+        const auto target = currentBase + kCurrentPatchOffsetFromSignature;
+        if (
+            target - reinterpret_cast<std::uintptr_t>(nullptr) != 0 &&
+            (supportedVanillaInstruction(target) || supportedPatchedInstruction(target))
+        ) {
+            return target;
+        }
+    }
+
+    const auto legacyBase = pl::memory::resolveSignature(
+        kItemConstructorFlagSignature126451,
+        kMinecraftLibrary
+    );
+    if (belongsToMinecraft(legacyBase)) {
+        const auto target = legacyBase + kLegacyPatchOffsetFromSignature;
+        if (supportedVanillaInstruction(target) || supportedPatchedInstruction(target)) {
+            return target;
+        }
+    }
+
+    return 0;
+}
+
 } // namespace
 
 NativeOffhandPolicy& NativeOffhandPolicy::instance() noexcept {
@@ -90,11 +150,17 @@ bool NativeOffhandPolicy::applyPatch() noexcept {
         return true;
     }
 
-    if (bytesEqual(mInstruction, kPatchedBytes)) {
+    if (supportedPatchedInstruction(mInstruction)) {
         mPatchApplied.store(true, std::memory_order_release);
         return true;
     }
-    if (!bytesEqual(mInstruction, kVanillaBytes)) {
+
+    const char* replacement = nullptr;
+    if (bytesEqual(mInstruction, kVanillaW8Bytes)) {
+        replacement = kPatchedW8Instruction;
+    } else if (bytesEqual(mInstruction, kVanillaW9Bytes)) {
+        replacement = kPatchedW9Instruction;
+    } else {
         __android_log_print(
             ANDROID_LOG_ERROR,
             kLogTag,
@@ -105,7 +171,7 @@ bool NativeOffhandPolicy::applyPatch() noexcept {
 
     const bool ok = pl::memory::writeBytes(
         mInstruction,
-        kAllOffhandItemFlagsInstruction,
+        replacement,
         kAllOffhandPatchName
     );
     mPatchApplied.store(ok, std::memory_order_release);
@@ -140,26 +206,20 @@ bool NativeOffhandPolicy::install(pl::mod::ModContext& context) noexcept {
         return true;
     }
 
-    mInstruction = 0;
-    const auto signatureBase = pl::memory::resolveSignature(
-        kItemConstructorFlagSignature,
-        kMinecraftLibrary
-    );
-
-    if (!belongsToMinecraft(signatureBase)) {
+    mInstruction = resolveItemFlagsInstruction();
+    if (mInstruction == 0) {
         context.logger().error(
-            "Levi Offhand v0.2.62: Item constructor flag signature resolution failed"
+            "Levi Offhand: Item constructor flag signature resolution failed"
         );
         return false;
     }
 
-    mInstruction = signatureBase + kPatchOffsetFromSignature;
     if (
-        !bytesEqual(mInstruction, kVanillaBytes) &&
-        !bytesEqual(mInstruction, kPatchedBytes)
+        !supportedVanillaInstruction(mInstruction) &&
+        !supportedPatchedInstruction(mInstruction)
     ) {
         context.logger().error(
-            "Levi Offhand v0.2.62: Item flag instruction fingerprint mismatch"
+            "Levi Offhand: Item flag instruction fingerprint mismatch"
         );
         mInstruction = 0;
         return false;
@@ -171,10 +231,20 @@ bool NativeOffhandPolicy::install(pl::mod::ModContext& context) noexcept {
         return false;
     }
 
+    Dl_info info{};
+    std::uintptr_t rva = 0;
+    if (
+        dladdr(reinterpret_cast<void*>(mInstruction), &info) != 0 &&
+        info.dli_fbase != nullptr
+    ) {
+        rva = mInstruction - reinterpret_cast<std::uintptr_t>(info.dli_fbase);
+    }
+
     context.logger().info(
-        "[NativeOffhandPolicy] active at 0x{:x} (target RVA 0x{:x})",
-        mInstruction,
-        kItemDefaultFlagsRva
+        "[NativeOffhandPolicy] active at RVA 0x{:x} (1.26.45.1=0x{:x}, 1.26.51.1=0x{:x})",
+        rva,
+        kItemDefaultFlagsRva126451,
+        kItemDefaultFlagsRva126511
     );
     return true;
 }
