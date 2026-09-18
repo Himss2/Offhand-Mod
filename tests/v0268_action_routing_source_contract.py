@@ -101,6 +101,7 @@ def main() -> int:
         "kItemStackStorageSize = 0x98",
         "kItemWeakPtrOffset = 0x08",
         "kItemGetMaxUseDurationVtableOffset = 0x30",
+        "kItemGetAttackDamageVtableOffset = 0x130",
         "kItemIsUseableVtableOffset = 0xB0",
         "kItemRequiresInteractVtableOffset = 0x1A8",
         "kItemUseVtableOffset = 0x290",
@@ -159,13 +160,19 @@ def main() -> int:
         "kItemUseOnVtableOffset",
         "kBaseItemUseOnRva",
         "kComponentItemUseOnRva",
+        "kItemGetAttackDamageVtableOffset",
+        "attackDamage",
         "kItemCanUseAsAttackVtableOffset",
         "maxUseDuration",
         "attackOnly",
     )
-    if classifier.index("specializedUse") > classifier.index("maxUseDuration"):
+    if classifier.index("specializedUse") > classifier.index("attackDamage"):
         raise AssertionError(
-            "specialized native actions must be classified before max-use duration"
+            "specialized native actions must be classified before axe-like attack fallback"
+        )
+    if classifier.index("attackDamage") > classifier.index("maxUseDuration"):
+        raise AssertionError(
+            "axe-like attack fallback must run before generic max-use duration"
         )
 
     use_block = function_body(router, "RightUseRouter::useItemOnBlockDetour(")

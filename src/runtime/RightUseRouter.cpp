@@ -61,6 +61,7 @@ constexpr std::uintptr_t kComponentItemUseOnRva = 0xFDA8A20;
 constexpr std::size_t kGameModePlayerOffset = sizeof(void*);
 constexpr std::size_t kItemWeakPtrOffset = 0x08;
 constexpr std::size_t kItemGetMaxUseDurationVtableOffset = 0x30;
+constexpr std::size_t kItemGetAttackDamageVtableOffset = 0x130;
 constexpr std::size_t kItemIsUseableVtableOffset = 0xB0;
 constexpr std::size_t kItemRequiresInteractVtableOffset = 0x1A8;
 constexpr std::size_t kItemUseVtableOffset = 0x290;
@@ -137,6 +138,7 @@ using StackDiffersForUseFn = bool (*)(const void*, const void*);
 using ItemStackCopyCtorFn = void (*)(void*, const void*);
 using ItemStackDtorFn = void (*)(void*);
 using GetMaxUseDurationFn = int (*)(const void*, const void*);
+using GetAttackDamageFn = int (*)(const void*);
 using ItemBoolFn = bool (*)(const void*);
 
 OffhandItemFn gGetOffhandSlot = nullptr;
@@ -363,6 +365,24 @@ template <typename Fn>
         return true;
     }
 
+    // Axe/Pickaxe/Sword baseline: attack-oriented items with no specialized
+    // native right-click action yield the click to OFFHAND.  This uses the
+    // same virtual getAttackDamage path that DiggerItem overrides, so Sword
+    // follows the already-working Axe behavior instead of ComponentItem use
+    // metadata.  Trident/Shears/FishingRod are already returned above by
+    // their specialized right-click virtuals.
+    const auto getAttackDamage = itemVirtual<GetAttackDamageFn>(
+        item, kItemGetAttackDamageVtableOffset
+    );
+    const int attackDamage =
+        getAttackDamage != nullptr ? getAttackDamage(item) : 0;
+    if (attackDamage > 0) {
+        if (yieldedAttackOnly != nullptr) {
+            *yieldedAttackOnly = true;
+        }
+        return false;
+    }
+
     const auto getMaxUseDuration = itemVirtual<GetMaxUseDurationFn>(
         item, kItemGetMaxUseDurationVtableOffset
     );
@@ -375,10 +395,9 @@ template <typename Fn>
         return false;
     }
 
-    // Attack-only ComponentItems can still expose a non-zero max-use field.
-    // They must yield right-click to OFFHAND unless they had one of the
-    // specialized action overrides above.  Trident/Bow/FishingRod remain
-    // MAINHAND because their use/requiresInteract virtuals are specialized.
+    // Secondary fallback for attack-oriented items whose native attack
+    // damage reports zero but whose Item ABI still marks them attack-capable.
+    // Specialized right-click actions were already returned above.
     const auto canUseAsAttack = itemVirtual<ItemBoolFn>(
         item, kItemCanUseAsAttackVtableOffset
     );
