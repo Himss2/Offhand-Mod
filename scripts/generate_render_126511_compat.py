@@ -36,6 +36,19 @@ RVA_REPLACEMENTS = {
     "0x107CC804": "0x110AFF88",
     "0xADE56D8": "0xB2F7ADC",
 
+    # v0.2.67 reference-carrier internals.  These are not present in the
+    # tracked HEAD renderer anymore, but the CI reconstructs the proven
+    # v0.2.67 renderer snapshot before generating the 1.26.51.1 copy.
+    # Keep these literal translations so fail-closed validation reaches the
+    # exact attachment/FPP helpers recovered manually from 1.26.51.1.
+    "0xF14355C": "0xFA6F684",  # find owner-bone vector
+    "0xF147CC0": "0xFA51F78",  # copy owner matrix
+    "0x9B368D4": "0x9F01244",  # legacy attachment route
+    "0xEC8A478": "0xF56616C",  # attachment actor type
+    "0xEE63508": "0xF7AA2DC",  # Molang variable lookup
+    "0xEEA721C": "0xF7728A8",  # Molang value view
+    "0x2652B1D": "0x272F25E",  # "variable.is_first_person"
+
     # Item singleton globals.  The 1.26.51.1 item registry preserves the
     # relative layout of this group while the group moved by +0xDCDF80.
     "0x126F0FB8": "0x134BEF38",  # bow
