@@ -127,7 +127,7 @@ def main() -> int:
         "ActionKind::UseBlock",
         "kOffHand",
         "offResult",
-        "if (offResult != 0)",
+        "if ((offResult & 1u) != 0u)",
         "original(",
         "hand",
         "gameMode,\n        offStack,\n        blockPos,\n        face,\n        hitPos,\n        kOffHand,",
