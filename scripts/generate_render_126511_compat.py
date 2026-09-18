@@ -52,6 +52,52 @@ RVA_REPLACEMENTS = {
 }
 
 
+NAMED_RVA_REPLACEMENTS = {
+    # Core targets used by install()/validation.  Replace by symbol name so
+    # archived v0.2.67 renderer snapshots cannot retain a stale RVA merely
+    # because their old literal differs from the current tracked source.
+    "kRenderItemRva": "0xB2F0F60",
+    "kDefaultTransformRva": "0xA619618",
+    "kMatrixMultiplyRva": "0x98B49A0",
+    "kItemStackMatchesRva": "0xFF86E80",
+    "kHandEquipPredicateRva": "0xFFA6140",
+    "kOffDispatchCallsiteRva": "0xB2FC0BC",
+    "kFirstPersonDataDrivenRenderRva": "0xA79F2C0",
+    "kFirstPersonDataDrivenCallsiteRva": "0xB2FBE9C",
+    "kGetOffhandStackRva": "0xF579CA4",
+    "kThirdPersonOffhandRenderItemCallsiteRva": "0xA6FFAE0",
+    "kRenderItemAttachableEnabledCallsiteRva": "0xB2F1034",
+    "kAttachableStateRva": "0xA6FFBA4",
+
+    # Native attachment pipeline.
+    "kPrepareAttachmentRva": "0x9F013F0",
+    "kAttachmentBindingModeRva": "0xFA51F60",
+    "kAttachmentBindingModeFirstCallsiteRva": "0x9F020F0",
+    "kAttachmentBindingModeSecondCallsiteRva": "0x9F02148",
+    "kResolveOwnerBoneByNameRva": "0xB42719C",
+    "kResolveOwnerBoneFirstCallsiteRva": "0x9F0210C",
+    "kResolveOwnerBoneSecondCallsiteRva": "0x9F02184",
+    "kDrawAttachmentRva": "0x9F03EAC",
+    "kComposeAttachmentBoneMatrixRva": "0xFA528A4",
+    "kComposeAttachmentBoneMatrixCallsiteRva": "0x9F5A6D0",
+    "kFinalOffhandMatrixTopRva": "0x110AFF88",
+    "kFinalOffhandMatrixReturnRva": "0xB2F7ADC",
+
+    # Item singleton globals.
+    "kBowIdRva": "0x134BEF38",
+    "kCrossbowIdRva": "0x134BEF60",
+    "kTridentIdRva": "0x134BF140",
+    "kFishingRodIdRva": "0x134C0668",
+    "kCopperSpearIdRva": "0x134C27D8",
+    "kDiamondSpearIdRva": "0x134C2A80",
+    "kGoldenSpearIdRva": "0x134C3048",
+    "kIronSpearIdRva": "0x134C3368",
+    "kNetheriteSpearIdRva": "0x134C3818",
+    "kStoneSpearIdRva": "0x134C40B0",
+    "kWoodenSpearIdRva": "0x134C4510",
+}
+
+
 SIGNATURE_REPLACEMENTS = {
     "kBlockPredicateSignature": bytes.fromhex(
         "FD 7B BE A9 "
@@ -156,9 +202,23 @@ def require_signature_name(source: str, name: str) -> None:
 def replace_rvas(source: str) -> str:
     for old, new in RVA_REPLACEMENTS.items():
         # Historical renderer snapshots do not all use every target.  Replace
-        # only targets that are present; the generated audit map below records
-        # the complete RE mapping without re-enabling retired hooks.
+        # literals first for callsites/header constants that do not have a
+        # stable C++ identifier across snapshots.
         source = source.replace(old, new)
+
+    # Critical runtime constants are replaced by identifier as well.  This is
+    # intentionally independent of the old literal value: the CI renderer is
+    # reconstructed from archived overlays, so its pre-update RVA can differ
+    # from the copy tracked at HEAD.
+    for name, new in NAMED_RVA_REPLACEMENTS.items():
+        pattern = re.compile(
+            rf"(constexpr\\s+std::uintptr_t\\s+{re.escape(name)}\\s*=\\s*)"
+            rf"0x[0-9A-Fa-f]+"
+        )
+        source, count = pattern.subn(rf"\\g<1>{new}", source)
+        if count > 1:
+            raise RuntimeError(f"renderer source has duplicate RVA constant {name}")
+
     return source
 
 
