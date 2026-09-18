@@ -45,9 +45,19 @@ constexpr std::uintptr_t kStackDiffersForUseRva = 0xFFA5B04;
 constexpr std::uintptr_t kItemStackCopyCtorRva = 0xFF9D748;
 constexpr std::uintptr_t kItemStackDtorRva = 0x85ADF98;
 
+// 1.26.51.1 Item virtual defaults used only as capability identities.
+// A specialized _useOn means the concrete item owns a block-targeted
+// right-click action (for example Shears); the two generic implementations do
+// not claim the click and therefore allow OFFHAND fallback.
+constexpr std::uintptr_t kBaseItemUseOnRva = 0xFF84B84;
+constexpr std::uintptr_t kComponentItemUseOnRva = 0xFDA8A20;
+
 constexpr std::size_t kGameModePlayerOffset = sizeof(void*);
 constexpr std::size_t kItemWeakPtrOffset = 0x08;
 constexpr std::size_t kItemGetMaxUseDurationVtableOffset = 0x30;
+constexpr std::size_t kItemIsUseableVtableOffset = 0xB0;
+constexpr std::size_t kItemRequiresInteractVtableOffset = 0x1A8;
+constexpr std::size_t kItemUseOnVtableOffset = 0x418;
 constexpr std::size_t kItemStackStorageSize = 0x98;
 
 constexpr std::array<std::uint8_t, 16> kUseItemOnBlockFingerprint{
@@ -119,6 +129,7 @@ using StackDiffersForUseFn = bool (*)(const void*, const void*);
 using ItemStackCopyCtorFn = void (*)(void*, const void*);
 using ItemStackDtorFn = void (*)(void*);
 using GetMaxUseDurationFn = int (*)(const void*, const void*);
+using ItemBoolFn = bool (*)(const void*);
 
 OffhandItemFn gGetOffhandSlot = nullptr;
 StackIsNullFn gStackIsNull = nullptr;
@@ -237,13 +248,13 @@ template <std::size_t N>
         !gStackDiffersForUse(lhs, rhs);
 }
 
-[[nodiscard]] bool stackHasHoldUse(const void* stack) noexcept {
+[[nodiscard]] const void* itemFromStack(const void* stack) noexcept {
     if (stackIsNull(stack)) {
-        return false;
+        return nullptr;
     }
 
-    // ItemStackBase::mItem is a WeakPtr at +0x08.  1.26.51.1 isNull() itself
-    // follows the same two loads: stack+0x08 -> weak state -> raw Item*.
+    // ItemStackBase::mItem is a WeakPtr at +0x08.  The WeakPtr state begins
+    // with the raw Item* on this exact build.
     const void* weakState = nullptr;
     std::memcpy(
         &weakState,
@@ -251,34 +262,98 @@ template <std::size_t N>
         sizeof(weakState)
     );
     if (weakState == nullptr) {
-        return false;
+        return nullptr;
     }
 
     const void* item = nullptr;
     std::memcpy(&item, weakState, sizeof(item));
+    return validObject(item) ? item : nullptr;
+}
+
+template <typename Fn>
+[[nodiscard]] Fn itemVirtual(
+    const void* item,
+    std::size_t byteOffset
+) noexcept {
     if (!validObject(item)) {
-        return false;
+        return nullptr;
     }
 
     const void* vtable = nullptr;
     std::memcpy(&vtable, item, sizeof(vtable));
-    GetMaxUseDurationFn getMaxUseDuration = nullptr;
+    if (vtable == nullptr) {
+        return nullptr;
+    }
+
+    Fn function = nullptr;
     std::memcpy(
-        &getMaxUseDuration,
-        static_cast<const std::byte*>(vtable) +
-            kItemGetMaxUseDurationVtableOffset,
-        sizeof(getMaxUseDuration)
+        &function,
+        static_cast<const std::byte*>(vtable) + byteOffset,
+        sizeof(function)
     );
     if (
-        getMaxUseDuration == nullptr ||
-        !belongsToMinecraft(
-            reinterpret_cast<std::uintptr_t>(getMaxUseDuration)
-        )
+        function == nullptr ||
+        !belongsToMinecraft(reinterpret_cast<std::uintptr_t>(function))
     ) {
+        return nullptr;
+    }
+    return function;
+}
+
+[[nodiscard]] bool stackClaimsMainhandRightClick(
+    const void* stack
+) noexcept {
+    const void* item = itemFromStack(stack);
+    if (item == nullptr) {
         return false;
     }
 
-    return getMaxUseDuration(item, stack) > 0;
+    // Long/charged/self-use items: bow, spear/trident, food, shield, etc.
+    const auto getMaxUseDuration = itemVirtual<GetMaxUseDurationFn>(
+        item, kItemGetMaxUseDurationVtableOffset
+    );
+    if (
+        getMaxUseDuration != nullptr &&
+        getMaxUseDuration(item, stack) > 0
+    ) {
+        return true;
+    }
+
+    // Immediate use items, including component-driven items.
+    const auto isUseable = itemVirtual<ItemBoolFn>(
+        item, kItemIsUseableVtableOffset
+    );
+    if (isUseable != nullptr && isUseable(item)) {
+        return true;
+    }
+
+    // Fishing Rod and other items explicitly requesting interaction priority.
+    const auto requiresInteract = itemVirtual<ItemBoolFn>(
+        item, kItemRequiresInteractVtableOffset
+    );
+    if (requiresInteract != nullptr && requiresInteract(item)) {
+        return true;
+    }
+
+    // Targeted item actions such as Shears override Item::_useOn.  Ignore the
+    // base Item and generic ComponentItem implementations: inheriting either
+    // one must not make a Sword/Pickaxe suppress OFFHAND placement.
+    const auto useOn = itemVirtual<void*>(
+        item, kItemUseOnVtableOffset
+    );
+    if (useOn == nullptr) {
+        return false;
+    }
+
+    const auto moduleBase = minecraftModuleBase();
+    if (moduleBase == 0) {
+        return false;
+    }
+
+    const auto useOnAddress = reinterpret_cast<std::uintptr_t>(useOn);
+    return
+        useOnAddress != moduleBase + kBaseItemUseOnRva &&
+        useOnAddress != moduleBase + kComponentItemUseOnRva;
 }
 
 class ScopedItemStackSnapshot final {
@@ -693,10 +768,6 @@ std::uint32_t RightUseRouter::useItemOnBlockDetour(
         extra,
         flag
     );
-    if ((mainResult & 1u) != 0u) {
-        return mainResult;
-    }
-
     const void* player = playerFromGameMode(gameMode);
     if (player == nullptr || instance->mSelectedItemOriginal == nullptr) {
         return mainResult;
@@ -707,12 +778,15 @@ std::uint32_t RightUseRouter::useItemOnBlockDetour(
     );
     const void* mainStack = selectedOriginal(player);
 
-    // Block-hit processing reaches GameMode::useItemOn before the upper input
-    // dispatcher reaches baseUseItem.  A MAINHAND bow/spear/food/shield can
-    // therefore still own this click even though useItemOn returned PASS.
-    // Respect that native hold-use capability and let the upper dispatcher
-    // continue to MAINHAND baseUseItem instead of placing from OFFHAND.
-    if (stackHasHoldUse(mainStack)) {
+    // Block-hit processing reaches this wrapper before the upper dispatcher
+    // reaches MAINHAND baseUseItem.  The wrapper result bit is therefore not a
+    // reliable statement that the main item itself owns right-click: generic
+    // Sword/Pickaxe paths can produce a success-like wrapper result.
+    //
+    // Decide ownership from the concrete Item's native right-click
+    // capabilities instead.  Bow/Spear/FishingRod/Shears/etc. keep MAINHAND
+    // priority; an ordinary Sword does not suppress OFFHAND placement.
+    if (stackClaimsMainhandRightClick(mainStack)) {
         return mainResult;
     }
 

@@ -19,14 +19,15 @@ namespace {
 constexpr char kMinecraftLibrary[] = "libminecraftpe.so";
 constexpr char kLogTag[] = "Levi Offhand";
 
-constexpr std::uintptr_t kPlannerRva = 0xF024024;
+constexpr std::uintptr_t kPlannerRva126451 = 0xF024024;
+constexpr std::uintptr_t kPlannerRva126511 = 0xF9292A0;
 constexpr std::size_t kMaxDestinationRecords = 256;
 
 using routing::DestinationRecord;
 using routing::filterDestinations;
 using routing::kDestinationRecordSize;
 
-constexpr char kAutoInsertPlannerSignature[] =
+constexpr char kAutoInsertPlannerSignature126451[] =
     "FF 83 05 D1 "
     "FD 7B 10 A9 "
     "FC 6F 11 A9 "
@@ -42,6 +43,25 @@ constexpr char kAutoInsertPlannerSignature[] =
     "A8 03 1F F8 "
     "0B 55 00 54 "
     "F6 03 00 AA";
+
+// Unique 1.26.51.1 planner prolog at RVA 0xF9292A0.  ABI and the 0x20-byte
+// destination-record stride are unchanged from 1.26.45.1.
+constexpr char kAutoInsertPlannerSignature126511[] =
+    "FF C3 05 D1 "
+    "FD 7B 11 A9 "
+    "FC 6F 12 A9 "
+    "FA 67 13 A9 "
+    "F8 5F 14 A9 "
+    "F6 57 15 A9 "
+    "F4 4F 16 A9 "
+    "FD 43 04 91 "
+    "49 D0 3B D5 "
+    "28 15 40 F9 "
+    "7F 04 00 71 "
+    "E3 1F 00 B9 "
+    "A8 03 1F F8 "
+    "2B 36 00 54 "
+    "E0 0B 00 F9";
 
 struct DestinationVectorAbi {
     const DestinationRecord* begin;
@@ -87,6 +107,37 @@ using PlannerFn = int (*)(
         return 0;
     }
     return reinterpret_cast<std::uintptr_t>(info.dli_fbase);
+}
+
+[[nodiscard]] std::uintptr_t targetRva(std::uintptr_t address) noexcept {
+    const auto base = moduleBaseOf(address);
+    return base != 0 && address >= base ? address - base : 0;
+}
+
+[[nodiscard]] std::uintptr_t resolvePlannerTarget() noexcept {
+    const auto current = pl::memory::resolveSignature(
+        kAutoInsertPlannerSignature126511,
+        kMinecraftLibrary
+    );
+    if (
+        belongsToMinecraft(current) &&
+        targetRva(current) == kPlannerRva126511
+    ) {
+        return current;
+    }
+
+    const auto legacy = pl::memory::resolveSignature(
+        kAutoInsertPlannerSignature126451,
+        kMinecraftLibrary
+    );
+    if (
+        belongsToMinecraft(legacy) &&
+        targetRva(legacy) == kPlannerRva126451
+    ) {
+        return legacy;
+    }
+
+    return 0;
 }
 
 [[nodiscard]] bool decodeVector(
@@ -141,14 +192,11 @@ bool AutoInsertRouting::install(pl::mod::ModContext& context) noexcept {
     }
 
     mOriginal = nullptr;
-    mTarget = pl::memory::resolveSignature(
-        kAutoInsertPlannerSignature,
-        kMinecraftLibrary
-    );
+    mTarget = resolvePlannerTarget();
 
     if (!belongsToMinecraft(mTarget)) {
         context.logger().error(
-            "Levi Offhand v0.2.62: automatic insertion planner resolution failed"
+            "Levi Offhand: automatic insertion planner resolution failed for supported builds"
         );
         mTarget = 0;
         return false;
@@ -185,7 +233,7 @@ bool AutoInsertRouting::install(pl::mod::ModContext& context) noexcept {
 
     context.logger().info(
         "[AutoInsertRouting] planner active RVA=0x{:x}",
-        kPlannerRva
+        targetRva(mTarget)
     );
     context.logger().info(
         "[AutoInsertRouting] ContainerValidation hooks = 0"

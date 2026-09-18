@@ -101,6 +101,11 @@ def main() -> int:
         "kItemStackStorageSize = 0x98",
         "kItemWeakPtrOffset = 0x08",
         "kItemGetMaxUseDurationVtableOffset = 0x30",
+        "kItemIsUseableVtableOffset = 0xB0",
+        "kItemRequiresInteractVtableOffset = 0x1A8",
+        "kItemUseOnVtableOffset = 0x418",
+        "kBaseItemUseOnRva = 0xFF84B84",
+        "kComponentItemUseOnRva = 0xFDA8A20",
         "kMainHand = 0",
         "kOffHand = 1",
         "resolveExactTarget(",
@@ -132,11 +137,10 @@ def main() -> int:
     require(
         use_block,
         "const std::uint32_t mainResult = original(",
-        "if ((mainResult & 1u) != 0u)",
+        "stackClaimsMainhandRightClick(mainStack)",
         "kOffHand",
         "offResult",
         "if ((offResult & 1u) != 0u)",
-        "stackHasHoldUse(mainStack)",
         "ScopedItemStackSnapshot offSnapshot(offStack)",
         "MAINHAND passed; block-use/place handled by OFFHAND",
         "return mainResult;",
@@ -145,6 +149,10 @@ def main() -> int:
     )
     if "swap" in use_block.lower() or "Packet" in use_block:
         raise AssertionError("block-use must stay on Minecraft native hand routing")
+    if "if ((mainResult & 1u) != 0u)" in use_block:
+        raise AssertionError(
+            "generic MAINHAND wrapper success must not suppress capability-based OFFHAND fallback"
+        )
     if "ScopedActionHand" in use_block or "ScopedPlayer" in use_block:
         raise AssertionError(
             "instant block placement must not spoof selectedItem/offhand scope"
