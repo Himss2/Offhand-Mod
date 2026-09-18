@@ -2,6 +2,7 @@
 
 #include "runtime/ActionHandContext.hpp"
 #include "runtime/HandActionRouterCore.hpp"
+#include "runtime/OffhandSwapRuntime.hpp"
 
 #include <android/log.h>
 
@@ -926,6 +927,9 @@ const void* RightUseRouter::selectedItemDetour(const void* player) noexcept {
     }
     const auto original = reinterpret_cast<SelectedItemFn>(instance->mSelectedItemOriginal);
 
+    // The HUD swap button needs the current LocalPlayer but should not add a
+    // second client-instance/player hook.  Reuse this already-validated path.
+    OffhandSwapRuntime::instance().observePlayer(player);
 
     if (!instance->featureEnabled() || player == nullptr) {
         return original(player);

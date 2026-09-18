@@ -1,5 +1,6 @@
 #include "render/OffhandBlockRenderPatch.hpp"
 #include "runtime/NativeOffhandPolicy.hpp"
+#include "runtime/OffhandSwapRuntime.hpp"
 #include "runtime/AutoInsertRouting.hpp"
 #include "runtime/RightUseRouter.hpp"
 #include "ui/SwapButton.hpp"
@@ -36,6 +37,11 @@ void onModuleToggle(std::string_view moduleId, bool enabled) {
     auto& autoInsert=runtime::AutoInsertRouting::instance();
     if(autoInsert.installed()) {
         autoInsert.setFeatureEnabled(enabled);
+    }
+
+    auto& swapRuntime=runtime::OffhandSwapRuntime::instance();
+    if(swapRuntime.installed()) {
+        swapRuntime.setFeatureEnabled(enabled);
     }
 
     Patch::instance().setFeatureEnabled(enabled);
@@ -86,6 +92,14 @@ public:
             );
         }
 
+        const bool swapRuntimeInstalled =
+            runtime::OffhandSwapRuntime::instance().install(context);
+        if(!swapRuntimeInstalled) {
+            context.logger().warn(
+                "Levi Offhand: native F-style swap runtime unavailable"
+            );
+        }
+
         const bool rightUseInstalled=
             runtime::RightUseRouter::instance().install(context);
         if(!rightUseInstalled) {
@@ -120,6 +134,9 @@ public:
             if(rightUseInstalled) {
                 runtime::RightUseRouter::instance().uninstall(context);
             }
+            if(swapRuntimeInstalled) {
+                runtime::OffhandSwapRuntime::instance().uninstall(context);
+            }
             if(policyInstalled) {
                 runtime::NativeOffhandPolicy::instance().uninstall(context);
             }
@@ -137,11 +154,7 @@ public:
                 context.id(),
                 kModuleId,
                 []() {
-                    __android_log_print(
-                        ANDROID_LOG_INFO,
-                        kLogTag,
-                        "[SwapButton] code-only UI test callback reached"
-                    );
+                    (void)runtime::OffhandSwapRuntime::instance().swapNow();
                 }
             );
 
@@ -187,12 +200,18 @@ public:
         if(autoInsert.installed()) {
             autoInsert.setFeatureEnabled(false);
         }
+
+        auto& swapRuntime=runtime::OffhandSwapRuntime::instance();
+        if(swapRuntime.installed()) {
+            swapRuntime.setFeatureEnabled(false);
+        }
         return true;
     }
 
     bool unload(pl::mod::ModContext& context) {
         unregisterModMenu();
         runtime::RightUseRouter::instance().uninstall(context);
+        runtime::OffhandSwapRuntime::instance().uninstall(context);
         Patch::instance().uninstall(context);
         runtime::AutoInsertRouting::instance().uninstall(context);
         runtime::NativeOffhandPolicy::instance().uninstall(context);

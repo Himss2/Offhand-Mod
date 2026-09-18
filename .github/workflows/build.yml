@@ -81,6 +81,8 @@ jobs:
             src/LeviOffhandMod.cpp \
             src/ui/SwapButton.hpp \
             src/ui/SwapButton.cpp \
+            src/runtime/OffhandSwapRuntime.hpp \
+            src/runtime/OffhandSwapRuntime.cpp \
             src/runtime/HandActionPolicy.hpp \
             src/runtime/HandActionRouterCore.hpp \
             src/runtime/ActionHandContext.hpp \
@@ -100,6 +102,7 @@ jobs:
             src/runtime/RightUseRouter.cpp \
             tests/v0262_native_routing_source_contract.py \
             tests/v0262_auto_insert_routing_test.cpp \
+            tests/v0268_swap_button_source_contract.py \
             tests/v0268_action_routing_source_contract.py \
             tests/v0268_action_routing_binary_contract.py \
             tests/v0268_hand_action_policy_test.cpp \
@@ -110,7 +113,9 @@ jobs:
             tests/v0268_render_126511_compat_source_contract.py
           grep -q '"version": "0.2.68"' manifest.json
           grep -q 'SwapButton.cpp' CMakeLists.txt
+          grep -q 'OffhandSwapRuntime.cpp' CMakeLists.txt
           grep -q 'ButtonBuilder(kButtonId, "Swap Item")' src/ui/SwapButton.cpp
+          grep -q 'kSetItemInHandSlotRva = 0xF579C50' src/runtime/OffhandSwapRuntime.cpp
           grep -q 'NativeCapabilityProbe.cpp' CMakeLists.txt
           grep -q 'NativeOffhandPolicy.cpp' CMakeLists.txt
           grep -q 'kPlannerRva126511 = 0xF9292A0' src/runtime/AutoInsertRouting.cpp
@@ -122,6 +127,7 @@ jobs:
       - name: Run v0.2.68 action routing tests
         run: |
           python3 tests/v0262_native_routing_source_contract.py
+          python3 tests/v0268_swap_button_source_contract.py
           python3 tests/v0268_action_routing_source_contract.py
           python3 tests/v0268_semantic_bridge_source_contract.py
           python3 tests/v0268_render_126511_compat_source_contract.py
