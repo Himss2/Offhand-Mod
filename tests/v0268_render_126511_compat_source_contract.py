@@ -113,12 +113,10 @@ def main() -> int:
                 raise AssertionError(f"generated 1.26.51.1 renderer missing {token}")
 
         # Do not accept the audit comment as proof that runtime constants were
-        # translated.  Assert the actual constexpr assignment by identifier.
+        # translated.  Check the actual assignment after removing whitespace.
+        compact_cpp = re.sub(r"\s+", "", generated_cpp)
         for name, value in REQUIRED_NAMED_RVAS.items():
-            pattern = re.compile(
-                rf"\\b{re.escape(name)}\\s*=\\s*{re.escape(value)}\\b"
-            )
-            if not pattern.search(generated_cpp):
+            if f"{name}={value}" not in compact_cpp:
                 nearby = [
                     line.strip()
                     for line in generated_cpp.splitlines()
