@@ -103,9 +103,12 @@ def main() -> int:
         "kItemGetMaxUseDurationVtableOffset = 0x30",
         "kItemIsUseableVtableOffset = 0xB0",
         "kItemRequiresInteractVtableOffset = 0x1A8",
-        "kItemUseOnVtableOffset = 0x410",
-        "kBaseItemUseOnRva = 0xFF84B7C",
-        "kComponentItemUseOnRva = 0xFDA89E4",
+        "kItemUseVtableOffset = 0x290",
+        "kItemUseOnVtableOffset = 0x418",
+        "kBaseItemUseRva = 0xFF8429C",
+        "kComponentItemUseRva = 0xFDA8274",
+        "kBaseItemUseOnRva = 0xFF84B84",
+        "kComponentItemUseOnRva = 0xFDA8A20",
         "kMainHand = 0",
         "kOffHand = 1",
         "resolveExactTarget(",
@@ -132,6 +135,21 @@ def main() -> int:
     )
     if "itemStack != mainStack" in base_use or "itemStack == mainStack" in base_use:
         raise AssertionError("1.26.51.1 routing must not use ItemStack pointer identity")
+
+    classifier = function_body(router, "stackClaimsMainhandRightClick(")
+    if "isUseable(item)" in classifier:
+        raise AssertionError(
+            "ComponentItem::isUseable is too broad for MAINHAND priority"
+        )
+    require(
+        classifier,
+        "kItemUseVtableOffset",
+        "kBaseItemUseRva",
+        "kComponentItemUseRva",
+        "kItemUseOnVtableOffset",
+        "kBaseItemUseOnRva",
+        "kComponentItemUseOnRva",
+    )
 
     use_block = function_body(router, "RightUseRouter::useItemOnBlockDetour(")
     require(

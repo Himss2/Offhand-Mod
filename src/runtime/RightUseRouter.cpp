@@ -46,20 +46,22 @@ constexpr std::uintptr_t kItemStackCopyCtorRva = 0xFF9D748;
 constexpr std::uintptr_t kItemStackDtorRva = 0x85ADF98;
 
 // 1.26.51.1 Item virtual defaults used only as capability identities.
-// A specialized _useOn means the concrete item owns a block-targeted
-// right-click action (for example Shears).  The 1.26.51.1 Itanium vtables
-// prove _useOn is at the object-vptr slot 130 (+0x410), not the following
-// +0x418 entry used by the previous build.  The two generic implementations
-// below do not claim the click and therefore allow OFFHAND fallback.
-constexpr std::uintptr_t kBaseItemUseOnRva = 0xFF84B7C;
-constexpr std::uintptr_t kComponentItemUseOnRva = 0xFDA89E4;
+// MAINHAND ownership is based on concrete native action implementations, not
+// the broad ComponentItem::isUseable flag.  Relocated 1.26.51.1 vtables put
+// Item::use at +0x290 and Item::_useOn at +0x418.  Generic Item/ComponentItem
+// implementations do not claim the click; specialized entries do.
+constexpr std::uintptr_t kBaseItemUseRva = 0xFF8429C;
+constexpr std::uintptr_t kComponentItemUseRva = 0xFDA8274;
+constexpr std::uintptr_t kBaseItemUseOnRva = 0xFF84B84;
+constexpr std::uintptr_t kComponentItemUseOnRva = 0xFDA8A20;
 
 constexpr std::size_t kGameModePlayerOffset = sizeof(void*);
 constexpr std::size_t kItemWeakPtrOffset = 0x08;
 constexpr std::size_t kItemGetMaxUseDurationVtableOffset = 0x30;
 constexpr std::size_t kItemIsUseableVtableOffset = 0xB0;
 constexpr std::size_t kItemRequiresInteractVtableOffset = 0x1A8;
-constexpr std::size_t kItemUseOnVtableOffset = 0x410;
+constexpr std::size_t kItemUseVtableOffset = 0x290;
+constexpr std::size_t kItemUseOnVtableOffset = 0x418;
 constexpr std::size_t kItemStackStorageSize = 0x98;
 
 constexpr std::array<std::uint8_t, 16> kUseItemOnBlockFingerprint{
@@ -321,12 +323,26 @@ template <typename Fn>
         return true;
     }
 
-    // Immediate use items, including component-driven items.
-    const auto isUseable = itemVirtual<ItemBoolFn>(
-        item, kItemIsUseableVtableOffset
+    const auto moduleBase = minecraftModuleBase();
+    if (moduleBase == 0) {
+        return false;
+    }
+
+    // Immediate item actions are recognized only when Item::use itself is
+    // specialized.  ComponentItem::isUseable is intentionally ignored here:
+    // it is broad enough to classify ordinary component-based Swords as
+    // right-click owners even though they should allow OFFHAND fallback.
+    const auto use = itemVirtual<void*>(
+        item, kItemUseVtableOffset
     );
-    if (isUseable != nullptr && isUseable(item)) {
-        return true;
+    if (use != nullptr) {
+        const auto useAddress = reinterpret_cast<std::uintptr_t>(use);
+        if (
+            useAddress != moduleBase + kBaseItemUseRva &&
+            useAddress != moduleBase + kComponentItemUseRva
+        ) {
+            return true;
+        }
     }
 
     // Fishing Rod and other items explicitly requesting interaction priority.
@@ -344,11 +360,6 @@ template <typename Fn>
         item, kItemUseOnVtableOffset
     );
     if (useOn == nullptr) {
-        return false;
-    }
-
-    const auto moduleBase = minecraftModuleBase();
-    if (moduleBase == 0) {
         return false;
     }
 
