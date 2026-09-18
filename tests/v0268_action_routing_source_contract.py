@@ -133,7 +133,8 @@ def main() -> int:
         "if ((offResult & 1u) != 0u)",
         "MAINHAND passed; block-use/place handled by OFFHAND",
         "return mainResult;",
-        "gameMode,\n            offStack,\n            blockPos,\n            face,\n            hitPos,\n            kOffHand,",
+        "const std::uint32_t offResult = original(",
+        "gameMode,\n        offStack,\n        blockPos,\n        face,\n        hitPos,\n        kOffHand,",
     )
     if "swap" in use_block.lower() or "Packet" in use_block:
         raise AssertionError("block-use must stay on Minecraft native hand routing")
