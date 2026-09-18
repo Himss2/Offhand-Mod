@@ -794,23 +794,13 @@ std::uint32_t RightUseRouter::useItemOnBlockDetour(
         );
     }
 
-    // One input, one MAINHAND attempt.  This preserves vanilla priority and
-    // avoids replaying the broad client dispatcher (which also owns inventory
-    // bookkeeping).  Only a PASS result is eligible for an OFFHAND retry.
     ScopedBool reentry(gInsideBlockUse);
-    const std::uint32_t mainResult = original(
-        gameMode,
-        interaction,
-        blockPos,
-        face,
-        hitPos,
-        hand,
-        extra,
-        flag
-    );
+
     const void* player = playerFromGameMode(gameMode);
     if (player == nullptr || instance->mSelectedItemOriginal == nullptr) {
-        return mainResult;
+        return original(
+            gameMode, interaction, blockPos, face, hitPos, hand, extra, flag
+        );
     }
 
     const auto selectedOriginal = reinterpret_cast<SelectedItemFn>(
@@ -818,17 +808,24 @@ std::uint32_t RightUseRouter::useItemOnBlockDetour(
     );
     const void* mainStack = selectedOriginal(player);
 
-    // Block-hit processing reaches this wrapper before the upper dispatcher
-    // reaches MAINHAND baseUseItem.  The wrapper result bit is therefore not a
-    // reliable statement that the main item itself owns right-click: generic
-    // Sword/Pickaxe paths can produce a success-like wrapper result.
-    //
-    // Decide ownership from the concrete Item's native right-click
-    // capabilities instead.  Bow/Spear/FishingRod/Shears/etc. keep MAINHAND
-    // priority; an ordinary Sword does not suppress OFFHAND placement.
+    // Decide whether MAINHAND genuinely owns right-click *before* executing
+    // GameMode::useItemOn.  Calling the generic MAINHAND use-on wrapper first
+    // can mutate/prime the client transaction even when a Sword/Pickaxe has no
+    // right-click action; a later OFFHAND placement can then report handled
+    // locally but fail to commit.  Items with a real native right-click
+    // capability keep strict MAINHAND priority.
     bool yieldedAttackOnly = false;
     if (stackClaimsMainhandRightClick(mainStack, &yieldedAttackOnly)) {
-        return mainResult;
+        return original(
+            gameMode,
+            interaction,
+            blockPos,
+            face,
+            hitPos,
+            hand,
+            extra,
+            flag
+        );
     }
 
     if (yieldedAttackOnly) {
@@ -839,7 +836,7 @@ std::uint32_t RightUseRouter::useItemOnBlockDetour(
             __android_log_print(
                 ANDROID_LOG_INFO,
                 kLogTag,
-                "[RightUseRouter] attack-only MAINHAND yielded right-click to OFFHAND"
+                "[RightUseRouter] attack-only MAINHAND yielded right-click to OFFHAND before use-on"
             );
         }
     }
@@ -847,19 +844,25 @@ std::uint32_t RightUseRouter::useItemOnBlockDetour(
     const void* offStack =
         gGetOffhandSlot != nullptr ? gGetOffhandSlot(player) : nullptr;
     if (stackIsNull(offStack)) {
-        return mainResult;
+        return original(
+            gameMode, interaction, blockPos, face, hitPos, hand, extra, flag
+        );
     }
 
-    // The upper dispatcher uses a detached ItemStack snapshot as its
-    // before-state.  Preserve that ownership model for OFFHAND too.  hand=1
-    // still makes Minecraft fetch/mutate the real offhand slot internally,
-    // while this copy remains safe transaction input and is destroyed after
-    // the native call.
+    // Preserve the transaction-safe detached before-state that fixed the
+    // post-placement offhand-slot lock.  hand=1 still makes Minecraft mutate
+    // the real offhand slot internally.
     ScopedItemStackSnapshot offSnapshot(offStack);
     if (offSnapshot.get() == nullptr) {
-        return mainResult;
+        return original(
+            gameMode, interaction, blockPos, face, hitPos, hand, extra, flag
+        );
     }
 
+    // MAINHAND has no native right-click ownership, so OFFHAND gets the first
+    // and only use-on transaction attempt.  If OFFHAND passes, run the untouched
+    // MAINHAND wrapper once as vanilla fallback; never run MAINHAND before
+    // OFFHAND in this branch.
     const std::uint32_t offResult = original(
         gameMode,
         offSnapshot.get(),
@@ -879,15 +882,22 @@ std::uint32_t RightUseRouter::useItemOnBlockDetour(
             __android_log_print(
                 ANDROID_LOG_INFO,
                 kLogTag,
-                "[RightUseRouter] MAINHAND passed; block-use/place handled by OFFHAND (native hand=1)"
+                "[RightUseRouter] MAINHAND had no right-click owner; block-use/place handled by OFFHAND first (native hand=1)"
             );
         }
         return offResult;
     }
 
-    // Both hands passed. Return the original MAINHAND result; never execute
-    // either native transaction a second time.
-    return mainResult;
+    return original(
+        gameMode,
+        interaction,
+        blockPos,
+        face,
+        hitPos,
+        hand,
+        extra,
+        flag
+    );
 }
 
 const void* RightUseRouter::selectedItemDetour(const void* player) noexcept {

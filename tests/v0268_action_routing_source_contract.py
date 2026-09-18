@@ -171,22 +171,26 @@ def main() -> int:
     use_block = function_body(router, "RightUseRouter::useItemOnBlockDetour(")
     require(
         use_block,
-        "const std::uint32_t mainResult = original(",
         "stackClaimsMainhandRightClick(mainStack, &yieldedAttackOnly)",
-        "kOffHand",
-        "offResult",
-        "if ((offResult & 1u) != 0u)",
         "ScopedItemStackSnapshot offSnapshot(offStack)",
-        "MAINHAND passed; block-use/place handled by OFFHAND",
-        "return mainResult;",
         "const std::uint32_t offResult = original(",
+        "if ((offResult & 1u) != 0u)",
+        "MAINHAND had no right-click owner; block-use/place handled by OFFHAND first",
         "gameMode,\n        offSnapshot.get(),\n        blockPos,\n        face,\n        hitPos,\n        kOffHand,",
     )
     if "swap" in use_block.lower() or "Packet" in use_block:
         raise AssertionError("block-use must stay on Minecraft native hand routing")
-    if "if ((mainResult & 1u) != 0u)" in use_block:
+    if "mainResult" in use_block:
         raise AssertionError(
-            "generic MAINHAND wrapper success must not suppress capability-based OFFHAND fallback"
+            "non-owner MAINHAND must not execute use-on before OFFHAND"
+        )
+    classifier_pos = use_block.index(
+        "stackClaimsMainhandRightClick(mainStack, &yieldedAttackOnly)"
+    )
+    off_attempt_pos = use_block.index("const std::uint32_t offResult = original(")
+    if classifier_pos > off_attempt_pos:
+        raise AssertionError(
+            "MAINHAND capability must be decided before OFFHAND use-on"
         )
     if "ScopedActionHand" in use_block or "ScopedPlayer" in use_block:
         raise AssertionError(
@@ -198,8 +202,13 @@ def main() -> int:
         )
     if "upperUseDetour" in combined or "mUpperUseHook" in combined:
         raise AssertionError("broad upper-use replay must not be installed")
-    if use_block.count("const std::uint32_t mainResult = original(") != 1:
-        raise AssertionError("block-use must execute exactly one explicit MAINHAND attempt")
+    if use_block.count("const std::uint32_t offResult = original(") != 1:
+        raise AssertionError("capability fallback must execute one explicit OFFHAND attempt")
+    pre_offhand = use_block[:off_attempt_pos]
+    if "const std::uint32_t mainResult = original(" in pre_offhand:
+        raise AssertionError(
+            "MAINHAND use-on must not prime transaction before OFFHAND fallback"
+        )
 
     route = function_body(core, "UseRouteResult routeUseAction(")
     main = route.index("ScopedActionHand scope(ActionHand::MainHand")
