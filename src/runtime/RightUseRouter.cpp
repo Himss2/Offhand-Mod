@@ -933,7 +933,7 @@ const void* RightUseRouter::selectedItemDetour(const void* player) noexcept {
     auto& swapRuntime = OffhandSwapRuntime::instance();
     if (
         player != nullptr &&
-        swapRuntime.shouldProcessPendingSwap()
+        swapRuntime.hasPendingSwap()
     ) {
         const void* selectedForSwap = original(player);
         (void)swapRuntime.processPendingSwap(

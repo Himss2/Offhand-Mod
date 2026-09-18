@@ -27,7 +27,7 @@ for token in (
     'kMinecraftMainThreadName[] = "MINECRAFT MAIN"',
     "prctl(PR_GET_NAME",
     "requestSwap()",
-    "shouldProcessPendingSwap()",
+    "hasPendingSwap()",
     "processPendingSwap(",
     "mSwapRequested.store(true",
     "[SwapRuntime] F swap queued for MINECRAFT MAIN",
@@ -38,7 +38,7 @@ for token in (
 
 for token in (
     "void requestSwap() noexcept",
-    "bool shouldProcessPendingSwap() const noexcept",
+    "bool hasPendingSwap() const noexcept",
     "bool processPendingSwap(",
     "std::atomic_bool mSwapRequested",
 ):
@@ -47,7 +47,7 @@ for token in (
 
 request_start = runtime.index("void OffhandSwapRuntime::requestSwap()")
 request_end = runtime.index(
-    "bool OffhandSwapRuntime::shouldProcessPendingSwap()",
+    "bool OffhandSwapRuntime::hasPendingSwap()",
     request_start,
 )
 request_body = runtime[request_start:request_end]
@@ -64,7 +64,7 @@ for forbidden in (
 
 process_start = runtime.index("bool OffhandSwapRuntime::processPendingSwap(")
 process_body = runtime[process_start:]
-if "shouldProcessPendingSwap()" not in process_body:
+if "hasPendingSwap()" not in process_body:
     raise AssertionError("processPendingSwap must enforce MINECRAFT MAIN gate")
 
 for forbidden in (
@@ -77,13 +77,13 @@ for forbidden in (
 
 for token in (
     "OffhandSwapRuntime::instance()",
-    "swapRuntime.shouldProcessPendingSwap()",
+    "swapRuntime.hasPendingSwap()",
     "swapRuntime.processPendingSwap(",
     "const void* selectedForSwap = original(player)",
 ):
     if token not in router:
         raise AssertionError(
-            f"RightUseRouter must drain queued swap on selected-item path: {token}"
+            f"RightUseRouter must drain queued swap from native selected-item path: {token}"
         )
 
 if "observePlayer(player)" in router:

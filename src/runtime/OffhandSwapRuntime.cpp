@@ -293,18 +293,17 @@ void OffhandSwapRuntime::requestSwap() noexcept {
     );
 }
 
-bool OffhandSwapRuntime::shouldProcessPendingSwap() const noexcept {
+bool OffhandSwapRuntime::hasPendingSwap() const noexcept {
     return installed() &&
         featureEnabled() &&
-        mSwapRequested.load(std::memory_order_acquire) &&
-        isMinecraftMainThread();
+        mSwapRequested.load(std::memory_order_acquire);
 }
 
 bool OffhandSwapRuntime::processPendingSwap(
     void* player,
     const void* selectedStack
 ) noexcept {
-    if (!shouldProcessPendingSwap()) {
+    if (!hasPendingSwap()) {
         return false;
     }
 
@@ -318,6 +317,18 @@ bool OffhandSwapRuntime::processPendingSwap(
     if (offStack == nullptr) {
         return false;
     }
+
+    char threadName[16]{};
+    if (prctl(PR_GET_NAME, threadName, 0, 0, 0) != 0) {
+        std::strncpy(threadName, "unknown", sizeof(threadName) - 1);
+    }
+
+    __android_log_print(
+        ANDROID_LOG_INFO,
+        kLogTag,
+        "[SwapRuntime] draining queued F swap from selected-item hook (thread=%s)",
+        threadName
+    );
 
     bool requested = true;
     if (!mSwapRequested.compare_exchange_strong(
@@ -363,7 +374,7 @@ bool OffhandSwapRuntime::processPendingSwap(
             __android_log_print(
                 ANDROID_LOG_ERROR,
                 kLogTag,
-                "[SwapRuntime] MAINHAND snapshot failed on MINECRAFT MAIN"
+                "[SwapRuntime] MAINHAND snapshot failed in selected-item hook"
             );
             return false;
         }
@@ -380,7 +391,7 @@ bool OffhandSwapRuntime::processPendingSwap(
             __android_log_print(
                 ANDROID_LOG_ERROR,
                 kLogTag,
-                "[SwapRuntime] OFFHAND snapshot failed on MINECRAFT MAIN"
+                "[SwapRuntime] OFFHAND snapshot failed in selected-item hook"
             );
             return false;
         }
@@ -407,7 +418,7 @@ bool OffhandSwapRuntime::processPendingSwap(
             __android_log_print(
                 ANDROID_LOG_ERROR,
                 kLogTag,
-                "[SwapRuntime] hand snapshot creation failed on MINECRAFT MAIN"
+                "[SwapRuntime] hand snapshot creation failed in selected-item hook"
             );
             return false;
         }
@@ -419,7 +430,7 @@ bool OffhandSwapRuntime::processPendingSwap(
     __android_log_print(
         ANDROID_LOG_INFO,
         kLogTag,
-        "[SwapRuntime] swapped MAINHAND <-> OFFHAND on MINECRAFT MAIN"
+        "[SwapRuntime] swapped MAINHAND <-> OFFHAND from selected-item hook"
     );
     return true;
 }
