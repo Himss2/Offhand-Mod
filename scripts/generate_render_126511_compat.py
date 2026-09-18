@@ -212,8 +212,7 @@ def replace_rvas(source: str) -> str:
     # from the copy tracked at HEAD.
     for name, new in NAMED_RVA_REPLACEMENTS.items():
         pattern = re.compile(
-            rf"(constexpr\\s+std::uintptr_t\\s+{re.escape(name)}\\s*=\\s*)"
-            rf"0x[0-9A-Fa-f]+"
+            rf"(\\b{re.escape(name)}\\s*=\\s*)0x[0-9A-Fa-f]+"
         )
         source, count = pattern.subn(rf"\\g<1>{new}", source)
         if count > 1:
