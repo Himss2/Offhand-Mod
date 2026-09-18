@@ -33,6 +33,12 @@ constexpr char kLogTag[] = "Levi Offhand";
 constexpr unsigned char kMainHand = 0;
 constexpr unsigned char kOffHand = 1;
 
+// Upper client use dispatcher.  The 1.26.51.1 function preserves the old
+// semantic shape: it snapshots Player::getSelectedItem near the beginning,
+// then runs use-on/baseUseItem and finally owns the client swing/animation.
+// Keeping the offhand scope around this whole boundary is what lets the
+// animation observe the same logical hand as the native transaction.
+constexpr std::uintptr_t kUpperUseDispatcherRva = 0x97F85F8;
 constexpr std::uintptr_t kUseItemOnBlockRva = 0xF8A1CC4;
 constexpr std::uintptr_t kBaseUseItemRva = 0xF8A285C;
 constexpr std::uintptr_t kReleaseUsingItemRva = 0xF8A3204;
@@ -45,6 +51,10 @@ constexpr std::uintptr_t kStackDiffersForUseRva = 0xFFA5B04;
 
 constexpr std::size_t kGameModePlayerOffset = sizeof(void*);
 
+constexpr std::array<std::uint8_t, 16> kUpperUseDispatcherFingerprint{
+    0xFF, 0xC3, 0x05, 0xD1, 0xFD, 0x7B, 0x11, 0xA9,
+    0xFC, 0x6F, 0x12, 0xA9, 0xFA, 0x67, 0x13, 0xA9,
+};
 constexpr std::array<std::uint8_t, 16> kUseItemOnBlockFingerprint{
     0xFD, 0x7B, 0xBA, 0xA9, 0xFC, 0x6F, 0x01, 0xA9,
     0xFA, 0x67, 0x02, 0xA9, 0xF8, 0x5F, 0x03, 0xA9,
@@ -81,6 +91,12 @@ constexpr std::array<std::uint8_t, 16> kStackDiffersForUseFingerprint{
     0x1F, 0x01, 0x09, 0x6B, 0x01, 0x01, 0x00, 0x54,
 };
 
+using UpperUseFn = bool (*)(
+    void*,
+    const void*,
+    const void*,
+    const void*
+);
 using BaseUseItemFn = bool (*)(void*, const void*, unsigned char);
 using UseItemOnBlockFn = std::uint32_t (*)(
     void*,
@@ -106,6 +122,10 @@ PlayerIsUsingItemFn gPlayerIsUsingItem = nullptr;
 ItemInUseStackFn gItemInUseStack = nullptr;
 StackDiffersForUseFn gStackDiffersForUse = nullptr;
 
+thread_local bool gInsideUpperUse = false;
+thread_local bool gUpperVanillaPass = false;
+thread_local bool gCaptureUpperPlayer = false;
+thread_local const void* gCapturedUpperPlayer = nullptr;
 thread_local bool gInsideBaseUse = false;
 thread_local bool gInsideBlockUse = false;
 thread_local const void* gScopedPlayer = nullptr;
@@ -236,6 +256,9 @@ bool RightUseRouter::install(pl::mod::ModContext& context) noexcept {
         return true;
     }
 
+    const auto upperUseTarget = resolveExactTarget(
+        kUpperUseDispatcherRva, kUpperUseDispatcherFingerprint
+    );
     const auto selectedTarget = resolveExactTarget(
         kSelectedItemRva, kSelectedItemFingerprint
     );
@@ -265,7 +288,8 @@ bool RightUseRouter::install(pl::mod::ModContext& context) noexcept {
     );
 
     if (
-        selectedTarget == 0 || offhandTarget == 0 || nullTarget == 0 ||
+        upperUseTarget == 0 || selectedTarget == 0 ||
+        offhandTarget == 0 || nullTarget == 0 ||
         usingTarget == 0 || inUseTarget == 0 || differsTarget == 0 ||
         blockUseTarget == 0 || useTarget == 0 || releaseTarget == 0
     ) {
@@ -281,6 +305,7 @@ bool RightUseRouter::install(pl::mod::ModContext& context) noexcept {
     gItemInUseStack = reinterpret_cast<ItemInUseStackFn>(inUseTarget);
     gStackDiffersForUse = reinterpret_cast<StackDiffersForUseFn>(differsTarget);
 
+    mUpperUseTarget = upperUseTarget;
     mSelectedItemTarget = selectedTarget;
     mReleaseUsingItemTarget = releaseTarget;
     mBaseUseItemTarget = useTarget;
@@ -338,12 +363,30 @@ bool RightUseRouter::install(pl::mod::ModContext& context) noexcept {
         return false;
     }
 
+    // Publish the broad client dispatcher last.  Its first pass is explicitly
+    // vanilla-only; only a PASS result is retried under an offhand scope.
+    mUpperUseHook = std::make_unique<pl::memory::HookHandle>(
+        reinterpret_cast<void*>(mUpperUseTarget),
+        reinterpret_cast<void*>(&RightUseRouter::upperUseDetour),
+        &mUpperUseOriginal,
+        pl::memory::HookPriority::Normal
+    );
+    if (
+        !mUpperUseHook || !mUpperUseHook->installed() ||
+        mUpperUseOriginal == nullptr
+    ) {
+        context.logger().warn("[RightUseRouter] upper-use dispatcher hook failed");
+        uninstall(context);
+        return false;
+    }
+
     mFeatureEnabled.store(true, std::memory_order_release);
+    mLoggedUpperRetry.store(false, std::memory_order_relaxed);
     mLoggedOffhandUse.store(false, std::memory_order_relaxed);
     mLoggedBlockUse.store(false, std::memory_order_relaxed);
     mLoggedLongUse.store(false, std::memory_order_relaxed);
     context.logger().info(
-        "[RightUseRouter] Minecraft 1.26.51.1 native offhand-first right-use active; left-click remains vanilla mainhand"
+        "[RightUseRouter] Minecraft 1.26.51.1 upper-use retry active: MAIN pass -> scoped OFFHAND retry; left-click remains vanilla mainhand"
     );
     return true;
 }
@@ -352,6 +395,10 @@ void RightUseRouter::uninstall(pl::mod::ModContext& context) noexcept {
     mFeatureEnabled.store(false, std::memory_order_release);
     clearSession();
 
+    if (mUpperUseHook) {
+        mUpperUseHook->reset();
+        mUpperUseHook.reset();
+    }
     if (mUseItemOnBlockHook) {
         mUseItemOnBlockHook->reset();
         mUseItemOnBlockHook.reset();
@@ -369,14 +416,20 @@ void RightUseRouter::uninstall(pl::mod::ModContext& context) noexcept {
         mSelectedItemHook.reset();
     }
 
+    mUpperUseOriginal = nullptr;
     mUseItemOnBlockOriginal = nullptr;
     mBaseUseItemOriginal = nullptr;
     mReleaseUsingItemOriginal = nullptr;
     mSelectedItemOriginal = nullptr;
+    mUpperUseTarget = 0;
     mUseItemOnBlockTarget = 0;
     mBaseUseItemTarget = 0;
     mReleaseUsingItemTarget = 0;
     mSelectedItemTarget = 0;
+    gInsideUpperUse = false;
+    gUpperVanillaPass = false;
+    gCaptureUpperPlayer = false;
+    gCapturedUpperPlayer = nullptr;
     gGetOffhandSlot = nullptr;
     gStackIsNull = nullptr;
     gPlayerIsUsingItem = nullptr;
@@ -399,14 +452,85 @@ bool RightUseRouter::featureEnabled() const noexcept {
 }
 
 bool RightUseRouter::installed() const noexcept {
-    return mSelectedItemHook != nullptr && mSelectedItemHook->installed() &&
+    return mUpperUseHook != nullptr && mUpperUseHook->installed() &&
+        mSelectedItemHook != nullptr && mSelectedItemHook->installed() &&
         mReleaseUsingItemHook != nullptr && mReleaseUsingItemHook->installed() &&
         mBaseUseItemHook != nullptr && mBaseUseItemHook->installed() &&
         mUseItemOnBlockHook != nullptr && mUseItemOnBlockHook->installed() &&
         mSelectedItemOriginal != nullptr &&
         mReleaseUsingItemOriginal != nullptr &&
         mBaseUseItemOriginal != nullptr &&
-        mUseItemOnBlockOriginal != nullptr;
+        mUseItemOnBlockOriginal != nullptr &&
+        mUpperUseOriginal != nullptr;
+}
+
+bool RightUseRouter::upperUseDetour(
+    void* controller,
+    const void* inputFlags,
+    const void* interaction,
+    const void* target
+) noexcept {
+    auto* instance = sInstance;
+    if (instance == nullptr || instance->mUpperUseOriginal == nullptr) {
+        return false;
+    }
+
+    const auto original = reinterpret_cast<UpperUseFn>(instance->mUpperUseOriginal);
+    if (!instance->featureEnabled() || gInsideUpperUse) {
+        return original(controller, inputFlags, interaction, target);
+    }
+
+    ScopedBool reentry(gInsideUpperUse);
+
+    // First run the exact vanilla/mainhand path.  Capture the Player through
+    // the selected-item boundary, but prevent the lower hooks from injecting
+    // offhand during this pass.
+    const bool previousCapture = gCaptureUpperPlayer;
+    const void* previousCaptured = gCapturedUpperPlayer;
+    const bool previousVanillaPass = gUpperVanillaPass;
+    gCaptureUpperPlayer = true;
+    gCapturedUpperPlayer = nullptr;
+    gUpperVanillaPass = true;
+
+    const bool mainHandled = original(controller, inputFlags, interaction, target);
+    const void* player = gCapturedUpperPlayer;
+
+    gUpperVanillaPass = previousVanillaPass;
+    gCaptureUpperPlayer = previousCapture;
+    gCapturedUpperPlayer = previousCaptured;
+
+    if (mainHandled || player == nullptr || gGetOffhandSlot == nullptr) {
+        return mainHandled;
+    }
+
+    const void* offStack = gGetOffhandSlot(player);
+    if (stackIsNull(offStack)) {
+        return false;
+    }
+
+    // Retry the *whole* client use dispatcher under one coherent offhand
+    // scope.  selectedItemDetour now reports the real offhand stack from the
+    // beginning of the pass, while the lower native use hooks force hand=1.
+    bool offHandled = false;
+    {
+        ScopedPlayer routedPlayer(player);
+        ScopedActionHand actionScope(ActionHand::OffHand, ActionKind::UseBlock);
+        offHandled = original(controller, inputFlags, interaction, target);
+    }
+
+    if (offHandled) {
+        bool expected = false;
+        if (instance->mLoggedUpperRetry.compare_exchange_strong(
+                expected, true, std::memory_order_relaxed
+            )) {
+            __android_log_print(
+                ANDROID_LOG_INFO,
+                kLogTag,
+                "[RightUseRouter] upper-use OFFHAND retry handled; swing/animation scope preserved"
+            );
+        }
+    }
+    return offHandled;
 }
 
 bool RightUseRouter::baseUseItemDetour(
@@ -421,7 +545,8 @@ bool RightUseRouter::baseUseItemDetour(
 
     const auto original = reinterpret_cast<BaseUseItemFn>(instance->mBaseUseItemOriginal);
     if (
-        !instance->featureEnabled() || gInsideBaseUse || hand == kOffHand
+        !instance->featureEnabled() || gInsideBaseUse || hand == kOffHand ||
+        gUpperVanillaPass
     ) {
         return original(gameMode, itemStack, hand);
     }
@@ -447,6 +572,27 @@ bool RightUseRouter::baseUseItemDetour(
         offStack == nullptr || stackIsNull(offStack)
     ) {
         return original(gameMode, itemStack, hand);
+    }
+
+    const auto scoped = currentScopedAction();
+    if (
+        scoped.has_value() &&
+        scoped->hand == ActionHand::OffHand &&
+        player == gScopedPlayer
+    ) {
+        ScopedBool reentry(gInsideBaseUse);
+        const bool handled = original(gameMode, offStack, kOffHand);
+        if (
+            handled && gPlayerIsUsingItem != nullptr &&
+            gPlayerIsUsingItem(player) && gItemInUseStack != nullptr
+        ) {
+            const void* active = gItemInUseStack(player);
+            if (!stackIsNull(active) && stacksMatch(active, offStack)) {
+                gSessionPlayer = player;
+                gSessionGameMode = gameMode;
+            }
+        }
+        return handled;
     }
 
     ScopedBool reentry(gInsideBaseUse);
@@ -519,7 +665,8 @@ std::uint32_t RightUseRouter::useItemOnBlockDetour(
         instance->mUseItemOnBlockOriginal
     );
     if (
-        !instance->featureEnabled() || gInsideBlockUse || hand == kOffHand
+        !instance->featureEnabled() || gInsideBlockUse || hand == kOffHand ||
+        gUpperVanillaPass
     ) {
         return original(
             gameMode, interaction, blockPos, face, hitPos, hand, extra, flag
@@ -534,6 +681,25 @@ std::uint32_t RightUseRouter::useItemOnBlockDetour(
     if (player == nullptr || stackIsNull(offStack)) {
         return original(
             gameMode, interaction, blockPos, face, hitPos, hand, extra, flag
+        );
+    }
+
+    const auto scoped = currentScopedAction();
+    if (
+        scoped.has_value() &&
+        scoped->hand == ActionHand::OffHand &&
+        player == gScopedPlayer
+    ) {
+        ScopedBool reentry(gInsideBlockUse);
+        return original(
+            gameMode,
+            offStack,
+            blockPos,
+            face,
+            hitPos,
+            kOffHand,
+            extra,
+            flag
         );
     }
 
@@ -586,6 +752,11 @@ const void* RightUseRouter::selectedItemDetour(const void* player) noexcept {
         return nullptr;
     }
     const auto original = reinterpret_cast<SelectedItemFn>(instance->mSelectedItemOriginal);
+
+    if (gCaptureUpperPlayer && player != nullptr) {
+        gCapturedUpperPlayer = player;
+    }
+
     if (!instance->featureEnabled() || player == nullptr) {
         return original(player);
     }
