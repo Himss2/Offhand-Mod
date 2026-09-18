@@ -172,7 +172,7 @@ def main() -> int:
     require(
         use_block,
         "const std::uint32_t mainResult = original(",
-        "stackClaimsMainhandRightClick(mainStack)",
+        "stackClaimsMainhandRightClick(mainStack, &yieldedAttackOnly)",
         "kOffHand",
         "offResult",
         "if ((offResult & 1u) != 0u)",
