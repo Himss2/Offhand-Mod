@@ -104,11 +104,13 @@ def main() -> int:
         "kItemIsUseableVtableOffset = 0xB0",
         "kItemRequiresInteractVtableOffset = 0x1A8",
         "kItemUseVtableOffset = 0x290",
-        "kItemUseOnVtableOffset = 0x418",
+        "kItemUseOnVtableOffset = 0x410",
         "kBaseItemUseRva = 0xFF8429C",
         "kComponentItemUseRva = 0xFDA8274",
-        "kBaseItemUseOnRva = 0xFF84B84",
-        "kComponentItemUseOnRva = 0xFDA8A20",
+        "kBaseItemRequiresInteractRva = 0xFF87F28",
+        "kComponentItemRequiresInteractRva = 0xFDAA1FC",
+        "kBaseItemUseOnRva = 0xFF84B7C",
+        "kComponentItemUseOnRva = 0xFDA89E4",
         "kMainHand = 0",
         "kOffHand = 1",
         "resolveExactTarget(",
@@ -141,11 +143,18 @@ def main() -> int:
         raise AssertionError(
             "ComponentItem::isUseable is too broad for MAINHAND priority"
         )
+    if "requiresInteract(item)" in classifier:
+        raise AssertionError(
+            "generic ComponentItem::requiresInteract must not claim MAINHAND priority"
+        )
     require(
         classifier,
         "kItemUseVtableOffset",
         "kBaseItemUseRva",
         "kComponentItemUseRva",
+        "kItemRequiresInteractVtableOffset",
+        "kBaseItemRequiresInteractRva",
+        "kComponentItemRequiresInteractRva",
         "kItemUseOnVtableOffset",
         "kBaseItemUseOnRva",
         "kComponentItemUseOnRva",

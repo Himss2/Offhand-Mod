@@ -47,13 +47,16 @@ constexpr std::uintptr_t kItemStackDtorRva = 0x85ADF98;
 
 // 1.26.51.1 Item virtual defaults used only as capability identities.
 // MAINHAND ownership is based on concrete native action implementations, not
-// the broad ComponentItem::isUseable flag.  Relocated 1.26.51.1 vtables put
-// Item::use at +0x290 and Item::_useOn at +0x418.  Generic Item/ComponentItem
-// implementations do not claim the click; specialized entries do.
+// broad data-driven ComponentItem booleans.  Relocated 1.26.51.1 primary
+// vtables prove Item::use=+0x290, requiresInteract=+0x1A8 and _useOn=+0x410.
+// Generic Item/ComponentItem entries do not claim the click; specialized
+// overrides (FishingRod, Shears, etc.) do.
 constexpr std::uintptr_t kBaseItemUseRva = 0xFF8429C;
 constexpr std::uintptr_t kComponentItemUseRva = 0xFDA8274;
-constexpr std::uintptr_t kBaseItemUseOnRva = 0xFF84B84;
-constexpr std::uintptr_t kComponentItemUseOnRva = 0xFDA8A20;
+constexpr std::uintptr_t kBaseItemRequiresInteractRva = 0xFF87F28;
+constexpr std::uintptr_t kComponentItemRequiresInteractRva = 0xFDAA1FC;
+constexpr std::uintptr_t kBaseItemUseOnRva = 0xFF84B7C;
+constexpr std::uintptr_t kComponentItemUseOnRva = 0xFDA89E4;
 
 constexpr std::size_t kGameModePlayerOffset = sizeof(void*);
 constexpr std::size_t kItemWeakPtrOffset = 0x08;
@@ -61,7 +64,7 @@ constexpr std::size_t kItemGetMaxUseDurationVtableOffset = 0x30;
 constexpr std::size_t kItemIsUseableVtableOffset = 0xB0;
 constexpr std::size_t kItemRequiresInteractVtableOffset = 0x1A8;
 constexpr std::size_t kItemUseVtableOffset = 0x290;
-constexpr std::size_t kItemUseOnVtableOffset = 0x418;
+constexpr std::size_t kItemUseOnVtableOffset = 0x410;
 constexpr std::size_t kItemStackStorageSize = 0x98;
 
 constexpr std::array<std::uint8_t, 16> kUseItemOnBlockFingerprint{
@@ -345,12 +348,24 @@ template <typename Fn>
         }
     }
 
-    // Fishing Rod and other items explicitly requesting interaction priority.
-    const auto requiresInteract = itemVirtual<ItemBoolFn>(
+    // Fishing Rod and similar classes override requiresInteract.  Do not call
+    // the generic ComponentItem implementation as a capability boolean here:
+    // data-driven Swords can report true even though they should yield this
+    // right-click to an OFFHAND block.
+    const auto requiresInteract = itemVirtual<void*>(
         item, kItemRequiresInteractVtableOffset
     );
-    if (requiresInteract != nullptr && requiresInteract(item)) {
-        return true;
+    if (requiresInteract != nullptr) {
+        const auto requiresInteractAddress =
+            reinterpret_cast<std::uintptr_t>(requiresInteract);
+        if (
+            requiresInteractAddress !=
+                moduleBase + kBaseItemRequiresInteractRva &&
+            requiresInteractAddress !=
+                moduleBase + kComponentItemRequiresInteractRva
+        ) {
+            return true;
+        }
     }
 
     // Targeted item actions such as Shears override Item::_useOn.  Ignore the
