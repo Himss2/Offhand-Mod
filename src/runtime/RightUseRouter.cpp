@@ -541,12 +541,14 @@ std::uint32_t RightUseRouter::useItemOnBlockDetour(
     ScopedActionHand actionScope(ActionHand::OffHand, ActionKind::UseBlock);
     ScopedPlayer routedPlayer(player);
 
-    // Preserve Minecraft's complete native use-on-block transaction (target,
-    // face, hit vector, placement checks, inventory decrement, sound/network
-    // side effects) and change only the native hand selector.
+    // 1.26.51.1 uses BOTH x1 and w5 to identify the action hand:
+    // x1 is the ItemStack being acted with, while w5 selects main/off hand.
+    // Supplying the offhand enum with the caller's mainhand stack is rejected
+    // by the native placement path.  Keep the whole vanilla transaction and
+    // substitute the coherent pair: offhand stack + native hand=1.
     const std::uint32_t offResult = original(
         gameMode,
-        interaction,
+        offStack,
         blockPos,
         face,
         hitPos,
@@ -554,7 +556,10 @@ std::uint32_t RightUseRouter::useItemOnBlockDetour(
         extra,
         flag
     );
-    if (offResult != 0) {
+
+    // Native InteractionResult semantics use bit 0 for accepted/consumed.
+    // Retry the untouched mainhand call only when the offhand attempt passes.
+    if ((offResult & 1u) != 0u) {
         bool expected = false;
         if (instance->mLoggedBlockUse.compare_exchange_strong(
                 expected, true, std::memory_order_relaxed
