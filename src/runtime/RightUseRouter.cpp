@@ -215,6 +215,22 @@ template <std::size_t N>
         !gStackDiffersForUse(lhs, rhs);
 }
 
+[[nodiscard]] bool activeUseMatches(
+    const void* player,
+    const void* stack
+) noexcept {
+    if (
+        player == nullptr || stack == nullptr ||
+        gPlayerIsUsingItem == nullptr || gItemInUseStack == nullptr ||
+        !gPlayerIsUsingItem(player)
+    ) {
+        return false;
+    }
+
+    const void* active = gItemInUseStack(player);
+    return !stackIsNull(active) && stacksMatch(active, stack);
+}
+
 void clearSession() noexcept {
     gSessionPlayer = nullptr;
     gSessionGameMode = nullptr;
@@ -475,14 +491,27 @@ bool RightUseRouter::baseUseItemDetour(
 
     const auto result = routeUseAction(
         [&]() noexcept {
-            return original(gameMode, itemStack, hand);
+            const bool nativeHandled = original(gameMode, itemStack, hand);
+            // Bow/spear/charge-style items may enter Player::isUsingItem before
+            // this bool reports a consumed action.  Native active-use ownership
+            // is authoritative: once MAINHAND owns the use state, OFFHAND must
+            // not be attempted for the same input.
+            return nativeHandled || activeUseMatches(player, mainStack);
         },
         [&]() noexcept {
-            return original(gameMode, offStack, kOffHand);
+            const bool nativeHandled = original(gameMode, offStack, kOffHand);
+            return nativeHandled || activeUseMatches(player, offStack);
         },
         []() noexcept {},
         ActionKind::UseAir
     );
+
+    if (result.handled && result.hand == ActionHand::MainHand) {
+        // A new MAINHAND use supersedes any stale offhand session state.
+        if (gSessionPlayer == player) {
+            clearSession();
+        }
+    }
 
     if (result.handled && result.hand == ActionHand::OffHand) {
         bool expected = false;
@@ -496,24 +525,18 @@ bool RightUseRouter::baseUseItemDetour(
             );
         }
 
-        if (
-            gPlayerIsUsingItem != nullptr && gPlayerIsUsingItem(player) &&
-            gItemInUseStack != nullptr
-        ) {
-            const void* active = gItemInUseStack(player);
-            if (!stackIsNull(active) && stacksMatch(active, offStack)) {
-                gSessionPlayer = player;
-                gSessionGameMode = gameMode;
-                expected = false;
-                if (instance->mLoggedLongUse.compare_exchange_strong(
-                        expected, true, std::memory_order_relaxed
-                    )) {
-                    __android_log_print(
-                        ANDROID_LOG_INFO,
-                        kLogTag,
-                        "[RightUseRouter] OFFHAND long-use session pinned until release"
-                    );
-                }
+        if (activeUseMatches(player, offStack)) {
+            gSessionPlayer = player;
+            gSessionGameMode = gameMode;
+            expected = false;
+            if (instance->mLoggedLongUse.compare_exchange_strong(
+                    expected, true, std::memory_order_relaxed
+                )) {
+                __android_log_print(
+                    ANDROID_LOG_INFO,
+                    kLogTag,
+                    "[RightUseRouter] OFFHAND long-use session pinned until release"
+                );
             }
         }
     }
@@ -574,24 +597,21 @@ std::uint32_t RightUseRouter::useItemOnBlockDetour(
         return mainResult;
     }
 
-    std::uint32_t offResult = 0;
-    {
-        // Scope exists only for this native offhand action.  It is destroyed
-        // before returning to inventory/UI code, so instant placement cannot
-        // pin selectedItem/offhand state after the click has completed.
-        ScopedActionHand actionScope(ActionHand::OffHand, ActionKind::UseBlock);
-        ScopedPlayer routedPlayer(player);
-        offResult = original(
-            gameMode,
-            offStack,
-            blockPos,
-            face,
-            hitPos,
-            kOffHand,
-            extra,
-            flag
-        );
-    }
+    // useItemOnBlock already receives the complete native hand identity:
+    // the actual offhand ItemStack plus hand=1.  Do NOT spoof selectedItem
+    // here.  The older visual-only branches proved arbitrary-offhand storage
+    // works without any selected-item substitution, and the extra spoof leaks
+    // into client inventory bookkeeping after placement.
+    const std::uint32_t offResult = original(
+        gameMode,
+        offStack,
+        blockPos,
+        face,
+        hitPos,
+        kOffHand,
+        extra,
+        flag
+    );
 
     if ((offResult & 1u) != 0u) {
         bool expected = false;

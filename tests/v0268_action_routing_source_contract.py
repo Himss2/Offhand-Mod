@@ -115,6 +115,8 @@ def main() -> int:
         base_use,
         "stacksMatch(itemStack, mainStack)",
         "routeUseAction(",
+        "activeUseMatches(player, mainStack)",
+        "activeUseMatches(player, offStack)",
         "original(gameMode, offStack, kOffHand)",
         "original(gameMode, itemStack, hand)",
     )
@@ -136,6 +138,10 @@ def main() -> int:
     )
     if "swap" in use_block.lower() or "Packet" in use_block:
         raise AssertionError("block-use must stay on Minecraft native hand routing")
+    if "ScopedActionHand" in use_block or "ScopedPlayer" in use_block:
+        raise AssertionError(
+            "instant block placement must not spoof selectedItem/offhand scope"
+        )
     if "upperUseDetour" in combined or "mUpperUseHook" in combined:
         raise AssertionError("broad upper-use replay must not be installed")
     if use_block.count("const std::uint32_t mainResult = original(") != 1:
