@@ -4,6 +4,7 @@ ROOT = Path(__file__).resolve().parents[1]
 
 button = (ROOT / "src/ui/SwapButton.cpp").read_text(errors="replace")
 runtime = (ROOT / "src/runtime/OffhandSwapRuntime.cpp").read_text(errors="replace")
+header = (ROOT / "src/runtime/OffhandSwapRuntime.hpp").read_text(errors="replace")
 router = (ROOT / "src/runtime/RightUseRouter.cpp").read_text(errors="replace")
 mod = (ROOT / "src/LeviOffhandMod.cpp").read_text(errors="replace")
 cmake = (ROOT / "CMakeLists.txt").read_text(errors="replace")
@@ -17,27 +18,54 @@ for token in (
         raise AssertionError(f"SwapButton missing {token}")
 
 for token in (
-    "kSelectedItemRva = 0xF9F7824",
     "kOffhandSlotRva = 0xF579C2C",
     "kStackIsNullRva = 0xFFA0F70",
     "kItemStackCopyCtorRva = 0xFF9D748",
     "kItemStackDtorRva = 0x85ADF98",
     "kSetItemInHandSlotRva = 0xF579C50",
     "kItemStackStorageSize = 0x98",
-    "ItemStackSnapshot mainSnapshot",
-    "ItemStackSnapshot offSnapshot",
-    "mSetItemInHandSlot(player, kMainHand, offSnapshot.get())",
-    "mSetItemInHandSlot(player, kOffHand, mainSnapshot.get())",
-    "[SwapRuntime] swapped MAINHAND <-> OFFHAND",
+    'kMinecraftMainThreadName[] = "MINECRAFT MAIN"',
+    "pthread_getname_np",
+    "requestSwap()",
+    "shouldProcessPendingSwap()",
+    "processPendingSwap(",
+    "mSwapRequested.store(true",
+    "[SwapRuntime] F swap queued for MINECRAFT MAIN",
+    "[SwapRuntime] swapped MAINHAND <-> OFFHAND on MINECRAFT MAIN",
 ):
     if token not in runtime:
         raise AssertionError(f"OffhandSwapRuntime missing {token}")
 
-main_snapshot = runtime.index("ItemStackSnapshot mainSnapshot")
-off_snapshot = runtime.index("ItemStackSnapshot offSnapshot")
-first_write = runtime.index("mSetItemInHandSlot(player, kMainHand")
-if not (main_snapshot < first_write and off_snapshot < first_write):
-    raise AssertionError("both ItemStack snapshots must exist before first hand write")
+for token in (
+    "void requestSwap() noexcept",
+    "bool shouldProcessPendingSwap() const noexcept",
+    "bool processPendingSwap(",
+    "std::atomic_bool mSwapRequested",
+):
+    if token not in header:
+        raise AssertionError(f"OffhandSwapRuntime.hpp missing {token}")
+
+request_start = runtime.index("void OffhandSwapRuntime::requestSwap()")
+request_end = runtime.index(
+    "bool OffhandSwapRuntime::shouldProcessPendingSwap()",
+    request_start,
+)
+request_body = runtime[request_start:request_end]
+for forbidden in (
+    "mItemStackCopyCtor(",
+    "mSetItemInHandSlot(",
+    "mGetOffhandSlot(",
+    "ItemStackSnapshot",
+):
+    if forbidden in request_body:
+        raise AssertionError(
+            f"UI-thread requestSwap must not touch Minecraft state: {forbidden}"
+        )
+
+process_start = runtime.index("bool OffhandSwapRuntime::processPendingSwap(")
+process_body = runtime[process_start:]
+if "shouldProcessPendingSwap()" not in process_body:
+    raise AssertionError("processPendingSwap must enforce MINECRAFT MAIN gate")
 
 for forbidden in (
     "InventoryTransactionPacket",
@@ -47,13 +75,26 @@ for forbidden in (
     if forbidden in runtime:
         raise AssertionError(f"swap runtime must not synthesize {forbidden}")
 
-if "OffhandSwapRuntime::instance().observePlayer(player)" not in router:
-    raise AssertionError("RightUseRouter must publish its verified LocalPlayer")
+for token in (
+    "OffhandSwapRuntime::instance()",
+    "swapRuntime.shouldProcessPendingSwap()",
+    "swapRuntime.processPendingSwap(",
+    "const void* selectedForSwap = original(player)",
+):
+    if token not in router:
+        raise AssertionError(
+            f"RightUseRouter must drain queued swap on selected-item path: {token}"
+        )
 
-if "OffhandSwapRuntime::instance().swapNow()" not in mod:
-    raise AssertionError("SwapButton callback must call native swap runtime")
+if "observePlayer(player)" in router:
+    raise AssertionError("swap must not cache a LocalPlayer pointer across threads")
+
+if "OffhandSwapRuntime::instance().requestSwap()" not in mod:
+    raise AssertionError("SwapButton callback must only queue the swap request")
+if "OffhandSwapRuntime::instance().swapNow()" in mod:
+    raise AssertionError("SwapButton callback must not execute Minecraft swap synchronously")
 
 if "src/runtime/OffhandSwapRuntime.cpp" not in cmake:
     raise AssertionError("CMakeLists.txt missing OffhandSwapRuntime.cpp")
 
-print("v0.2.68 swap button/runtime source contract passed")
+print("v0.2.68 swap button game-thread dispatch contract passed")

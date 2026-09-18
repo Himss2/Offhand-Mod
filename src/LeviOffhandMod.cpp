@@ -154,7 +154,7 @@ public:
                 context.id(),
                 kModuleId,
                 []() {
-                    (void)runtime::OffhandSwapRuntime::instance().swapNow();
+                    runtime::OffhandSwapRuntime::instance().requestSwap();
                 }
             );
 

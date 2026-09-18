@@ -8,18 +8,19 @@
 #include <cstring>
 #include <dlfcn.h>
 #include <link.h>
+#include <pthread.h>
 
 namespace levioffhand::runtime {
 namespace {
 
 constexpr char kMinecraftLibrary[] = "libminecraftpe.so";
 constexpr char kLogTag[] = "Levi Offhand";
+constexpr char kMinecraftMainThreadName[] = "MINECRAFT MAIN";
 
 constexpr unsigned char kMainHand = 0;
 constexpr unsigned char kOffHand = 1;
 
 // Minecraft Bedrock Android 1.26.51.1 arm64-v8a.
-constexpr std::uintptr_t kSelectedItemRva = 0xF9F7824;
 constexpr std::uintptr_t kOffhandSlotRva = 0xF579C2C;
 constexpr std::uintptr_t kStackIsNullRva = 0xFFA0F70;
 constexpr std::uintptr_t kItemStackCopyCtorRva = 0xFF9D748;
@@ -27,16 +28,10 @@ constexpr std::uintptr_t kItemStackDtorRva = 0x85ADF98;
 
 // Actor::setItemInHandSlot(HandSlot, ItemStack const&).
 // hand=0 dispatches virtual +0x268; hand=1 dispatches virtual +0x278.
-// On LocalPlayer this therefore uses Minecraft's own hand-slot setters instead
-// of directly writing ItemStack memory.
 constexpr std::uintptr_t kSetItemInHandSlotRva = 0xF579C50;
 
 constexpr std::size_t kItemStackStorageSize = 0x98;
 
-constexpr std::array<std::uint8_t, 16> kSelectedItemFingerprint{
-    0x08, 0xB8, 0x42, 0xF9, 0x09, 0xC1, 0x42, 0x39,
-    0x89, 0x00, 0x00, 0x34, 0x60, 0xD6, 0x01, 0xF0,
-};
 constexpr std::array<std::uint8_t, 16> kOffhandSlotFingerprint{
     0xFD, 0x7B, 0xBF, 0xA9, 0xFD, 0x03, 0x00, 0x91,
     0x00, 0x20, 0x00, 0x91, 0x95, 0xF8, 0x10, 0x94,
@@ -132,6 +127,14 @@ template <std::size_t N>
     return belongsToMinecraft(reinterpret_cast<std::uintptr_t>(vtable));
 }
 
+[[nodiscard]] bool isMinecraftMainThread() noexcept {
+    char name[16]{};
+    if (pthread_getname_np(pthread_self(), name, sizeof(name)) != 0) {
+        return false;
+    }
+    return std::strcmp(name, kMinecraftMainThreadName) == 0;
+}
+
 class ScopedSwapFlag final {
 public:
     explicit ScopedSwapFlag(std::atomic_bool& flag) noexcept
@@ -190,9 +193,6 @@ OffhandSwapRuntime& OffhandSwapRuntime::instance() noexcept {
 bool OffhandSwapRuntime::install(pl::mod::ModContext& context) noexcept {
     uninstall(context);
 
-    const auto selected = resolveExactTarget(
-        kSelectedItemRva, kSelectedItemFingerprint
-    );
     const auto offhand = resolveExactTarget(
         kOffhandSlotRva, kOffhandSlotFingerprint
     );
@@ -210,7 +210,7 @@ bool OffhandSwapRuntime::install(pl::mod::ModContext& context) noexcept {
     );
 
     if (
-        selected == 0 || offhand == 0 || isNull == 0 ||
+        offhand == 0 || isNull == 0 ||
         copyCtor == 0 || dtor == 0 || setHand == 0
     ) {
         context.logger().error(
@@ -219,7 +219,6 @@ bool OffhandSwapRuntime::install(pl::mod::ModContext& context) noexcept {
         return false;
     }
 
-    mGetSelectedItem = reinterpret_cast<GetSelectedItemFn>(selected);
     mGetOffhandSlot = reinterpret_cast<GetOffhandSlotFn>(offhand);
     mStackIsNull = reinterpret_cast<StackIsNullFn>(isNull);
     mItemStackCopyCtor =
@@ -228,13 +227,13 @@ bool OffhandSwapRuntime::install(pl::mod::ModContext& context) noexcept {
     mSetItemInHandSlot =
         reinterpret_cast<SetItemInHandSlotFn>(setHand);
 
-    mObservedPlayer.store(nullptr, std::memory_order_release);
+    mSwapRequested.store(false, std::memory_order_release);
     mSwapInProgress.store(false, std::memory_order_release);
     mFeatureEnabled.store(true, std::memory_order_release);
     mInstalled.store(true, std::memory_order_release);
 
     context.logger().info(
-        "Swap runtime active: selected hotbar <-> offhand native hand setter"
+        "Swap runtime active: F requests are drained on MINECRAFT MAIN"
     );
     return true;
 }
@@ -242,10 +241,9 @@ bool OffhandSwapRuntime::install(pl::mod::ModContext& context) noexcept {
 void OffhandSwapRuntime::uninstall(pl::mod::ModContext&) noexcept {
     mInstalled.store(false, std::memory_order_release);
     mFeatureEnabled.store(false, std::memory_order_release);
-    mObservedPlayer.store(nullptr, std::memory_order_release);
+    mSwapRequested.store(false, std::memory_order_release);
     mSwapInProgress.store(false, std::memory_order_release);
 
-    mGetSelectedItem = nullptr;
     mGetOffhandSlot = nullptr;
     mStackIsNull = nullptr;
     mItemStackCopyCtor = nullptr;
@@ -255,6 +253,9 @@ void OffhandSwapRuntime::uninstall(pl::mod::ModContext&) noexcept {
 
 void OffhandSwapRuntime::setFeatureEnabled(bool enabled) noexcept {
     mFeatureEnabled.store(enabled, std::memory_order_release);
+    if (!enabled) {
+        mSwapRequested.store(false, std::memory_order_release);
+    }
 }
 
 bool OffhandSwapRuntime::featureEnabled() const noexcept {
@@ -263,7 +264,6 @@ bool OffhandSwapRuntime::featureEnabled() const noexcept {
 
 bool OffhandSwapRuntime::installed() const noexcept {
     return mInstalled.load(std::memory_order_acquire) &&
-        mGetSelectedItem != nullptr &&
         mGetOffhandSlot != nullptr &&
         mStackIsNull != nullptr &&
         mItemStackCopyCtor != nullptr &&
@@ -271,20 +271,60 @@ bool OffhandSwapRuntime::installed() const noexcept {
         mSetItemInHandSlot != nullptr;
 }
 
-void OffhandSwapRuntime::observePlayer(const void* player) noexcept {
-    if (!installed() || !validObject(player)) {
-        return;
-    }
-    mObservedPlayer.store(player, std::memory_order_release);
-}
-
-bool OffhandSwapRuntime::swapNow() noexcept {
+void OffhandSwapRuntime::requestSwap() noexcept {
     if (!installed() || !featureEnabled()) {
         __android_log_print(
             ANDROID_LOG_WARN,
             kLogTag,
-            "[SwapRuntime] ignored: runtime unavailable or module disabled"
+            "[SwapRuntime] F request ignored: runtime unavailable or module disabled"
         );
+        return;
+    }
+
+    // The external HUD button is dispatched from Android/Java's UI thread.
+    // Never invoke Minecraft ItemStack constructors/setters here: the 1.26.51.1
+    // ItemRegistry TLS/context is not valid on this thread.
+    mSwapRequested.store(true, std::memory_order_release);
+
+    __android_log_print(
+        ANDROID_LOG_INFO,
+        kLogTag,
+        "[SwapRuntime] F swap queued for MINECRAFT MAIN"
+    );
+}
+
+bool OffhandSwapRuntime::shouldProcessPendingSwap() const noexcept {
+    return installed() &&
+        featureEnabled() &&
+        mSwapRequested.load(std::memory_order_acquire) &&
+        isMinecraftMainThread();
+}
+
+bool OffhandSwapRuntime::processPendingSwap(
+    void* player,
+    const void* selectedStack
+) noexcept {
+    if (!shouldProcessPendingSwap()) {
+        return false;
+    }
+
+    if (!validObject(player) || selectedStack == nullptr) {
+        // Keep the request queued; a later verified main-thread getter can
+        // provide a usable LocalPlayer/selected stack.
+        return false;
+    }
+
+    const void* offStack = mGetOffhandSlot(player);
+    if (offStack == nullptr) {
+        return false;
+    }
+
+    bool requested = true;
+    if (!mSwapRequested.compare_exchange_strong(
+            requested,
+            false,
+            std::memory_order_acq_rel
+        )) {
         return false;
     }
 
@@ -294,77 +334,92 @@ bool OffhandSwapRuntime::swapNow() noexcept {
             true,
             std::memory_order_acq_rel
         )) {
+        mSwapRequested.store(true, std::memory_order_release);
         return false;
     }
     ScopedSwapFlag swapGuard(mSwapInProgress);
 
-    const void* observed =
-        mObservedPlayer.load(std::memory_order_acquire);
-    if (!validObject(observed)) {
-        __android_log_print(
-            ANDROID_LOG_WARN,
-            kLogTag,
-            "[SwapRuntime] no valid LocalPlayer observed yet"
-        );
-        return false;
-    }
+    const bool mainEmpty = mStackIsNull(selectedStack);
+    const bool offEmpty = mStackIsNull(offStack);
 
-    void* player = const_cast<void*>(observed);
-    const void* mainStack = mGetSelectedItem(player);
-    const void* offStack = mGetOffhandSlot(player);
-    if (mainStack == nullptr || offStack == nullptr) {
-        __android_log_print(
-            ANDROID_LOG_WARN,
-            kLogTag,
-            "[SwapRuntime] hand stack lookup failed"
-        );
-        return false;
-    }
-
-    if (mStackIsNull(mainStack) && mStackIsNull(offStack)) {
+    if (mainEmpty && offEmpty) {
         __android_log_print(
             ANDROID_LOG_INFO,
             kLogTag,
-            "[SwapRuntime] both hands empty; nothing to swap"
+            "[SwapRuntime] both hands empty; request consumed"
         );
         return true;
     }
 
-    // Snapshot both sources before any setter runs.  This is important:
-    // setItemInHandSlot mutates a live slot, so reading the second source after
-    // the first write would lose one side of the exchange.
-    ItemStackSnapshot mainSnapshot(
-        mItemStackCopyCtor,
-        mItemStackDtor,
-        mainStack
-    );
-    ItemStackSnapshot offSnapshot(
-        mItemStackCopyCtor,
-        mItemStackDtor,
-        offStack
-    );
-
-    if (
-        mainSnapshot.get() == nullptr ||
-        offSnapshot.get() == nullptr
-    ) {
-        __android_log_print(
-            ANDROID_LOG_ERROR,
-            kLogTag,
-            "[SwapRuntime] ItemStack snapshot creation failed"
+    // Avoid copy-constructing an EMPTY_ITEM.  Besides doing less work, this
+    // keeps ItemRegistry access limited to stacks that actually own an Item.
+    if (offEmpty) {
+        ItemStackSnapshot mainSnapshot(
+            mItemStackCopyCtor,
+            mItemStackDtor,
+            selectedStack
         );
-        return false;
-    }
+        if (mainSnapshot.get() == nullptr) {
+            __android_log_print(
+                ANDROID_LOG_ERROR,
+                kLogTag,
+                "[SwapRuntime] MAINHAND snapshot failed on MINECRAFT MAIN"
+            );
+            return false;
+        }
 
-    // Match Java F semantics: selected mainhand receives the former offhand
-    // stack, and offhand receives the former selected-mainhand stack.
-    mSetItemInHandSlot(player, kMainHand, offSnapshot.get());
-    mSetItemInHandSlot(player, kOffHand, mainSnapshot.get());
+        mSetItemInHandSlot(player, kMainHand, offStack);
+        mSetItemInHandSlot(player, kOffHand, mainSnapshot.get());
+    } else if (mainEmpty) {
+        ItemStackSnapshot offSnapshot(
+            mItemStackCopyCtor,
+            mItemStackDtor,
+            offStack
+        );
+        if (offSnapshot.get() == nullptr) {
+            __android_log_print(
+                ANDROID_LOG_ERROR,
+                kLogTag,
+                "[SwapRuntime] OFFHAND snapshot failed on MINECRAFT MAIN"
+            );
+            return false;
+        }
+
+        mSetItemInHandSlot(player, kOffHand, selectedStack);
+        mSetItemInHandSlot(player, kMainHand, offSnapshot.get());
+    } else {
+        // Both sources must be detached before the first live hand setter runs.
+        ItemStackSnapshot mainSnapshot(
+            mItemStackCopyCtor,
+            mItemStackDtor,
+            selectedStack
+        );
+        ItemStackSnapshot offSnapshot(
+            mItemStackCopyCtor,
+            mItemStackDtor,
+            offStack
+        );
+
+        if (
+            mainSnapshot.get() == nullptr ||
+            offSnapshot.get() == nullptr
+        ) {
+            __android_log_print(
+                ANDROID_LOG_ERROR,
+                kLogTag,
+                "[SwapRuntime] hand snapshot creation failed on MINECRAFT MAIN"
+            );
+            return false;
+        }
+
+        mSetItemInHandSlot(player, kMainHand, offSnapshot.get());
+        mSetItemInHandSlot(player, kOffHand, mainSnapshot.get());
+    }
 
     __android_log_print(
         ANDROID_LOG_INFO,
         kLogTag,
-        "[SwapRuntime] swapped MAINHAND <-> OFFHAND"
+        "[SwapRuntime] swapped MAINHAND <-> OFFHAND on MINECRAFT MAIN"
     );
     return true;
 }

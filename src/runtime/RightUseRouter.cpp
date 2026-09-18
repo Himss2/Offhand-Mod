@@ -927,9 +927,20 @@ const void* RightUseRouter::selectedItemDetour(const void* player) noexcept {
     }
     const auto original = reinterpret_cast<SelectedItemFn>(instance->mSelectedItemOriginal);
 
-    // The HUD swap button needs the current LocalPlayer but should not add a
-    // second client-instance/player hook.  Reuse this already-validated path.
-    OffhandSwapRuntime::instance().observePlayer(player);
+    // Levi's external HUD button callback runs on Android's Java/UI thread.
+    // It only queues a request.  Drain it here, where the tombstone confirms
+    // Player::getSelectedItem is reached on the real "MINECRAFT MAIN" thread.
+    auto& swapRuntime = OffhandSwapRuntime::instance();
+    if (
+        player != nullptr &&
+        swapRuntime.shouldProcessPendingSwap()
+    ) {
+        const void* selectedForSwap = original(player);
+        (void)swapRuntime.processPendingSwap(
+            const_cast<void*>(player),
+            selectedForSwap
+        );
+    }
 
     if (!instance->featureEnabled() || player == nullptr) {
         return original(player);

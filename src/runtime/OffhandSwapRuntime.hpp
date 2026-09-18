@@ -18,14 +18,22 @@ public:
     [[nodiscard]] bool featureEnabled() const noexcept;
     [[nodiscard]] bool installed() const noexcept;
 
-    // The selected-item gameplay hook already receives the current LocalPlayer.
-    // Reuse that verified pointer instead of adding another client-instance hook.
-    void observePlayer(const void* player) noexcept;
+    // Called from Levi's Java/overlay button dispatch thread.  This method is
+    // intentionally queue-only: it must never touch Minecraft ItemStack state.
+    void requestSwap() noexcept;
 
-    // Java F-style swap: selected hotbar/mainhand <-> offhand.
-    [[nodiscard]] bool swapNow() noexcept;
+    // The selected-item detour can execute on several Minecraft threads.
+    // Only the real "MINECRAFT MAIN" thread is allowed to drain the request.
+    [[nodiscard]] bool shouldProcessPendingSwap() const noexcept;
 
-    using GetSelectedItemFn = const void* (*)(const void*);
+    // Called only from RightUseRouter::selectedItemDetour on MINECRAFT MAIN.
+    // selectedStack is obtained from the already-hooked native getter so this
+    // runtime does not recurse through Player::getSelectedItem itself.
+    [[nodiscard]] bool processPendingSwap(
+        void* player,
+        const void* selectedStack
+    ) noexcept;
+
     using GetOffhandSlotFn = const void* (*)(const void*);
     using StackIsNullFn = bool (*)(const void*);
     using ItemStackCopyCtorFn = void (*)(void*, const void*);
@@ -36,16 +44,15 @@ public:
 private:
     OffhandSwapRuntime() = default;
 
-    GetSelectedItemFn mGetSelectedItem{nullptr};
     GetOffhandSlotFn mGetOffhandSlot{nullptr};
     StackIsNullFn mStackIsNull{nullptr};
     ItemStackCopyCtorFn mItemStackCopyCtor{nullptr};
     ItemStackDtorFn mItemStackDtor{nullptr};
     SetItemInHandSlotFn mSetItemInHandSlot{nullptr};
 
-    std::atomic<const void*> mObservedPlayer{nullptr};
     std::atomic_bool mFeatureEnabled{true};
     std::atomic_bool mInstalled{false};
+    std::atomic_bool mSwapRequested{false};
     std::atomic_bool mSwapInProgress{false};
 };
 
