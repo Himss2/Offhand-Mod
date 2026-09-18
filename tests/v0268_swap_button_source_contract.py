@@ -31,7 +31,7 @@ for token in (
     "processPendingSwap(",
     "mSwapRequested.store(true",
     "[SwapRuntime] F swap queued for MINECRAFT MAIN",
-    "[SwapRuntime] swapped MAINHAND <-> OFFHAND on MINECRAFT MAIN",
+    "[SwapRuntime] swapped MAINHAND <-> OFFHAND from selected-item hook",
 ):
     if token not in runtime:
         raise AssertionError(f"OffhandSwapRuntime missing {token}")
