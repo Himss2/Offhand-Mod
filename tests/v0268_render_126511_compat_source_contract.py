@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import hashlib
+import re
 import subprocess
 import tempfile
 from pathlib import Path
@@ -13,6 +14,23 @@ FROZEN_HEAD_BLOBS = {
     "src/render/NativeAttachmentFix.hpp": "a5cf88b8cde4bd602be038c657d4af19917b6c37",
     "src/render/OffhandBlockRenderPatch.hpp": "ea45606173d0eed19b3e86bc93b77e91abd8b2fc",
 }
+
+REQUIRED_NAMED_RVAS = {
+    "kRenderItemRva": "0xB2F0F60",
+    "kDefaultTransformRva": "0xA619618",
+    "kMatrixMultiplyRva": "0x98B49A0",
+    "kItemStackMatchesRva": "0xFF86E80",
+    "kHandEquipPredicateRva": "0xFFA6140",
+    "kFirstPersonDataDrivenRenderRva": "0xA79F2C0",
+    "kGetOffhandStackRva": "0xF579CA4",
+    "kPrepareAttachmentRva": "0x9F013F0",
+    "kAttachmentBindingModeRva": "0xFA51F60",
+    "kResolveOwnerBoneByNameRva": "0xB42719C",
+    "kDrawAttachmentRva": "0x9F03EAC",
+    "kComposeAttachmentBoneMatrixRva": "0xFA528A4",
+    "kFinalOffhandMatrixTopRva": "0x110AFF88",
+}
+
 
 REQUIRED_CPP_TARGETS = (
     "0xB2F0F60",   # RenderItem
@@ -93,6 +111,19 @@ def main() -> int:
         for token in REQUIRED_CPP_TARGETS:
             if token not in generated_cpp:
                 raise AssertionError(f"generated 1.26.51.1 renderer missing {token}")
+
+        # Do not accept the audit comment as proof that runtime constants were
+        # translated.  Assert the actual constexpr assignment by identifier.
+        for name, value in REQUIRED_NAMED_RVAS.items():
+            pattern = re.compile(
+                rf"constexpr\\s+std::uintptr_t\\s+{re.escape(name)}"
+                rf"\\s*=\\s*{re.escape(value)}\\s*;"
+            )
+            if not pattern.search(generated_cpp):
+                raise AssertionError(
+                    f"generated renderer did not bind {name} to {value}"
+                )
+
         if "Minecraft Bedrock 1.26.45.1" in generated_cpp:
             raise AssertionError("generated renderer must identify 1.26.51.1 target")
 
