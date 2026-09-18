@@ -119,8 +119,14 @@ def main() -> int:
                 rf"\\b{re.escape(name)}\\s*=\\s*{re.escape(value)}\\b"
             )
             if not pattern.search(generated_cpp):
+                nearby = [
+                    line.strip()
+                    for line in generated_cpp.splitlines()
+                    if name in line or ("RenderItem" in line and "Rva" in line)
+                ][:12]
                 raise AssertionError(
-                    f"generated renderer did not bind {name} to {value}"
+                    f"generated renderer did not bind {name} to {value}; "
+                    f"matching lines={nearby!r}"
                 )
 
         if "Minecraft Bedrock 1.26.45.1" in generated_cpp:
