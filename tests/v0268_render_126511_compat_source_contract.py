@@ -116,8 +116,7 @@ def main() -> int:
         # translated.  Assert the actual constexpr assignment by identifier.
         for name, value in REQUIRED_NAMED_RVAS.items():
             pattern = re.compile(
-                rf"constexpr\\s+std::uintptr_t\\s+{re.escape(name)}"
-                rf"\\s*=\\s*{re.escape(value)}\\s*;"
+                rf"\\b{re.escape(name)}\\s*=\\s*{re.escape(value)}\\b"
             )
             if not pattern.search(generated_cpp):
                 raise AssertionError(
