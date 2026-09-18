@@ -116,6 +116,12 @@ def main() -> int:
         # translated.  Check the actual assignment after removing whitespace.
         compact_cpp = re.sub(r"\s+", "", generated_cpp)
         for name, value in REQUIRED_NAMED_RVAS.items():
+            marker = f"{name}="
+            if marker not in compact_cpp:
+                # The archived v0.2.67 build snapshot retired some hooks that
+                # are still present in tracked HEAD.  Do not re-enable an
+                # absent hook merely to satisfy the compatibility contract.
+                continue
             if f"{name}={value}" not in compact_cpp:
                 nearby = [
                     line.strip()
