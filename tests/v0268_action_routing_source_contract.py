@@ -96,6 +96,11 @@ def main() -> int:
         "kPlayerIsUsingItemRva = 0xF9E8D64",
         "kItemInUseStackRva = 0xF9E8D84",
         "kStackDiffersForUseRva = 0xFFA5B04",
+        "kItemStackCopyCtorRva = 0xFF9D748",
+        "kItemStackDtorRva = 0x85ADF98",
+        "kItemStackStorageSize = 0x98",
+        "kItemWeakPtrOffset = 0x08",
+        "kItemGetMaxUseDurationVtableOffset = 0x30",
         "kMainHand = 0",
         "kOffHand = 1",
         "resolveExactTarget(",
@@ -131,16 +136,22 @@ def main() -> int:
         "kOffHand",
         "offResult",
         "if ((offResult & 1u) != 0u)",
+        "stackHasHoldUse(mainStack)",
+        "ScopedItemStackSnapshot offSnapshot(offStack)",
         "MAINHAND passed; block-use/place handled by OFFHAND",
         "return mainResult;",
         "const std::uint32_t offResult = original(",
-        "gameMode,\n        offStack,\n        blockPos,\n        face,\n        hitPos,\n        kOffHand,",
+        "gameMode,\n        offSnapshot.get(),\n        blockPos,\n        face,\n        hitPos,\n        kOffHand,",
     )
     if "swap" in use_block.lower() or "Packet" in use_block:
         raise AssertionError("block-use must stay on Minecraft native hand routing")
     if "ScopedActionHand" in use_block or "ScopedPlayer" in use_block:
         raise AssertionError(
             "instant block placement must not spoof selectedItem/offhand scope"
+        )
+    if "gameMode,\n        offStack,\n        blockPos" in use_block:
+        raise AssertionError(
+            "block placement must not pass the live offhand slot as transaction snapshot"
         )
     if "upperUseDetour" in combined or "mUpperUseHook" in combined:
         raise AssertionError("broad upper-use replay must not be installed")

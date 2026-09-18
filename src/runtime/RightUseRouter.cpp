@@ -42,8 +42,13 @@ constexpr std::uintptr_t kStackIsNullRva = 0xFFA0F70;
 constexpr std::uintptr_t kPlayerIsUsingItemRva = 0xF9E8D64;
 constexpr std::uintptr_t kItemInUseStackRva = 0xF9E8D84;
 constexpr std::uintptr_t kStackDiffersForUseRva = 0xFFA5B04;
+constexpr std::uintptr_t kItemStackCopyCtorRva = 0xFF9D748;
+constexpr std::uintptr_t kItemStackDtorRva = 0x85ADF98;
 
 constexpr std::size_t kGameModePlayerOffset = sizeof(void*);
+constexpr std::size_t kItemWeakPtrOffset = 0x08;
+constexpr std::size_t kItemGetMaxUseDurationVtableOffset = 0x30;
+constexpr std::size_t kItemStackStorageSize = 0x98;
 
 constexpr std::array<std::uint8_t, 16> kUseItemOnBlockFingerprint{
     0xFD, 0x7B, 0xBA, 0xA9, 0xFC, 0x6F, 0x01, 0xA9,
@@ -80,6 +85,18 @@ constexpr std::array<std::uint8_t, 16> kStackDiffersForUseFingerprint{
     0x08, 0x88, 0x40, 0x39, 0x29, 0x88, 0x40, 0x39,
     0x1F, 0x01, 0x09, 0x6B, 0x01, 0x01, 0x00, 0x54,
 };
+constexpr std::array<std::uint8_t, 28> kItemStackCopyCtorFingerprint{
+    0xFD, 0x7B, 0xBD, 0xA9, 0xF5, 0x0B, 0x00, 0xF9,
+    0xF4, 0x4F, 0x02, 0xA9, 0xFD, 0x03, 0x00, 0x91,
+    0xF5, 0x03, 0x01, 0xAA, 0xF3, 0x03, 0x00, 0xAA,
+    0x6D, 0xFE, 0xFF, 0x97,
+};
+constexpr std::array<std::uint8_t, 28> kItemStackDtorFingerprint{
+    0xFF, 0xC3, 0x00, 0xD1, 0xFD, 0x7B, 0x01, 0xA9,
+    0xF4, 0x4F, 0x02, 0xA9, 0xFD, 0x43, 0x00, 0x91,
+    0x54, 0xD0, 0x3B, 0xD5, 0xF3, 0x03, 0x00, 0xAA,
+    0xE9, 0x56, 0x05, 0xD0,
+};
 
 using BaseUseItemFn = bool (*)(void*, const void*, unsigned char);
 using UseItemOnBlockFn = std::uint32_t (*)(
@@ -99,12 +116,17 @@ using StackIsNullFn = bool (*)(const void*);
 using PlayerIsUsingItemFn = bool (*)(const void*);
 using ItemInUseStackFn = const void* (*)(const void*);
 using StackDiffersForUseFn = bool (*)(const void*, const void*);
+using ItemStackCopyCtorFn = void (*)(void*, const void*);
+using ItemStackDtorFn = void (*)(void*);
+using GetMaxUseDurationFn = int (*)(const void*, const void*);
 
 OffhandItemFn gGetOffhandSlot = nullptr;
 StackIsNullFn gStackIsNull = nullptr;
 PlayerIsUsingItemFn gPlayerIsUsingItem = nullptr;
 ItemInUseStackFn gItemInUseStack = nullptr;
 StackDiffersForUseFn gStackDiffersForUse = nullptr;
+ItemStackCopyCtorFn gItemStackCopyCtor = nullptr;
+ItemStackDtorFn gItemStackDtor = nullptr;
 
 thread_local bool gInsideBaseUse = false;
 thread_local bool gInsideBlockUse = false;
@@ -215,6 +237,82 @@ template <std::size_t N>
         !gStackDiffersForUse(lhs, rhs);
 }
 
+[[nodiscard]] bool stackHasHoldUse(const void* stack) noexcept {
+    if (stackIsNull(stack)) {
+        return false;
+    }
+
+    // ItemStackBase::mItem is a WeakPtr at +0x08.  1.26.51.1 isNull() itself
+    // follows the same two loads: stack+0x08 -> weak state -> raw Item*.
+    const void* weakState = nullptr;
+    std::memcpy(
+        &weakState,
+        static_cast<const std::byte*>(stack) + kItemWeakPtrOffset,
+        sizeof(weakState)
+    );
+    if (weakState == nullptr) {
+        return false;
+    }
+
+    const void* item = nullptr;
+    std::memcpy(&item, weakState, sizeof(item));
+    if (!validObject(item)) {
+        return false;
+    }
+
+    const void* vtable = nullptr;
+    std::memcpy(&vtable, item, sizeof(vtable));
+    GetMaxUseDurationFn getMaxUseDuration = nullptr;
+    std::memcpy(
+        &getMaxUseDuration,
+        static_cast<const std::byte*>(vtable) +
+            kItemGetMaxUseDurationVtableOffset,
+        sizeof(getMaxUseDuration)
+    );
+    if (
+        getMaxUseDuration == nullptr ||
+        !belongsToMinecraft(
+            reinterpret_cast<std::uintptr_t>(getMaxUseDuration)
+        )
+    ) {
+        return false;
+    }
+
+    return getMaxUseDuration(item, stack) > 0;
+}
+
+class ScopedItemStackSnapshot final {
+public:
+    explicit ScopedItemStackSnapshot(const void* source) noexcept {
+        if (
+            source == nullptr ||
+            gItemStackCopyCtor == nullptr ||
+            gItemStackDtor == nullptr
+        ) {
+            return;
+        }
+        gItemStackCopyCtor(mStorage.data(), source);
+        mConstructed = true;
+    }
+
+    ~ScopedItemStackSnapshot() noexcept {
+        if (mConstructed && gItemStackDtor != nullptr) {
+            gItemStackDtor(mStorage.data());
+        }
+    }
+
+    ScopedItemStackSnapshot(const ScopedItemStackSnapshot&) = delete;
+    ScopedItemStackSnapshot& operator=(const ScopedItemStackSnapshot&) = delete;
+
+    [[nodiscard]] const void* get() const noexcept {
+        return mConstructed ? mStorage.data() : nullptr;
+    }
+
+private:
+    alignas(16) std::array<std::byte, kItemStackStorageSize> mStorage{};
+    bool mConstructed{false};
+};
+
 [[nodiscard]] bool activeUseMatches(
     const void* player,
     const void* stack
@@ -270,6 +368,12 @@ bool RightUseRouter::install(pl::mod::ModContext& context) noexcept {
     const auto differsTarget = resolveExactTarget(
         kStackDiffersForUseRva, kStackDiffersForUseFingerprint
     );
+    const auto copyCtorTarget = resolveExactTarget(
+        kItemStackCopyCtorRva, kItemStackCopyCtorFingerprint
+    );
+    const auto dtorTarget = resolveExactTarget(
+        kItemStackDtorRva, kItemStackDtorFingerprint
+    );
     const auto blockUseTarget = resolveExactTarget(
         kUseItemOnBlockRva, kUseItemOnBlockFingerprint
     );
@@ -283,6 +387,7 @@ bool RightUseRouter::install(pl::mod::ModContext& context) noexcept {
     if (
         selectedTarget == 0 || offhandTarget == 0 || nullTarget == 0 ||
         usingTarget == 0 || inUseTarget == 0 || differsTarget == 0 ||
+        copyCtorTarget == 0 || dtorTarget == 0 ||
         blockUseTarget == 0 || useTarget == 0 || releaseTarget == 0
     ) {
         context.logger().warn(
@@ -296,6 +401,8 @@ bool RightUseRouter::install(pl::mod::ModContext& context) noexcept {
     gPlayerIsUsingItem = reinterpret_cast<PlayerIsUsingItemFn>(usingTarget);
     gItemInUseStack = reinterpret_cast<ItemInUseStackFn>(inUseTarget);
     gStackDiffersForUse = reinterpret_cast<StackDiffersForUseFn>(differsTarget);
+    gItemStackCopyCtor = reinterpret_cast<ItemStackCopyCtorFn>(copyCtorTarget);
+    gItemStackDtor = reinterpret_cast<ItemStackDtorFn>(dtorTarget);
 
     mSelectedItemTarget = selectedTarget;
     mReleaseUsingItemTarget = releaseTarget;
@@ -398,6 +505,8 @@ void RightUseRouter::uninstall(pl::mod::ModContext& context) noexcept {
     gPlayerIsUsingItem = nullptr;
     gItemInUseStack = nullptr;
     gStackDiffersForUse = nullptr;
+    gItemStackCopyCtor = nullptr;
+    gItemStackDtor = nullptr;
     sInstance = nullptr;
 
     context.logger().info("[RightUseRouter] hooks removed");
@@ -589,22 +698,43 @@ std::uint32_t RightUseRouter::useItemOnBlockDetour(
     }
 
     const void* player = playerFromGameMode(gameMode);
-    const void* offStack =
-        player != nullptr && gGetOffhandSlot != nullptr
-        ? gGetOffhandSlot(player)
-        : nullptr;
-    if (player == nullptr || stackIsNull(offStack)) {
+    if (player == nullptr || instance->mSelectedItemOriginal == nullptr) {
         return mainResult;
     }
 
-    // useItemOnBlock already receives the complete native hand identity:
-    // the actual offhand ItemStack plus hand=1.  Do NOT spoof selectedItem
-    // here.  The older visual-only branches proved arbitrary-offhand storage
-    // works without any selected-item substitution, and the extra spoof leaks
-    // into client inventory bookkeeping after placement.
+    const auto selectedOriginal = reinterpret_cast<SelectedItemFn>(
+        instance->mSelectedItemOriginal
+    );
+    const void* mainStack = selectedOriginal(player);
+
+    // Block-hit processing reaches GameMode::useItemOn before the upper input
+    // dispatcher reaches baseUseItem.  A MAINHAND bow/spear/food/shield can
+    // therefore still own this click even though useItemOn returned PASS.
+    // Respect that native hold-use capability and let the upper dispatcher
+    // continue to MAINHAND baseUseItem instead of placing from OFFHAND.
+    if (stackHasHoldUse(mainStack)) {
+        return mainResult;
+    }
+
+    const void* offStack =
+        gGetOffhandSlot != nullptr ? gGetOffhandSlot(player) : nullptr;
+    if (stackIsNull(offStack)) {
+        return mainResult;
+    }
+
+    // The upper dispatcher uses a detached ItemStack snapshot as its
+    // before-state.  Preserve that ownership model for OFFHAND too.  hand=1
+    // still makes Minecraft fetch/mutate the real offhand slot internally,
+    // while this copy remains safe transaction input and is destroyed after
+    // the native call.
+    ScopedItemStackSnapshot offSnapshot(offStack);
+    if (offSnapshot.get() == nullptr) {
+        return mainResult;
+    }
+
     const std::uint32_t offResult = original(
         gameMode,
-        offStack,
+        offSnapshot.get(),
         blockPos,
         face,
         hitPos,
