@@ -32,6 +32,17 @@ REQUIRED_NAMED_RVAS = {
 }
 
 
+REQUIRED_ARCHIVED_LITERAL_MAP = {
+    "0xF14355C": "0xFA6F684",
+    "0xF147CC0": "0xFA51F78",
+    "0x9B368D4": "0x9F01244",
+    "0xEC8A478": "0xF56616C",
+    "0xEE63508": "0xF7AA2DC",
+    "0xEEA721C": "0xF7728A8",
+    "0x2652B1D": "0x272F25E",
+}
+
+
 REQUIRED_CPP_TARGETS = (
     "0xB2F0F60",   # RenderItem
     "0xA619618",   # default item transform
@@ -84,6 +95,13 @@ def main() -> int:
     generator = ROOT / "scripts" / "generate_render_126511_compat.py"
     if not generator.exists():
         raise AssertionError("missing build-only 1.26.51.1 renderer compatibility generator")
+
+    generator_text = generator.read_text(errors="replace")
+    for old, new in REQUIRED_ARCHIVED_LITERAL_MAP.items():
+        if f'"{old}": "{new}"' not in generator_text:
+            raise AssertionError(
+                f"generator missing archived v0.2.67 renderer mapping {old} -> {new}"
+            )
 
     cmake = (ROOT / "CMakeLists.txt").read_text(errors="replace")
     for token in (
