@@ -128,7 +128,6 @@ def main() -> int:
         use_block,
         "const std::uint32_t mainResult = original(",
         "if ((mainResult & 1u) != 0u)",
-        "ActionKind::UseBlock",
         "kOffHand",
         "offResult",
         "if ((offResult & 1u) != 0u)",
