@@ -212,9 +212,9 @@ def replace_rvas(source: str) -> str:
     # from the copy tracked at HEAD.
     for name, new in NAMED_RVA_REPLACEMENTS.items():
         pattern = re.compile(
-            rf"(\\b{re.escape(name)}\\s*=\\s*)0x[0-9A-Fa-f]+"
+            rf"(\b{re.escape(name)}\s*=\s*)0x[0-9A-Fa-f]+"
         )
-        source, count = pattern.subn(rf"\\g<1>{new}", source)
+        source, count = pattern.subn(rf"\g<1>{new}", source)
         if count > 1:
             raise RuntimeError(f"renderer source has duplicate RVA constant {name}")
 
