@@ -79,6 +79,8 @@ jobs:
             manifest.json \
             scripts/build.sh \
             src/LeviOffhandMod.cpp \
+            src/ui/SwapButton.hpp \
+            src/ui/SwapButton.cpp \
             src/runtime/HandActionPolicy.hpp \
             src/runtime/HandActionRouterCore.hpp \
             src/runtime/ActionHandContext.hpp \
@@ -107,6 +109,8 @@ jobs:
             tests/v0268_semantic_bridge_binary_contract.py \
             tests/v0268_render_126511_compat_source_contract.py
           grep -q '"version": "0.2.68"' manifest.json
+          grep -q 'SwapButton.cpp' CMakeLists.txt
+          grep -q 'ButtonBuilder(kButtonId, "Swap Item")' src/ui/SwapButton.cpp
           grep -q 'NativeCapabilityProbe.cpp' CMakeLists.txt
           grep -q 'NativeOffhandPolicy.cpp' CMakeLists.txt
           grep -q 'kPlannerRva126511 = 0xF9292A0' src/runtime/AutoInsertRouting.cpp

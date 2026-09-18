@@ -2,6 +2,7 @@
 #include "runtime/NativeOffhandPolicy.hpp"
 #include "runtime/AutoInsertRouting.hpp"
 #include "runtime/RightUseRouter.hpp"
+#include "ui/SwapButton.hpp"
 
 #include <android/log.h>
 #include <string_view>
@@ -130,6 +131,29 @@ public:
 
         mModMenuRegistered=true;
         context.logger().info("Levi Offhand registered in Mod Menu");
+
+        const bool swapButtonRegistered =
+            ui::SwapButton::instance().registerButton(
+                context.id(),
+                kModuleId,
+                []() {
+                    __android_log_print(
+                        ANDROID_LOG_INFO,
+                        kLogTag,
+                        "[SwapButton] code-only UI test callback reached"
+                    );
+                }
+            );
+
+        if (swapButtonRegistered) {
+            context.logger().info(
+                "Swap Item HUD button registered (temporary code UI)"
+            );
+        } else {
+            context.logger().warn(
+                "Swap Item HUD button registration failed"
+            );
+        }
         if(policyInstalled) {
             context.logger().info(
                 "Minecraft 1.26.51.1 offhand storage policy active"
@@ -179,6 +203,8 @@ private:
     LeviOffhandMod()=default;
 
     void unregisterModMenu() noexcept {
+        ui::SwapButton::instance().unregisterButton();
+
         if(!mModMenuRegistered) {
             return;
         }
