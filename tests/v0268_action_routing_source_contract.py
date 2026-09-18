@@ -104,13 +104,14 @@ def main() -> int:
         "kItemIsUseableVtableOffset = 0xB0",
         "kItemRequiresInteractVtableOffset = 0x1A8",
         "kItemUseVtableOffset = 0x290",
-        "kItemUseOnVtableOffset = 0x410",
+        "kItemCanUseAsAttackVtableOffset = 0x298",
+        "kItemUseOnVtableOffset = 0x418",
         "kBaseItemUseRva = 0xFF8429C",
         "kComponentItemUseRva = 0xFDA8274",
         "kBaseItemRequiresInteractRva = 0xFF87F28",
         "kComponentItemRequiresInteractRva = 0xFDAA1FC",
-        "kBaseItemUseOnRva = 0xFF84B7C",
-        "kComponentItemUseOnRva = 0xFDA89E4",
+        "kBaseItemUseOnRva = 0xFF84B84",
+        "kComponentItemUseOnRva = 0xFDA8A20",
         "kMainHand = 0",
         "kOffHand = 1",
         "resolveExactTarget(",
@@ -158,7 +159,14 @@ def main() -> int:
         "kItemUseOnVtableOffset",
         "kBaseItemUseOnRva",
         "kComponentItemUseOnRva",
+        "kItemCanUseAsAttackVtableOffset",
+        "maxUseDuration",
+        "attackOnly",
     )
+    if classifier.index("specializedUse") > classifier.index("maxUseDuration"):
+        raise AssertionError(
+            "specialized native actions must be classified before max-use duration"
+        )
 
     use_block = function_body(router, "RightUseRouter::useItemOnBlockDetour(")
     require(

@@ -55,8 +55,8 @@ constexpr std::uintptr_t kBaseItemUseRva = 0xFF8429C;
 constexpr std::uintptr_t kComponentItemUseRva = 0xFDA8274;
 constexpr std::uintptr_t kBaseItemRequiresInteractRva = 0xFF87F28;
 constexpr std::uintptr_t kComponentItemRequiresInteractRva = 0xFDAA1FC;
-constexpr std::uintptr_t kBaseItemUseOnRva = 0xFF84B7C;
-constexpr std::uintptr_t kComponentItemUseOnRva = 0xFDA89E4;
+constexpr std::uintptr_t kBaseItemUseOnRva = 0xFF84B84;
+constexpr std::uintptr_t kComponentItemUseOnRva = 0xFDA8A20;
 
 constexpr std::size_t kGameModePlayerOffset = sizeof(void*);
 constexpr std::size_t kItemWeakPtrOffset = 0x08;
@@ -64,7 +64,8 @@ constexpr std::size_t kItemGetMaxUseDurationVtableOffset = 0x30;
 constexpr std::size_t kItemIsUseableVtableOffset = 0xB0;
 constexpr std::size_t kItemRequiresInteractVtableOffset = 0x1A8;
 constexpr std::size_t kItemUseVtableOffset = 0x290;
-constexpr std::size_t kItemUseOnVtableOffset = 0x410;
+constexpr std::size_t kItemCanUseAsAttackVtableOffset = 0x298;
+constexpr std::size_t kItemUseOnVtableOffset = 0x418;
 constexpr std::size_t kItemStackStorageSize = 0x98;
 
 constexpr std::array<std::uint8_t, 16> kUseItemOnBlockFingerprint{
@@ -308,22 +309,16 @@ template <typename Fn>
 }
 
 [[nodiscard]] bool stackClaimsMainhandRightClick(
-    const void* stack
+    const void* stack,
+    bool* yieldedAttackOnly = nullptr
 ) noexcept {
+    if (yieldedAttackOnly != nullptr) {
+        *yieldedAttackOnly = false;
+    }
+
     const void* item = itemFromStack(stack);
     if (item == nullptr) {
         return false;
-    }
-
-    // Long/charged/self-use items: bow, spear/trident, food, shield, etc.
-    const auto getMaxUseDuration = itemVirtual<GetMaxUseDurationFn>(
-        item, kItemGetMaxUseDurationVtableOffset
-    );
-    if (
-        getMaxUseDuration != nullptr &&
-        getMaxUseDuration(item, stack) > 0
-    ) {
-        return true;
     }
 
     const auto moduleBase = minecraftModuleBase();
@@ -331,57 +326,73 @@ template <typename Fn>
         return false;
     }
 
-    // Immediate item actions are recognized only when Item::use itself is
-    // specialized.  ComponentItem::isUseable is intentionally ignored here:
-    // it is broad enough to classify ordinary component-based Swords as
-    // right-click owners even though they should allow OFFHAND fallback.
-    const auto use = itemVirtual<void*>(
-        item, kItemUseVtableOffset
-    );
-    if (use != nullptr) {
-        const auto useAddress = reinterpret_cast<std::uintptr_t>(use);
-        if (
-            useAddress != moduleBase + kBaseItemUseRva &&
-            useAddress != moduleBase + kComponentItemUseRva
-        ) {
-            return true;
-        }
-    }
-
-    // Fishing Rod and similar classes override requiresInteract.  Do not call
-    // the generic ComponentItem implementation as a capability boolean here:
-    // data-driven Swords can report true even though they should yield this
-    // right-click to an OFFHAND block.
+    // First classify concrete native actions by virtual identity.  This must
+    // happen before getMaxUseDuration: ComponentItem can carry non-zero use
+    // duration data even for attack-oriented items such as Swords.
+    const auto use = itemVirtual<void*>(item, kItemUseVtableOffset);
     const auto requiresInteract = itemVirtual<void*>(
         item, kItemRequiresInteractVtableOffset
     );
-    if (requiresInteract != nullptr) {
-        const auto requiresInteractAddress =
-            reinterpret_cast<std::uintptr_t>(requiresInteract);
-        if (
-            requiresInteractAddress !=
-                moduleBase + kBaseItemRequiresInteractRva &&
-            requiresInteractAddress !=
-                moduleBase + kComponentItemRequiresInteractRva
-        ) {
-            return true;
-        }
+    const auto useOn = itemVirtual<void*>(item, kItemUseOnVtableOffset);
+
+    const auto useAddress = reinterpret_cast<std::uintptr_t>(use);
+    const auto requiresAddress =
+        reinterpret_cast<std::uintptr_t>(requiresInteract);
+    const auto useOnAddress = reinterpret_cast<std::uintptr_t>(useOn);
+
+    const bool specializedUse =
+        use != nullptr &&
+        useAddress != moduleBase + kBaseItemUseRva &&
+        useAddress != moduleBase + kComponentItemUseRva;
+
+    const bool specializedRequiresInteract =
+        requiresInteract != nullptr &&
+        requiresAddress != moduleBase + kBaseItemRequiresInteractRva &&
+        requiresAddress != moduleBase + kComponentItemRequiresInteractRva;
+
+    const bool specializedUseOn =
+        useOn != nullptr &&
+        useOnAddress != moduleBase + kBaseItemUseOnRva &&
+        useOnAddress != moduleBase + kComponentItemUseOnRva;
+
+    if (
+        specializedUse ||
+        specializedRequiresInteract ||
+        specializedUseOn
+    ) {
+        return true;
     }
 
-    // Targeted item actions such as Shears override Item::_useOn.  Ignore the
-    // base Item and generic ComponentItem implementations: inheriting either
-    // one must not make a Sword/Pickaxe suppress OFFHAND placement.
-    const auto useOn = itemVirtual<void*>(
-        item, kItemUseOnVtableOffset
+    const auto getMaxUseDuration = itemVirtual<GetMaxUseDurationFn>(
+        item, kItemGetMaxUseDurationVtableOffset
     );
-    if (useOn == nullptr) {
+    const int maxUseDuration =
+        getMaxUseDuration != nullptr
+        ? getMaxUseDuration(item, stack)
+        : 0;
+
+    if (maxUseDuration <= 0) {
         return false;
     }
 
-    const auto useOnAddress = reinterpret_cast<std::uintptr_t>(useOn);
-    return
-        useOnAddress != moduleBase + kBaseItemUseOnRva &&
-        useOnAddress != moduleBase + kComponentItemUseOnRva;
+    // Attack-only ComponentItems can still expose a non-zero max-use field.
+    // They must yield right-click to OFFHAND unless they had one of the
+    // specialized action overrides above.  Trident/Bow/FishingRod remain
+    // MAINHAND because their use/requiresInteract virtuals are specialized.
+    const auto canUseAsAttack = itemVirtual<ItemBoolFn>(
+        item, kItemCanUseAsAttackVtableOffset
+    );
+    const bool attackOnly =
+        canUseAsAttack != nullptr && canUseAsAttack(item);
+
+    if (attackOnly) {
+        if (yieldedAttackOnly != nullptr) {
+            *yieldedAttackOnly = true;
+        }
+        return false;
+    }
+
+    return true;
 }
 
 class ScopedItemStackSnapshot final {
@@ -567,6 +578,7 @@ bool RightUseRouter::install(pl::mod::ModContext& context) noexcept {
     mFeatureEnabled.store(true, std::memory_order_release);
     mLoggedOffhandUse.store(false, std::memory_order_relaxed);
     mLoggedBlockUse.store(false, std::memory_order_relaxed);
+    mLoggedAttackOnlyYield.store(false, std::memory_order_relaxed);
     mLoggedLongUse.store(false, std::memory_order_relaxed);
     context.logger().info(
         "[RightUseRouter] Minecraft 1.26.51.1 right-use active: MAINHAND first, OFFHAND fallback; left-click remains vanilla mainhand"
@@ -814,8 +826,22 @@ std::uint32_t RightUseRouter::useItemOnBlockDetour(
     // Decide ownership from the concrete Item's native right-click
     // capabilities instead.  Bow/Spear/FishingRod/Shears/etc. keep MAINHAND
     // priority; an ordinary Sword does not suppress OFFHAND placement.
-    if (stackClaimsMainhandRightClick(mainStack)) {
+    bool yieldedAttackOnly = false;
+    if (stackClaimsMainhandRightClick(mainStack, &yieldedAttackOnly)) {
         return mainResult;
+    }
+
+    if (yieldedAttackOnly) {
+        bool expected = false;
+        if (instance->mLoggedAttackOnlyYield.compare_exchange_strong(
+                expected, true, std::memory_order_relaxed
+            )) {
+            __android_log_print(
+                ANDROID_LOG_INFO,
+                kLogTag,
+                "[RightUseRouter] attack-only MAINHAND yielded right-click to OFFHAND"
+            );
+        }
     }
 
     const void* offStack =
