@@ -137,7 +137,7 @@ public:
         }
         if(rightUseInstalled) {
             context.logger().info(
-                "Minecraft 1.26.51.1 right-use active: OFFHAND first, MAINHAND fallback; left-click untouched"
+                "Minecraft 1.26.51.1 right-use active: MAINHAND first, OFFHAND fallback; left-click untouched"
             );
         }
         context.logger().info("Levi Offhand ready");

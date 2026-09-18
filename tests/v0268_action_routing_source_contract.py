@@ -87,7 +87,6 @@ def main() -> int:
         router,
         "712509dc14ccc233e91f267937dfb46ecdcc4b68",
         "b8a6351503d330628335a80e8131acd45291fa9a747465f0f34a31b2346847b4",
-        "kUpperUseDispatcherRva = 0x97F85F8",
         "kUseItemOnBlockRva = 0xF8A1CC4",
         "kBaseUseItemRva = 0xF8A285C",
         "kReleaseUsingItemRva = 0xF8A3204",
@@ -111,17 +110,6 @@ def main() -> int:
     )
     require(header, "unsigned char hand")
 
-    upper_use = function_body(router, "RightUseRouter::upperUseDetour(")
-    require(
-        upper_use,
-        "gUpperVanillaPass = true",
-        "gCaptureUpperPlayer = true",
-        "ScopedActionHand actionScope(ActionHand::OffHand, ActionKind::UseBlock)",
-        "upper-use OFFHAND retry handled; swing/animation scope preserved",
-    )
-    if "swap" in upper_use.lower() or "Packet" in upper_use:
-        raise AssertionError("upper-use retry must not swap inventory or synthesize packets")
-
     base_use = function_body(router, "RightUseRouter::baseUseItemDetour(")
     require(
         base_use,
@@ -136,22 +124,28 @@ def main() -> int:
     use_block = function_body(router, "RightUseRouter::useItemOnBlockDetour(")
     require(
         use_block,
+        "const std::uint32_t mainResult = original(",
+        "if ((mainResult & 1u) != 0u)",
         "ActionKind::UseBlock",
         "kOffHand",
         "offResult",
         "if ((offResult & 1u) != 0u)",
-        "original(",
-        "hand",
-        "gameMode,\n        offStack,\n        blockPos,\n        face,\n        hitPos,\n        kOffHand,",
+        "MAINHAND passed; block-use/place handled by OFFHAND",
+        "return mainResult;",
+        "gameMode,\n            offStack,\n            blockPos,\n            face,\n            hitPos,\n            kOffHand,",
     )
     if "swap" in use_block.lower() or "Packet" in use_block:
         raise AssertionError("block-use must stay on Minecraft native hand routing")
+    if "upperUseDetour" in combined or "mUpperUseHook" in combined:
+        raise AssertionError("broad upper-use replay must not be installed")
+    if use_block.count("const std::uint32_t mainResult = original(") != 1:
+        raise AssertionError("block-use must execute exactly one explicit MAINHAND attempt")
 
     route = function_body(core, "UseRouteResult routeUseAction(")
-    off = route.index("ScopedActionHand scope(ActionHand::OffHand")
     main = route.index("ScopedActionHand scope(ActionHand::MainHand")
-    if off > main:
-        raise AssertionError("right-use order must be OFFHAND then MAINHAND")
+    off = route.index("ScopedActionHand scope(ActionHand::OffHand")
+    if main > off:
+        raise AssertionError("right-use order must be MAINHAND then OFFHAND")
 
     require(
         router,
