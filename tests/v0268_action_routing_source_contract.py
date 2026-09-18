@@ -87,6 +87,7 @@ def main() -> int:
         router,
         "712509dc14ccc233e91f267937dfb46ecdcc4b68",
         "b8a6351503d330628335a80e8131acd45291fa9a747465f0f34a31b2346847b4",
+        "kUpperUseDispatcherRva = 0x97F85F8",
         "kUseItemOnBlockRva = 0xF8A1CC4",
         "kBaseUseItemRva = 0xF8A285C",
         "kReleaseUsingItemRva = 0xF8A3204",
@@ -109,6 +110,17 @@ def main() -> int:
         "unsigned char hand",
     )
     require(header, "unsigned char hand")
+
+    upper_use = function_body(router, "RightUseRouter::upperUseDetour(")
+    require(
+        upper_use,
+        "gUpperVanillaPass = true",
+        "gCaptureUpperPlayer = true",
+        "ScopedActionHand actionScope(ActionHand::OffHand, ActionKind::UseBlock)",
+        "upper-use OFFHAND retry handled; swing/animation scope preserved",
+    )
+    if "swap" in upper_use.lower() or "Packet" in upper_use:
+        raise AssertionError("upper-use retry must not swap inventory or synthesize packets")
 
     base_use = function_body(router, "RightUseRouter::baseUseItemDetour(")
     require(
