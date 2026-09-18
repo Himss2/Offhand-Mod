@@ -8,7 +8,7 @@
 #include <cstring>
 #include <dlfcn.h>
 #include <link.h>
-#include <pthread.h>
+#include <sys/prctl.h>
 
 namespace levioffhand::runtime {
 namespace {
@@ -129,7 +129,7 @@ template <std::size_t N>
 
 [[nodiscard]] bool isMinecraftMainThread() noexcept {
     char name[16]{};
-    if (pthread_getname_np(pthread_self(), name, sizeof(name)) != 0) {
+    if (prctl(PR_GET_NAME, name, 0, 0, 0) != 0) {
         return false;
     }
     return std::strcmp(name, kMinecraftMainThreadName) == 0;

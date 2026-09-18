@@ -25,7 +25,7 @@ for token in (
     "kSetItemInHandSlotRva = 0xF579C50",
     "kItemStackStorageSize = 0x98",
     'kMinecraftMainThreadName[] = "MINECRAFT MAIN"',
-    "pthread_getname_np",
+    "prctl(PR_GET_NAME",
     "requestSwap()",
     "shouldProcessPendingSwap()",
     "processPendingSwap(",
