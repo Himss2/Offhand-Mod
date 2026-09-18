@@ -47,17 +47,19 @@ constexpr std::uintptr_t kItemStackDtorRva = 0x85ADF98;
 
 // 1.26.51.1 Item virtual defaults used only as capability identities.
 // A specialized _useOn means the concrete item owns a block-targeted
-// right-click action (for example Shears); the two generic implementations do
-// not claim the click and therefore allow OFFHAND fallback.
-constexpr std::uintptr_t kBaseItemUseOnRva = 0xFF84B84;
-constexpr std::uintptr_t kComponentItemUseOnRva = 0xFDA8A20;
+// right-click action (for example Shears).  The 1.26.51.1 Itanium vtables
+// prove _useOn is at the object-vptr slot 130 (+0x410), not the following
+// +0x418 entry used by the previous build.  The two generic implementations
+// below do not claim the click and therefore allow OFFHAND fallback.
+constexpr std::uintptr_t kBaseItemUseOnRva = 0xFF84B7C;
+constexpr std::uintptr_t kComponentItemUseOnRva = 0xFDA89E4;
 
 constexpr std::size_t kGameModePlayerOffset = sizeof(void*);
 constexpr std::size_t kItemWeakPtrOffset = 0x08;
 constexpr std::size_t kItemGetMaxUseDurationVtableOffset = 0x30;
 constexpr std::size_t kItemIsUseableVtableOffset = 0xB0;
 constexpr std::size_t kItemRequiresInteractVtableOffset = 0x1A8;
-constexpr std::size_t kItemUseOnVtableOffset = 0x418;
+constexpr std::size_t kItemUseOnVtableOffset = 0x410;
 constexpr std::size_t kItemStackStorageSize = 0x98;
 
 constexpr std::array<std::uint8_t, 16> kUseItemOnBlockFingerprint{

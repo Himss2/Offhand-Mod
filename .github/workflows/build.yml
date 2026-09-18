@@ -87,6 +87,9 @@ jobs:
             src/runtime/NativeCapabilityProbe.cpp \
             src/runtime/NativeOffhandPolicy.hpp \
             src/runtime/NativeOffhandPolicy.cpp \
+            src/runtime/AutoInsertRouting.hpp \
+            src/runtime/AutoInsertRouting.cpp \
+            src/runtime/AutoInsertRoutingCore.hpp \
             src/runtime/HandActionRouter.hpp \
             src/runtime/HandActionRouter.cpp \
             src/runtime/NativeSemanticBridge.hpp \
@@ -94,6 +97,7 @@ jobs:
             src/runtime/RightUseRouter.hpp \
             src/runtime/RightUseRouter.cpp \
             tests/v0262_native_routing_source_contract.py \
+            tests/v0262_auto_insert_routing_test.cpp \
             tests/v0268_action_routing_source_contract.py \
             tests/v0268_action_routing_binary_contract.py \
             tests/v0268_hand_action_policy_test.cpp \
@@ -105,6 +109,8 @@ jobs:
           grep -q '"version": "0.2.68"' manifest.json
           grep -q 'NativeCapabilityProbe.cpp' CMakeLists.txt
           grep -q 'NativeOffhandPolicy.cpp' CMakeLists.txt
+          grep -q 'kPlannerRva126511 = 0xF9292A0' src/runtime/AutoInsertRouting.cpp
+          grep -q 'destinationName(' src/runtime/AutoInsertRoutingCore.hpp
           grep -q 'HandActionRouter.cpp' CMakeLists.txt
           grep -q 'NativeSemanticBridge.cpp' CMakeLists.txt
           grep -q 'RightUseRouter.cpp' CMakeLists.txt
@@ -115,6 +121,12 @@ jobs:
           python3 tests/v0268_action_routing_source_contract.py
           python3 tests/v0268_semantic_bridge_source_contract.py
           python3 tests/v0268_render_126511_compat_source_contract.py
+
+          g++ -std=c++20 -Wall -Wextra -Wpedantic -Werror \
+            -fsanitize=address,undefined -fno-omit-frame-pointer \
+            -Isrc tests/v0262_auto_insert_routing_test.cpp \
+            -o /tmp/v0262-auto-insert
+          ASAN_OPTIONS=detect_leaks=0 /tmp/v0262-auto-insert
 
           g++ -std=c++20 -Wall -Wextra -Wpedantic -Werror \
             -fsanitize=address,undefined -fno-omit-frame-pointer \

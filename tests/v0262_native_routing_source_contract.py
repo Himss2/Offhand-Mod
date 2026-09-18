@@ -56,6 +56,10 @@ required = {
     "src/runtime/AutoInsertRoutingCore.hpp": (
         "kOffhandContainer = 34",
         "kDestinationRecordSize = 0x20",
+        "kDestinationNameStorageSize = 0x18",
+        "destinationName(",
+        "containsAsciiCaseInsensitive(",
+        "\"offhand\"",
         "filterDestinations(",
         "alignas(8)",
     ),
