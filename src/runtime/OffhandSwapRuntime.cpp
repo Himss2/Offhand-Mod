@@ -33,6 +33,11 @@ constexpr std::uintptr_t kItemStackDtorRva = 0x85ADF98;
 // hand=0 dispatches virtual +0x268; hand=1 dispatches virtual +0x278.
 constexpr std::uintptr_t kSetItemInHandSlotRva = 0xF579C50;
 
+// Player::setSelectedItem(ItemStack const&) on 1.26.51.1.  This path updates
+// the selected inventory slot itself (not only the Actor carried-item view),
+// which is required to invalidate the first-swap ghost stack.
+constexpr std::uintptr_t kSetSelectedItemRva = 0xF9F7850;
+
 // ClientInstance::preFrameTick is the reliable native per-frame pump.
 // IClientInstance vtable slot 26 => 1.26.51.1 RVA 0x9803334.
 // getLocalPlayer() is vtable slot 32 => object-vptr offset +0x100.
@@ -65,6 +70,14 @@ constexpr std::array<std::uint8_t, 28> kItemStackDtorFingerprint{
 constexpr std::array<std::uint8_t, 16> kSetItemInHandSlotFingerprint{
     0x28, 0x1C, 0x00, 0x72, 0x00, 0x01, 0x00, 0x54,
     0x1F, 0x05, 0x00, 0x71, 0x61, 0x01, 0x00, 0x54,
+};
+constexpr std::array<std::uint8_t, 48> kSetSelectedItemFingerprint{
+    0xFD, 0x7B, 0xBB, 0xA9, 0xFC, 0x67, 0x01, 0xA9,
+    0xF8, 0x5F, 0x02, 0xA9, 0xF6, 0x57, 0x03, 0xA9,
+    0xF4, 0x4F, 0x04, 0xA9, 0xFD, 0x03, 0x00, 0x91,
+    0xFF, 0xC3, 0x0E, 0xD1, 0x56, 0xD0, 0x3B, 0xD5,
+    0xF3, 0x03, 0x01, 0xAA, 0xF4, 0x03, 0x00, 0xAA,
+    0xC8, 0x16, 0x40, 0xF9, 0xA8, 0x83, 0x1F, 0xF8,
 };
 constexpr std::array<std::uint8_t, 16> kClientPreFrameTickFingerprint{
     0xFF, 0xC3, 0x00, 0xD1, 0xFD, 0x7B, 0x01, 0xA9,
@@ -280,6 +293,9 @@ bool OffhandSwapRuntime::install(pl::mod::ModContext& context) noexcept {
     const auto setHand = resolveExactTarget(
         kSetItemInHandSlotRva, kSetItemInHandSlotFingerprint
     );
+    const auto setSelected = resolveExactTarget(
+        kSetSelectedItemRva, kSetSelectedItemFingerprint
+    );
     const auto clientPreFrameTick = resolveExactTarget(
         kClientPreFrameTickRva, kClientPreFrameTickFingerprint
     );
@@ -290,6 +306,7 @@ bool OffhandSwapRuntime::install(pl::mod::ModContext& context) noexcept {
     if (
         offhand == 0 || isNull == 0 ||
         copyCtor == 0 || dtor == 0 || setHand == 0 ||
+        setSelected == 0 ||
         clientPreFrameTick == 0 || selectedItem == 0
     ) {
         context.logger().error(
@@ -305,6 +322,8 @@ bool OffhandSwapRuntime::install(pl::mod::ModContext& context) noexcept {
     mItemStackDtor = reinterpret_cast<ItemStackDtorFn>(dtor);
     mSetItemInHandSlot =
         reinterpret_cast<SetItemInHandSlotFn>(setHand);
+    mSetSelectedItem =
+        reinterpret_cast<SetSelectedItemFn>(setSelected);
     gGetSelectedItem =
         reinterpret_cast<GetSelectedItemFn>(selectedItem);
 
@@ -331,6 +350,7 @@ bool OffhandSwapRuntime::install(pl::mod::ModContext& context) noexcept {
         mItemStackCopyCtor = nullptr;
         mItemStackDtor = nullptr;
         mSetItemInHandSlot = nullptr;
+        mSetSelectedItem = nullptr;
         return false;
     }
 
@@ -363,6 +383,7 @@ void OffhandSwapRuntime::uninstall(pl::mod::ModContext&) noexcept {
     mItemStackCopyCtor = nullptr;
     mItemStackDtor = nullptr;
     mSetItemInHandSlot = nullptr;
+    mSetSelectedItem = nullptr;
 }
 
 void OffhandSwapRuntime::setFeatureEnabled(bool enabled) noexcept {
@@ -382,7 +403,8 @@ bool OffhandSwapRuntime::installed() const noexcept {
         mStackIsNull != nullptr &&
         mItemStackCopyCtor != nullptr &&
         mItemStackDtor != nullptr &&
-        mSetItemInHandSlot != nullptr;
+        mSetItemInHandSlot != nullptr &&
+        mSetSelectedItem != nullptr;
 }
 
 void OffhandSwapRuntime::requestSwap() noexcept {
@@ -493,6 +515,13 @@ bool OffhandSwapRuntime::processPendingSwap(
         }
 
         mSetItemInHandSlot(player, kMainHand, offStack);
+
+        // setItemInHandSlot(kMainHand) updates the carried-item view but the
+        // first swap can leave the selected hotbar slot's client cache stale.
+        // Re-commit the still-empty offhand stack through Player::setSelectedItem
+        // before the offhand slot itself is populated.
+        mSetSelectedItem(player, offStack);
+
         mSetItemInHandSlot(player, kOffHand, mainSnapshot.get());
     } else if (mainEmpty) {
         ItemStackSnapshot offSnapshot(
@@ -511,6 +540,7 @@ bool OffhandSwapRuntime::processPendingSwap(
 
         mSetItemInHandSlot(player, kOffHand, selectedStack);
         mSetItemInHandSlot(player, kMainHand, offSnapshot.get());
+        mSetSelectedItem(player, offSnapshot.get());
     } else {
         // Both sources must be detached before the first live hand setter runs.
         ItemStackSnapshot mainSnapshot(
@@ -537,13 +567,14 @@ bool OffhandSwapRuntime::processPendingSwap(
         }
 
         mSetItemInHandSlot(player, kMainHand, offSnapshot.get());
+        mSetSelectedItem(player, offSnapshot.get());
         mSetItemInHandSlot(player, kOffHand, mainSnapshot.get());
     }
 
     __android_log_print(
         ANDROID_LOG_INFO,
         kLogTag,
-        "[SwapRuntime] swapped MAINHAND <-> OFFHAND from selected-item hook"
+        "[SwapRuntime] swapped MAINHAND <-> OFFHAND; selected hotbar reconciled"
     );
     return true;
 }

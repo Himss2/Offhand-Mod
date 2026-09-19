@@ -23,6 +23,8 @@ for token in (
     "kItemStackCopyCtorRva = 0xFF9D748",
     "kItemStackDtorRva = 0x85ADF98",
     "kSetItemInHandSlotRva = 0xF579C50",
+    "kSetSelectedItemRva = 0xF9F7850",
+    "kSetSelectedItemFingerprint",
     "kItemStackStorageSize = 0x98",
     "kClientPreFrameTickRva = 0x9803334",
     "kSelectedItemRva = 0xF9F7824",
@@ -34,7 +36,7 @@ for token in (
     "processPendingSwap(",
     "mSwapRequested.store(true",
     "[SwapRuntime] F swap queued for MINECRAFT MAIN",
-    "[SwapRuntime] swapped MAINHAND <-> OFFHAND from selected-item hook",
+    "[SwapRuntime] swapped MAINHAND <-> OFFHAND; selected hotbar reconciled",
 ):
     if token not in runtime:
         raise AssertionError(f"OffhandSwapRuntime missing {token}")
@@ -44,6 +46,7 @@ for token in (
     "bool hasPendingSwap() const noexcept",
     "bool processPendingSwap(",
     "std::atomic_bool mSwapRequested",
+    "SetSelectedItemFn mSetSelectedItem",
 ):
     if token not in header:
         raise AssertionError(f"OffhandSwapRuntime.hpp missing {token}")
@@ -68,7 +71,11 @@ for forbidden in (
 process_start = runtime.index("bool OffhandSwapRuntime::processPendingSwap(")
 process_body = runtime[process_start:]
 if "hasPendingSwap()" not in process_body:
-    raise AssertionError("processPendingSwap must enforce MINECRAFT MAIN gate")
+    raise AssertionError("processPendingSwap must enforce pending request gate")
+if "mSetSelectedItem(player, offStack)" not in process_body:
+    raise AssertionError("first swap must reconcile selected hotbar while offhand is still empty")
+if process_body.count("mSetSelectedItem(player, offSnapshot.get())") < 2:
+    raise AssertionError("non-empty swap directions must reconcile selected hotbar")
 
 for forbidden in (
     "InventoryTransactionPacket",

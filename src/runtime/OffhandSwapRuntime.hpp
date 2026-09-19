@@ -41,6 +41,8 @@ public:
     using ItemStackDtorFn = void (*)(void*);
     using SetItemInHandSlotFn =
         void (*)(void*, unsigned char, const void*);
+    using SetSelectedItemFn =
+        void (*)(void*, const void*);
 
 private:
     OffhandSwapRuntime() = default;
@@ -50,6 +52,7 @@ private:
     ItemStackCopyCtorFn mItemStackCopyCtor{nullptr};
     ItemStackDtorFn mItemStackDtor{nullptr};
     SetItemInHandSlotFn mSetItemInHandSlot{nullptr};
+    SetSelectedItemFn mSetSelectedItem{nullptr};
 
     std::atomic_bool mFeatureEnabled{true};
     std::atomic_bool mInstalled{false};
