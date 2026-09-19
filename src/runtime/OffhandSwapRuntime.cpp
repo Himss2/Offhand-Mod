@@ -184,6 +184,19 @@ GetSelectedItemFn gGetSelectedItem = nullptr;
     return getter(client);
 }
 
+[[nodiscard]] bool isMinecraftMainThread(char* outName = nullptr) noexcept {
+    char name[16]{};
+    if (prctl(PR_GET_NAME, name, 0, 0, 0) != 0) {
+        std::strncpy(name, "unknown", sizeof(name) - 1);
+    }
+
+    if (outName != nullptr) {
+        std::strncpy(outName, name, 15);
+        outName[15] = '\0';
+    }
+    return std::strcmp(name, "MINECRAFT MAIN") == 0;
+}
+
 void clientPreFrameTickDetour(void* client) noexcept {
     const auto original =
         reinterpret_cast<ClientPreFrameTickFn>(gClientPreFrameTickOriginal);
@@ -204,10 +217,13 @@ void clientPreFrameTickDetour(void* client) noexcept {
         return;
     }
 
+    char pumpThread[16]{};
+    (void)isMinecraftMainThread(pumpThread);
     __android_log_print(
         ANDROID_LOG_INFO,
         kLogTag,
-        "[SwapRuntime] ClientInstance::preFrameTick pumping queued F swap"
+        "[SwapRuntime] ClientInstance::preFrameTick pumping queued F swap (thread=%s)",
+        pumpThread
     );
 
     // RightUseRouter hooks this exact getter when available. Calling it here
@@ -448,21 +464,26 @@ bool OffhandSwapRuntime::processPendingSwap(
         return false;
     }
 
+    char executionThread[16]{};
+    if (!isMinecraftMainThread(executionThread)) {
+        __android_log_print(
+            ANDROID_LOG_INFO,
+            kLogTag,
+            "[SwapRuntime] pending F swap deferred from non-main thread=%s",
+            executionThread
+        );
+        return false;
+    }
+
     const void* offStack = mGetOffhandSlot(player);
     if (offStack == nullptr) {
         return false;
     }
 
-    char threadName[16]{};
-    if (prctl(PR_GET_NAME, threadName, 0, 0, 0) != 0) {
-        std::strncpy(threadName, "unknown", sizeof(threadName) - 1);
-    }
-
     __android_log_print(
         ANDROID_LOG_INFO,
         kLogTag,
-        "[SwapRuntime] draining queued F swap from selected-item hook (thread=%s)",
-        threadName
+        "[SwapRuntime] draining queued F swap on MINECRAFT MAIN"
     );
 
     bool requested = true;

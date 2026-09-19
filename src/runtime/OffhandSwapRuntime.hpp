@@ -22,14 +22,13 @@ public:
     // intentionally queue-only: it must never touch Minecraft ItemStack state.
     void requestSwap() noexcept;
 
-    // The HUD callback only queues.  The request is consumed from
-    // RightUseRouter::selectedItemDetour, i.e. after control has returned to
-    // Minecraft native code instead of Android's Java/UI callback thread.
+    // The HUD callback only queues. Native callers may observe the request,
+    // but processPendingSwap itself refuses to consume it unless execution is
+    // on the real MINECRAFT MAIN thread.
     [[nodiscard]] bool hasPendingSwap() const noexcept;
 
-    // Called only from RightUseRouter::selectedItemDetour on MINECRAFT MAIN.
-    // selectedStack is obtained from the already-hooked native getter so this
-    // runtime does not recurse through Player::getSelectedItem itself.
+    // May be reached from the selected-item hook or pre-frame pump. The
+    // implementation owns the final MINECRAFT MAIN thread gate.
     [[nodiscard]] bool processPendingSwap(
         void* player,
         const void* selectedStack

@@ -30,7 +30,10 @@ for token in (
     "kSelectedItemRva = 0xF9F7824",
     "kClientGetLocalPlayerVtableOffset = 0x100",
     "clientPreFrameTickDetour",
-    "ClientInstance::preFrameTick pumping queued F swap",
+    "isMinecraftMainThread",
+    "ClientInstance::preFrameTick pumping queued F swap (thread=%s)",
+    "pending F swap deferred from non-main thread=%s",
+    "draining queued F swap on MINECRAFT MAIN",
     "requestSwap()",
     "hasPendingSwap()",
     "processPendingSwap(",
@@ -72,6 +75,10 @@ process_start = runtime.index("bool OffhandSwapRuntime::processPendingSwap(")
 process_body = runtime[process_start:]
 if "hasPendingSwap()" not in process_body:
     raise AssertionError("processPendingSwap must enforce pending request gate")
+if "if (!isMinecraftMainThread(executionThread))" not in process_body:
+    raise AssertionError("swap execution must be hard-gated to MINECRAFT MAIN")
+if "mSwapRequested.compare_exchange_strong" in process_body.split("if (!isMinecraftMainThread(executionThread))")[0]:
+    raise AssertionError("non-main thread must not consume the queued swap request")
 if "mSetSelectedItem(player, offStack)" not in process_body:
     raise AssertionError("first swap must reconcile selected hotbar while offhand is still empty")
 if process_body.count("mSetSelectedItem(player, offSnapshot.get())") < 2:
