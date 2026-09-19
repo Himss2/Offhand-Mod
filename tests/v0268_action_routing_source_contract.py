@@ -191,10 +191,12 @@ def main() -> int:
         use_block,
         "stackClaimsMainhandRightClick(mainStack, &yieldedAttackOnly)",
         "ScopedItemStackSnapshot offSnapshot(offStack)",
-        "const std::uint32_t offResult = original(",
+        "std::uint32_t offResult = 0;",
+        "if (instance->mUseItemOnBlockPreHooked)",
+        "ScopedActionHand offScope(ActionHand::OffHand, ActionKind::UseBlock)",
+        "ScopedPlayer routedPlayer(player)",
         "if ((offResult & 1u) != 0u)",
         "MAINHAND had no right-click owner; block-use/place handled by OFFHAND first",
-        "gameMode,\n        offSnapshot.get(),\n        blockPos,\n        face,\n        hitPos,\n        kOffHand,",
     )
     if "swap" in use_block.lower() or "Packet" in use_block:
         raise AssertionError("block-use must stay on Minecraft native hand routing")
@@ -202,35 +204,51 @@ def main() -> int:
         raise AssertionError(
             "non-owner MAINHAND must not execute use-on before OFFHAND"
         )
+
     classifier_pos = use_block.index(
         "stackClaimsMainhandRightClick(mainStack, &yieldedAttackOnly)"
     )
-    off_attempt_pos = use_block.index("const std::uint32_t offResult = original(")
-    if classifier_pos > off_attempt_pos:
+    first_off_assignment = use_block.index("offResult = original(")
+    if classifier_pos > first_off_assignment:
         raise AssertionError(
             "MAINHAND capability must be decided before OFFHAND use-on"
         )
-    require(
-        use_block,
-        "if (instance->mUseItemOnBlockPreHooked)",
-        "ScopedActionHand offScope(ActionHand::OffHand, ActionKind::UseBlock)",
-        "ScopedPlayer routedPlayer(player)",
+
+    # The pre-hook compatibility path and clean native path are mutually
+    # exclusive, so source contains two assignments but runtime executes only
+    # one OFFHAND attempt per click.  Both must use the detached snapshot and
+    # native hand=1.
+    if use_block.count("offResult = original(") != 2:
+        raise AssertionError(
+            "block-use must contain exactly two mutually-exclusive OFFHAND call sites"
+        )
+    if use_block.count("offSnapshot.get()") < 2:
+        raise AssertionError(
+            "both OFFHAND call sites must use the detached ItemStack snapshot"
+        )
+    if use_block.count("kOffHand,") < 2:
+        raise AssertionError(
+            "both OFFHAND call sites must carry native hand=1"
+        )
+
+    scope_pos = use_block.index(
+        "ScopedActionHand offScope(ActionHand::OffHand, ActionKind::UseBlock)"
     )
-    scope_pos = use_block.index("ScopedActionHand offScope(ActionHand::OffHand, ActionKind::UseBlock)")
     prehook_pos = use_block.index("if (instance->mUseItemOnBlockPreHooked)")
-    if scope_pos < prehook_pos:
+    else_pos = use_block.index("} else {", prehook_pos)
+    if not (prehook_pos < scope_pos < else_pos):
         raise AssertionError(
             "selected-item spoof must exist only inside the pre-hook compatibility branch"
         )
+
     if "gameMode,\n        offStack,\n        blockPos" in use_block:
         raise AssertionError(
             "block placement must not pass the live offhand slot as transaction snapshot"
         )
     if "upperUseDetour" in combined or "mUpperUseHook" in combined:
         raise AssertionError("broad upper-use replay must not be installed")
-    if use_block.count("const std::uint32_t offResult = original(") != 1:
-        raise AssertionError("capability fallback must execute one explicit OFFHAND attempt")
-    pre_offhand = use_block[:off_attempt_pos]
+
+    pre_offhand = use_block[:first_off_assignment]
     if "const std::uint32_t mainResult = original(" in pre_offhand:
         raise AssertionError(
             "MAINHAND use-on must not prime transaction before OFFHAND fallback"
