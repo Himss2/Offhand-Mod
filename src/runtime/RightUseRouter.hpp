@@ -64,6 +64,11 @@ private:
     std::uintptr_t mBaseUseItemTarget{0};
     std::uintptr_t mUseItemOnBlockTarget{0};
 
+    // True only when GameMode::useItemOnBlock was already patched before
+    // RightUseRouter installed.  Used for a narrow selected-item bridge around
+    // the chained OFFHAND call; the clean native path remains snapshot-only.
+    bool mUseItemOnBlockPreHooked{false};
+
     std::atomic_bool mFeatureEnabled{false};
     std::atomic_bool mLoggedOffhandUse{false};
     std::atomic_bool mLoggedBlockUse{false};

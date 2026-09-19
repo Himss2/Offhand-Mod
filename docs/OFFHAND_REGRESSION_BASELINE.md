@@ -24,6 +24,15 @@ At runtime, another already-installed hook may change the first instructions of 
 - a live-prologue mismatch must be logged explicitly;
 - this compatibility layer must not change the action-routing or block-placement algorithms below.
 
+## Pre-swap action fixes under verification
+
+Before swap is reintroduced, the following two behaviors are mandatory:
+
+1. **OFFHAND food/self-use:** when MAINHAND has no concrete native right-click owner (including ordinary Sword/Axe/Pickaxe paths), do not execute generic MAINHAND `baseUseItem` first. Attempt OFFHAND with native `hand=1`; if it enters active-use state, pin the OFFHAND long-use session through release. Only if OFFHAND passes may vanilla MAINHAND run once.
+2. **Pre-hooked block-use compatibility:** if `GameMode::useItemOnBlock` was already patched before RightUseRouter installs, keep the detached OFFHAND snapshot and `hand=1`, but scope nested `Player::getSelectedItem` lookups to OFFHAND only for that chained call. If the entry point was clean, do not spoof selectedItem; use the proven snapshot-only path.
+
+Do not add explicit eating or placement animation hooks until both mechanics above pass in-game. Animation must be layered on top of working native actions, not used to mask a failed transaction.
+
 ## Block placement / right-use invariants
 
 The known-good logic first decides whether MAINHAND genuinely owns right-click **before** invoking the generic MAINHAND use-on wrapper.

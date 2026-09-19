@@ -135,12 +135,19 @@ def main() -> int:
     require(
         base_use,
         "stacksMatch(itemStack, mainStack)",
+        "if (!stackClaimsMainhandRightClick(mainStack))",
+        "ScopedActionHand offScope(ActionHand::OffHand, ActionKind::UseAir)",
+        "original(gameMode, offStack, kOffHand)",
+        "OFFHAND long-use session pinned until release",
         "routeUseAction(",
         "activeUseMatches(player, mainStack)",
         "activeUseMatches(player, offStack)",
-        "original(gameMode, offStack, kOffHand)",
         "original(gameMode, itemStack, hand)",
     )
+    if base_use.index("if (!stackClaimsMainhandRightClick(mainStack))") > base_use.index("routeUseAction("):
+        raise AssertionError(
+            "attack-only/no-owner MAINHAND must be classified before generic main-first routing"
+        )
     if "itemStack != mainStack" in base_use or "itemStack == mainStack" in base_use:
         raise AssertionError("1.26.51.1 routing must not use ItemStack pointer identity")
 
@@ -203,9 +210,17 @@ def main() -> int:
         raise AssertionError(
             "MAINHAND capability must be decided before OFFHAND use-on"
         )
-    if "ScopedActionHand" in use_block or "ScopedPlayer" in use_block:
+    require(
+        use_block,
+        "if (instance->mUseItemOnBlockPreHooked)",
+        "ScopedActionHand offScope(ActionHand::OffHand, ActionKind::UseBlock)",
+        "ScopedPlayer routedPlayer(player)",
+    )
+    scope_pos = use_block.index("ScopedActionHand offScope(ActionHand::OffHand, ActionKind::UseBlock)")
+    prehook_pos = use_block.index("if (instance->mUseItemOnBlockPreHooked)")
+    if scope_pos < prehook_pos:
         raise AssertionError(
-            "instant block placement must not spoof selectedItem/offhand scope"
+            "selected-item spoof must exist only inside the pre-hook compatibility branch"
         )
     if "gameMode,\n        offStack,\n        blockPos" in use_block:
         raise AssertionError(
@@ -249,6 +264,8 @@ def main() -> int:
         "dtorTarget = resolveExactTarget(",
         'resolveHookTarget(\n        "Player::getSelectedItem"',
         'resolveHookTarget(\n        "GameMode::useItemOnBlock"',
+        "&blockUsePreHooked",
+        "mUseItemOnBlockPreHooked = blockUsePreHooked",
         'resolveHookTarget(\n        "GameMode::baseUseItem"',
         'resolveHookTarget(\n        "GameMode::releaseUsingItem"',
     )

@@ -28,6 +28,15 @@ The on-disk `libminecraftpe.so` supplied for 1.26.51.1 was rechecked against eve
 
 This changes only installation/compatibility. The pre-swap block-placement and right-use decision logic remains unchanged.
 
+### Current action fixes before swap returns
+
+Two interaction regressions are now explicitly protected:
+
+- **OFFHAND food/self-use with Sword/Axe/Pickaxe/empty-like MAINHAND:** the router classifies MAINHAND capability before calling generic `baseUseItem`. If MAINHAND has no real right-click owner, OFFHAND gets the first semantic attempt, so generic ComponentItem success cannot swallow eating/long-use.
+- **Sword MAINHAND + placeable OFFHAND through a pre-hooked use-on-block chain:** the normal path remains detached-snapshot + `hand=1`. Only when `GameMode::useItemOnBlock` was already patched before this mod installs do we add a narrow OFFHAND selected-item scope around that chained call, because third-party/earlier wrappers may re-query `Player::getSelectedItem`.
+
+Swap remains quarantined until these mechanics are verified in-game. Explicit eating and placement animations are intentionally deferred until the underlying actions are stable.
+
 **Maintenance rule:** any future feature or bug fix that changes offhand storage, right-use/block placement, selected-item access, swap behavior, or render ownership must update both this README and the regression document in the same change.
 
 ## v0.2.63 — native-only Bow/Trident renderer

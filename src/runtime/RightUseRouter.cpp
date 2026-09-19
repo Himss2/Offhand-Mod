@@ -246,8 +246,13 @@ template <std::size_t N>
 [[nodiscard]] std::uintptr_t resolveHookTarget(
     const char* name,
     std::uintptr_t rva,
-    const std::array<std::uint8_t, N>& fingerprint
+    const std::array<std::uint8_t, N>& fingerprint,
+    bool* usedLiveFallback = nullptr
 ) noexcept {
+    if (usedLiveFallback != nullptr) {
+        *usedLiveFallback = false;
+    }
+
     const auto exact = resolveExactTarget(rva, fingerprint);
     if (exact != 0) {
         return exact;
@@ -260,6 +265,9 @@ template <std::size_t N>
     // disabling the entire right-use subsystem.
     const auto live = resolveKnownBuildTarget(rva);
     if (live != 0) {
+        if (usedLiveFallback != nullptr) {
+            *usedLiveFallback = true;
+        }
         __android_log_print(
             ANDROID_LOG_WARN,
             kLogTag,
@@ -580,10 +588,12 @@ bool RightUseRouter::install(pl::mod::ModContext& context) noexcept {
         kSelectedItemRva,
         kSelectedItemFingerprint
     );
+    bool blockUsePreHooked = false;
     const auto blockUseTarget = resolveHookTarget(
         "GameMode::useItemOnBlock",
         kUseItemOnBlockRva,
-        kUseItemOnBlockFingerprint
+        kUseItemOnBlockFingerprint,
+        &blockUsePreHooked
     );
     const auto useTarget = resolveHookTarget(
         "GameMode::baseUseItem",
@@ -618,6 +628,7 @@ bool RightUseRouter::install(pl::mod::ModContext& context) noexcept {
     mReleaseUsingItemTarget = releaseTarget;
     mBaseUseItemTarget = useTarget;
     mUseItemOnBlockTarget = blockUseTarget;
+    mUseItemOnBlockPreHooked = blockUsePreHooked;
     sInstance = this;
 
     mSelectedItemHook = std::make_unique<pl::memory::HookHandle>(
@@ -708,6 +719,7 @@ void RightUseRouter::uninstall(pl::mod::ModContext& context) noexcept {
     mReleaseUsingItemOriginal = nullptr;
     mSelectedItemOriginal = nullptr;
     mUseItemOnBlockTarget = 0;
+    mUseItemOnBlockPreHooked = false;
     mBaseUseItemTarget = 0;
     mReleaseUsingItemTarget = 0;
     mSelectedItemTarget = 0;
@@ -771,12 +783,11 @@ bool RightUseRouter::baseUseItemDetour(
         instance->mSelectedItemOriginal
     );
     const void* mainStack = selectedOriginal(player);
-    const void* offStack = gGetOffhandSlot != nullptr ? gGetOffhandSlot(player) : nullptr;
+    const void* offStack =
+        gGetOffhandSlot != nullptr ? gGetOffhandSlot(player) : nullptr;
 
     // 1.26.51.1's upper dispatcher passes a local ItemStack copy (sp+0x60),
-    // so pointer identity with Player::getSelectedItem is invalid. Match using
-    // Minecraft's own stack comparator. The third ABI argument is the native
-    // hand enum: 0=main, 1=offhand.
+    // so pointer identity with Player::getSelectedItem is invalid.
     if (
         itemStack == nullptr || mainStack == nullptr ||
         !stacksMatch(itemStack, mainStack) ||
@@ -785,55 +796,14 @@ bool RightUseRouter::baseUseItemDetour(
         return original(gameMode, itemStack, hand);
     }
 
-    const auto scoped = currentScopedAction();
-    if (
-        scoped.has_value() &&
-        scoped->hand == ActionHand::OffHand &&
-        player == gScopedPlayer
-    ) {
-        ScopedBool reentry(gInsideBaseUse);
-        const bool handled = original(gameMode, offStack, kOffHand);
-        if (
-            handled && gPlayerIsUsingItem != nullptr &&
-            gPlayerIsUsingItem(player) && gItemInUseStack != nullptr
-        ) {
-            const void* active = gItemInUseStack(player);
-            if (!stackIsNull(active) && stacksMatch(active, offStack)) {
-                gSessionPlayer = player;
-                gSessionGameMode = gameMode;
-            }
-        }
-        return handled;
-    }
-
     ScopedBool reentry(gInsideBaseUse);
     ScopedPlayer routedPlayer(player);
 
-    const auto result = routeUseAction(
-        [&]() noexcept {
-            const bool nativeHandled = original(gameMode, itemStack, hand);
-            // Bow/spear/charge-style items may enter Player::isUsingItem before
-            // this bool reports a consumed action.  Native active-use ownership
-            // is authoritative: once MAINHAND owns the use state, OFFHAND must
-            // not be attempted for the same input.
-            return nativeHandled || activeUseMatches(player, mainStack);
-        },
-        [&]() noexcept {
-            const bool nativeHandled = original(gameMode, offStack, kOffHand);
-            return nativeHandled || activeUseMatches(player, offStack);
-        },
-        []() noexcept {},
-        ActionKind::UseAir
-    );
-
-    if (result.handled && result.hand == ActionHand::MainHand) {
-        // A new MAINHAND use supersedes any stale offhand session state.
-        if (gSessionPlayer == player) {
-            clearSession();
+    const auto finishOffhandUse = [&](bool handled) noexcept {
+        if (!handled) {
+            return false;
         }
-    }
 
-    if (result.handled && result.hand == ActionHand::OffHand) {
         bool expected = false;
         if (instance->mLoggedOffhandUse.compare_exchange_strong(
                 expected, true, std::memory_order_relaxed
@@ -859,9 +829,58 @@ bool RightUseRouter::baseUseItemDetour(
                 );
             }
         }
+        return true;
+    };
+
+    // Critical Java-style rule for Sword/Axe/Pickaxe/empty-like MAINHAND:
+    // do not call the generic MAINHAND baseUseItem first.  ComponentItem can
+    // return a success-like result even when it has no real right-click
+    // action, which previously swallowed food/potion/other self-use in
+    // OFFHAND.  The same capability classifier used by block placement is
+    // authoritative here.
+    if (!stackClaimsMainhandRightClick(mainStack)) {
+        bool offHandled = false;
+        {
+            ScopedActionHand offScope(ActionHand::OffHand, ActionKind::UseAir);
+            const bool nativeHandled = original(gameMode, offStack, kOffHand);
+            offHandled = nativeHandled || activeUseMatches(player, offStack);
+        }
+
+        if (finishOffhandUse(offHandled)) {
+            return true;
+        }
+
+        // OFFHAND passed: preserve untouched vanilla MAINHAND fallback once.
+        return original(gameMode, itemStack, hand);
     }
 
-    return result.handled;
+    // MAINHAND has a real native right-click owner. Preserve Java priority:
+    // MAIN first, OFF only when MAIN genuinely passes.
+    const auto result = routeUseAction(
+        [&]() noexcept {
+            const bool nativeHandled = original(gameMode, itemStack, hand);
+            return nativeHandled || activeUseMatches(player, mainStack);
+        },
+        [&]() noexcept {
+            const bool nativeHandled = original(gameMode, offStack, kOffHand);
+            return nativeHandled || activeUseMatches(player, offStack);
+        },
+        []() noexcept {},
+        ActionKind::UseAir
+    );
+
+    if (result.handled && result.hand == ActionHand::MainHand) {
+        if (gSessionPlayer == player) {
+            clearSession();
+        }
+        return true;
+    }
+
+    if (result.handled && result.hand == ActionHand::OffHand) {
+        return finishOffhandUse(true);
+    }
+
+    return false;
 }
 
 std::uint32_t RightUseRouter::useItemOnBlockDetour(
@@ -959,16 +978,37 @@ std::uint32_t RightUseRouter::useItemOnBlockDetour(
     // and only use-on transaction attempt.  If OFFHAND passes, run the untouched
     // MAINHAND wrapper once as vanilla fallback; never run MAINHAND before
     // OFFHAND in this branch.
-    const std::uint32_t offResult = original(
-        gameMode,
-        offSnapshot.get(),
-        blockPos,
-        face,
-        hitPos,
-        kOffHand,
-        extra,
-        flag
-    );
+    std::uint32_t offResult = 0;
+    if (instance->mUseItemOnBlockPreHooked) {
+        // A hook already owns this entry point before Levi Offhand.  Some
+        // wrappers re-query Player::getSelectedItem instead of trusting x1 +
+        // hand=1.  Scope ONLY this chained call so those nested lookups see
+        // the OFFHAND stack.  The clean native path below remains the proven
+        // snapshot-only implementation and is not spoofed.
+        ScopedActionHand offScope(ActionHand::OffHand, ActionKind::UseBlock);
+        ScopedPlayer routedPlayer(player);
+        offResult = original(
+            gameMode,
+            offSnapshot.get(),
+            blockPos,
+            face,
+            hitPos,
+            kOffHand,
+            extra,
+            flag
+        );
+    } else {
+        offResult = original(
+            gameMode,
+            offSnapshot.get(),
+            blockPos,
+            face,
+            hitPos,
+            kOffHand,
+            extra,
+            flag
+        );
+    }
 
     if ((offResult & 1u) != 0u) {
         bool expected = false;
