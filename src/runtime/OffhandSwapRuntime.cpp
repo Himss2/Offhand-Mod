@@ -226,14 +226,11 @@ void clientPreFrameTickDetour(void* client) noexcept {
         pumpThread
     );
 
-    // RightUseRouter hooks this exact getter when available. Calling it here
-    // therefore also gives the existing detour a chance to drain the request.
-    // If that subsystem is unavailable, process the still-pending request
-    // directly with the returned native selected stack.
+    // Read the selected stack, then process the request here.  The
+    // selected-item hook is deliberately not a swap pump because Minecraft
+    // calls that getter from worker threads as well.
     const void* selected = gGetSelectedItem(player);
-    if (swap.hasPendingSwap()) {
-        (void)swap.processPendingSwap(player, selected);
-    }
+    (void)swap.processPendingSwap(player, selected);
 }
 
 class ScopedSwapFlag final {
@@ -518,8 +515,13 @@ bool OffhandSwapRuntime::processPendingSwap(
         return true;
     }
 
-    // Avoid copy-constructing an EMPTY_ITEM.  Besides doing less work, this
-    // keeps ItemRegistry access limited to stacks that actually own an Item.
+    // Snapshot every non-empty source before the first mutation.  After this
+    // point each storage has exactly one owner/setter:
+    //   selected hotbar -> Player::setSelectedItem
+    //   offhand         -> Actor/LocalPlayer offhand path (hand=1)
+    // Never call setItemInHandSlot(hand=0): it represents the carried-item
+    // view and writing it in addition to setSelectedItem is what produced
+    // first-swap ghosts, duplicate-looking stacks and later item loss.
     if (offEmpty) {
         ItemStackSnapshot mainSnapshot(
             mItemStackCopyCtor,
@@ -530,19 +532,13 @@ bool OffhandSwapRuntime::processPendingSwap(
             __android_log_print(
                 ANDROID_LOG_ERROR,
                 kLogTag,
-                "[SwapRuntime] MAINHAND snapshot failed in selected-item hook"
+                "[SwapRuntime] MAINHAND snapshot failed"
             );
             return false;
         }
 
-        mSetItemInHandSlot(player, kMainHand, offStack);
-
-        // setItemInHandSlot(kMainHand) updates the carried-item view but the
-        // first swap can leave the selected hotbar slot's client cache stale.
-        // Re-commit the still-empty offhand stack through Player::setSelectedItem
-        // before the offhand slot itself is populated.
+        // offStack is the native EMPTY_ITEM currently stored in offhand.
         mSetSelectedItem(player, offStack);
-
         mSetItemInHandSlot(player, kOffHand, mainSnapshot.get());
     } else if (mainEmpty) {
         ItemStackSnapshot offSnapshot(
@@ -554,16 +550,15 @@ bool OffhandSwapRuntime::processPendingSwap(
             __android_log_print(
                 ANDROID_LOG_ERROR,
                 kLogTag,
-                "[SwapRuntime] OFFHAND snapshot failed in selected-item hook"
+                "[SwapRuntime] OFFHAND snapshot failed"
             );
             return false;
         }
 
+        // selectedStack is the native empty selected-slot stack.
         mSetItemInHandSlot(player, kOffHand, selectedStack);
-        mSetItemInHandSlot(player, kMainHand, offSnapshot.get());
         mSetSelectedItem(player, offSnapshot.get());
     } else {
-        // Both sources must be detached before the first live hand setter runs.
         ItemStackSnapshot mainSnapshot(
             mItemStackCopyCtor,
             mItemStackDtor,
@@ -582,12 +577,13 @@ bool OffhandSwapRuntime::processPendingSwap(
             __android_log_print(
                 ANDROID_LOG_ERROR,
                 kLogTag,
-                "[SwapRuntime] hand snapshot creation failed in selected-item hook"
+                "[SwapRuntime] hand snapshot creation failed"
             );
             return false;
         }
 
-        mSetItemInHandSlot(player, kMainHand, offSnapshot.get());
+        // Both changes are made in the same native frame/transaction window,
+        // but each underlying storage is written exactly once.
         mSetSelectedItem(player, offSnapshot.get());
         mSetItemInHandSlot(player, kOffHand, mainSnapshot.get());
     }
@@ -595,7 +591,7 @@ bool OffhandSwapRuntime::processPendingSwap(
     __android_log_print(
         ANDROID_LOG_INFO,
         kLogTag,
-        "[SwapRuntime] swapped MAINHAND <-> OFFHAND; selected hotbar reconciled"
+        "[SwapRuntime] swapped selected hotbar <-> OFFHAND with single-owner setters"
     );
     return true;
 }

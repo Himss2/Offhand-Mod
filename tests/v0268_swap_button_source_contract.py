@@ -39,7 +39,7 @@ for token in (
     "processPendingSwap(",
     "mSwapRequested.store(true",
     "[SwapRuntime] F swap queued for MINECRAFT MAIN",
-    "[SwapRuntime] swapped MAINHAND <-> OFFHAND; selected hotbar reconciled",
+    "[SwapRuntime] swapped selected hotbar <-> OFFHAND with single-owner setters",
 ):
     if token not in runtime:
         raise AssertionError(f"OffhandSwapRuntime missing {token}")
@@ -79,10 +79,16 @@ if "if (!isMinecraftMainThread(executionThread))" not in process_body:
     raise AssertionError("swap execution must be hard-gated to MINECRAFT MAIN")
 if "mSwapRequested.compare_exchange_strong" in process_body.split("if (!isMinecraftMainThread(executionThread))")[0]:
     raise AssertionError("non-main thread must not consume the queued swap request")
+if "mSetItemInHandSlot(player, kMainHand" in process_body:
+    raise AssertionError(
+        "swap must never write MAINHAND through carried-item setter"
+    )
 if "mSetSelectedItem(player, offStack)" not in process_body:
-    raise AssertionError("first swap must reconcile selected hotbar while offhand is still empty")
+    raise AssertionError("main->empty-offhand must clear selected hotbar exactly once")
 if process_body.count("mSetSelectedItem(player, offSnapshot.get())") < 2:
-    raise AssertionError("non-empty swap directions must reconcile selected hotbar")
+    raise AssertionError("offhand->main paths must write selected hotbar through setSelectedItem")
+if process_body.count("mSetItemInHandSlot(player, kOffHand") < 3:
+    raise AssertionError("all swap directions must write offhand only through hand=1")
 
 for forbidden in (
     "InventoryTransactionPacket",
@@ -92,14 +98,10 @@ for forbidden in (
     if forbidden in runtime:
         raise AssertionError(f"swap runtime must not synthesize {forbidden}")
 
-for token in (
-    "OffhandSwapRuntime::instance()",
-    "swapRuntime.hasPendingSwap()",
-):
-    if token not in router:
-        raise AssertionError(
-            f"RightUseRouter swap integration missing: {token}"
-        )
+if "processPendingSwap(" in router or "hasPendingSwap()" in router:
+    raise AssertionError(
+        "RightUseRouter selected-item hook must not execute or drain F swaps"
+    )
 
 for token in (
     "gClientPreFrameTickHook",

@@ -927,20 +927,9 @@ const void* RightUseRouter::selectedItemDetour(const void* player) noexcept {
     }
     const auto original = reinterpret_cast<SelectedItemFn>(instance->mSelectedItemOriginal);
 
-    // Levi's external HUD button callback runs on Android's Java/UI thread.
-    // It only queues a request.  Drain it here, where the tombstone confirms
-    // Player::getSelectedItem is reached on the real "MINECRAFT MAIN" thread.
-    auto& swapRuntime = OffhandSwapRuntime::instance();
-    if (
-        player != nullptr &&
-        swapRuntime.hasPendingSwap()
-    ) {
-        const void* selectedForSwap = original(player);
-        (void)swapRuntime.processPendingSwap(
-            const_cast<void*>(player),
-            selectedForSwap
-        );
-    }
+    // Swap execution is intentionally NOT drained from this hook.  This
+    // getter is called from several client worker threads; F-swap requests are
+    // processed only by OffhandSwapRuntime's ClientInstance::preFrameTick pump.
 
     if (!instance->featureEnabled() || player == nullptr) {
         return original(player);
