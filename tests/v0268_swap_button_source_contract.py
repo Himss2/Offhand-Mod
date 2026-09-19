@@ -42,7 +42,7 @@ for token in (
     "processPendingSwap(",
     "mSwapRequested.store(true",
     "[SwapRuntime] F swap queued for MINECRAFT MAIN",
-    "[SwapRuntime] swapped selected hotbar <-> OFFHAND without transient duplicates",
+    "[SwapRuntime] swapped selected hotbar <-> OFFHAND via clear-both snapshot exchange",
 ):
     if token not in runtime:
         raise AssertionError(f"OffhandSwapRuntime missing {token}")
@@ -99,6 +99,11 @@ if "mSetSelectedItem(player, gEmptyItem)" not in process_body:
     )
 if "gEmptyItem == nullptr || !mStackIsNull(gEmptyItem)" not in process_body:
     raise AssertionError("occupied swap must validate native EMPTY_ITEM before mutation")
+
+if "mSetItemInHandSlot(player, kOffHand, gEmptyItem)" not in process_body:
+    raise AssertionError(
+        "occupied swap must clear OFFHAND before installing the replacement stack"
+    )
 
 for forbidden in (
     "InventoryTransactionPacket",
