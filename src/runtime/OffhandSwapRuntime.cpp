@@ -43,6 +43,13 @@ constexpr std::uintptr_t kSetSelectedItemRva = 0xF9F7850;
 // getLocalPlayer() is vtable slot 32 => object-vptr offset +0x100.
 constexpr std::uintptr_t kClientPreFrameTickRva = 0x9803334;
 constexpr std::uintptr_t kSelectedItemRva = 0xF9F7824;
+
+// ItemStack::EMPTY_ITEM() backing object returned by Player::getSelectedItem()
+// when the selected container is not Inventory.  Using the game's own empty
+// stack lets an occupied<->occupied swap pass through an empty intermediate
+// state without fabricating an ItemStack.
+constexpr std::uintptr_t kEmptyItemRva = 0x134C6780;
+
 constexpr std::size_t kClientGetLocalPlayerVtableOffset = 0x100;
 
 constexpr std::size_t kItemStackStorageSize = 0x98;
@@ -155,6 +162,27 @@ using GetLocalPlayerFn = void* (*)(const void*);
 std::unique_ptr<pl::memory::HookHandle> gClientPreFrameTickHook;
 void* gClientPreFrameTickOriginal = nullptr;
 GetSelectedItemFn gGetSelectedItem = nullptr;
+const void* gEmptyItem = nullptr;
+
+// The swap is only allowed to execute from our ClientInstance::preFrameTick
+// detour.  Do not use the Linux thread-name string as an authorization gate:
+// Android may expose visually identical names with trailing/implementation
+// differences, which caused a request to be pumped and then deferred forever.
+thread_local std::uint32_t gPreFrameSwapPumpDepth = 0;
+
+class ScopedPreFrameSwapPump final {
+public:
+    ScopedPreFrameSwapPump() noexcept {
+        ++gPreFrameSwapPumpDepth;
+    }
+
+    ~ScopedPreFrameSwapPump() noexcept {
+        --gPreFrameSwapPumpDepth;
+    }
+
+    ScopedPreFrameSwapPump(const ScopedPreFrameSwapPump&) = delete;
+    ScopedPreFrameSwapPump& operator=(const ScopedPreFrameSwapPump&) = delete;
+};
 
 [[nodiscard]] void* localPlayerFromClient(void* client) noexcept {
     if (client == nullptr) {
@@ -184,17 +212,18 @@ GetSelectedItemFn gGetSelectedItem = nullptr;
     return getter(client);
 }
 
-[[nodiscard]] bool isMinecraftMainThread(char* outName = nullptr) noexcept {
+void currentThreadName(char* outName) noexcept {
+    if (outName == nullptr) {
+        return;
+    }
+
     char name[16]{};
     if (prctl(PR_GET_NAME, name, 0, 0, 0) != 0) {
         std::strncpy(name, "unknown", sizeof(name) - 1);
     }
 
-    if (outName != nullptr) {
-        std::strncpy(outName, name, 15);
-        outName[15] = '\0';
-    }
-    return std::strcmp(name, "MINECRAFT MAIN") == 0;
+    std::strncpy(outName, name, 15);
+    outName[15] = '\0';
 }
 
 void clientPreFrameTickDetour(void* client) noexcept {
@@ -217,8 +246,10 @@ void clientPreFrameTickDetour(void* client) noexcept {
         return;
     }
 
+    ScopedPreFrameSwapPump pumpScope;
+
     char pumpThread[16]{};
-    (void)isMinecraftMainThread(pumpThread);
+    currentThreadName(pumpThread);
     __android_log_print(
         ANDROID_LOG_INFO,
         kLogTag,
@@ -226,9 +257,9 @@ void clientPreFrameTickDetour(void* client) noexcept {
         pumpThread
     );
 
-    // Read the selected stack, then process the request here.  The
-    // selected-item hook is deliberately not a swap pump because Minecraft
-    // calls that getter from worker threads as well.
+    // Read the selected stack, then process the request here.  The scoped
+    // preFrameTick marker above is the execution authority; the thread name
+    // is diagnostic only.
     const void* selected = gGetSelectedItem(player);
     (void)swap.processPendingSwap(player, selected);
 }
@@ -316,11 +347,16 @@ bool OffhandSwapRuntime::install(pl::mod::ModContext& context) noexcept {
         kSelectedItemRva, kSelectedItemFingerprint
     );
 
+    const auto moduleBase = minecraftModuleBase();
+    const auto emptyItem =
+        moduleBase == 0 ? 0 : moduleBase + kEmptyItemRva;
+
     if (
         offhand == 0 || isNull == 0 ||
         copyCtor == 0 || dtor == 0 || setHand == 0 ||
         setSelected == 0 ||
-        clientPreFrameTick == 0 || selectedItem == 0
+        clientPreFrameTick == 0 || selectedItem == 0 ||
+        emptyItem == 0 || !belongsToMinecraft(emptyItem)
     ) {
         context.logger().error(
             "Swap runtime: Minecraft 1.26.51.1 native target validation failed"
@@ -339,6 +375,25 @@ bool OffhandSwapRuntime::install(pl::mod::ModContext& context) noexcept {
         reinterpret_cast<SetSelectedItemFn>(setSelected);
     gGetSelectedItem =
         reinterpret_cast<GetSelectedItemFn>(selectedItem);
+    gEmptyItem = reinterpret_cast<const void*>(emptyItem);
+
+    // Fail closed if the recovered global is not actually Minecraft's empty
+    // ItemStack.  A bad EMPTY_ITEM pointer must never reach an inventory
+    // setter.
+    if (!mStackIsNull(gEmptyItem)) {
+        context.logger().error(
+            "Swap runtime: ItemStack::EMPTY_ITEM validation failed"
+        );
+        gGetSelectedItem = nullptr;
+        gEmptyItem = nullptr;
+        mGetOffhandSlot = nullptr;
+        mStackIsNull = nullptr;
+        mItemStackCopyCtor = nullptr;
+        mItemStackDtor = nullptr;
+        mSetItemInHandSlot = nullptr;
+        mSetSelectedItem = nullptr;
+        return false;
+    }
 
     gClientPreFrameTickOriginal = nullptr;
     gClientPreFrameTickHook = std::make_unique<pl::memory::HookHandle>(
@@ -358,6 +413,7 @@ bool OffhandSwapRuntime::install(pl::mod::ModContext& context) noexcept {
         gClientPreFrameTickHook.reset();
         gClientPreFrameTickOriginal = nullptr;
         gGetSelectedItem = nullptr;
+        gEmptyItem = nullptr;
         mGetOffhandSlot = nullptr;
         mStackIsNull = nullptr;
         mItemStackCopyCtor = nullptr;
@@ -390,6 +446,8 @@ void OffhandSwapRuntime::uninstall(pl::mod::ModContext&) noexcept {
     }
     gClientPreFrameTickOriginal = nullptr;
     gGetSelectedItem = nullptr;
+    gEmptyItem = nullptr;
+    gPreFrameSwapPumpDepth = 0;
 
     mGetOffhandSlot = nullptr;
     mStackIsNull = nullptr;
@@ -417,7 +475,8 @@ bool OffhandSwapRuntime::installed() const noexcept {
         mItemStackCopyCtor != nullptr &&
         mItemStackDtor != nullptr &&
         mSetItemInHandSlot != nullptr &&
-        mSetSelectedItem != nullptr;
+        mSetSelectedItem != nullptr &&
+        gEmptyItem != nullptr;
 }
 
 void OffhandSwapRuntime::requestSwap() noexcept {
@@ -461,12 +520,13 @@ bool OffhandSwapRuntime::processPendingSwap(
         return false;
     }
 
-    char executionThread[16]{};
-    if (!isMinecraftMainThread(executionThread)) {
+    if (gPreFrameSwapPumpDepth == 0) {
+        char executionThread[16]{};
+        currentThreadName(executionThread);
         __android_log_print(
-            ANDROID_LOG_INFO,
+            ANDROID_LOG_WARN,
             kLogTag,
-            "[SwapRuntime] pending F swap deferred from non-main thread=%s",
+            "[SwapRuntime] pending F swap rejected outside preFrameTick pump (thread=%s)",
             executionThread
         );
         return false;
@@ -582,16 +642,38 @@ bool OffhandSwapRuntime::processPendingSwap(
             return false;
         }
 
-        // Both changes are made in the same native frame/transaction window,
-        // but each underlying storage is written exactly once.
-        mSetSelectedItem(player, offSnapshot.get());
+        if (gEmptyItem == nullptr || !mStackIsNull(gEmptyItem)) {
+            __android_log_print(
+                ANDROID_LOG_ERROR,
+                kLogTag,
+                "[SwapRuntime] native EMPTY_ITEM unavailable during occupied swap"
+            );
+            return false;
+        }
+
+        // Do not replace A with B while B still exists in offhand (or vice
+        // versa).  That transient duplicate is observable by Bedrock's
+        // inventory transaction/reconciliation layer and is what makes the
+        // second swap produce ghosts, duplicates or item loss.
+        //
+        // Route through the game's native EMPTY_ITEM instead:
+        //   MAIN=A, OFF=B
+        //   MAIN=empty, OFF=B
+        //   MAIN=empty, OFF=A
+        //   MAIN=B, OFF=A
+        //
+        // Reusing the same slot twice also lets the native transaction layer
+        // coalesce MAIN A->empty->B while no frame ever contains two copies
+        // of A or B.
+        mSetSelectedItem(player, gEmptyItem);
         mSetItemInHandSlot(player, kOffHand, mainSnapshot.get());
+        mSetSelectedItem(player, offSnapshot.get());
     }
 
     __android_log_print(
         ANDROID_LOG_INFO,
         kLogTag,
-        "[SwapRuntime] swapped selected hotbar <-> OFFHAND with single-owner setters"
+        "[SwapRuntime] swapped selected hotbar <-> OFFHAND without transient duplicates"
     );
     return true;
 }
