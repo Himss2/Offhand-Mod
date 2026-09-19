@@ -28,18 +28,21 @@ for token in (
     "kItemStackStorageSize = 0x98",
     "kClientPreFrameTickRva = 0x9803334",
     "kSelectedItemRva = 0xF9F7824",
+    "kEmptyItemRva = 0x134C6780",
     "kClientGetLocalPlayerVtableOffset = 0x100",
     "clientPreFrameTickDetour",
-    "isMinecraftMainThread",
+    "currentThreadName",
+    "ScopedPreFrameSwapPump",
+    "gPreFrameSwapPumpDepth",
     "ClientInstance::preFrameTick pumping queued F swap (thread=%s)",
-    "pending F swap deferred from non-main thread=%s",
+    "pending F swap rejected outside preFrameTick pump (thread=%s)",
     "draining queued F swap on MINECRAFT MAIN",
     "requestSwap()",
     "hasPendingSwap()",
     "processPendingSwap(",
     "mSwapRequested.store(true",
     "[SwapRuntime] F swap queued for MINECRAFT MAIN",
-    "[SwapRuntime] swapped selected hotbar <-> OFFHAND with single-owner setters",
+    "[SwapRuntime] swapped selected hotbar <-> OFFHAND without transient duplicates",
 ):
     if token not in runtime:
         raise AssertionError(f"OffhandSwapRuntime missing {token}")
@@ -75,10 +78,10 @@ process_start = runtime.index("bool OffhandSwapRuntime::processPendingSwap(")
 process_body = runtime[process_start:]
 if "hasPendingSwap()" not in process_body:
     raise AssertionError("processPendingSwap must enforce pending request gate")
-if "if (!isMinecraftMainThread(executionThread))" not in process_body:
-    raise AssertionError("swap execution must be hard-gated to MINECRAFT MAIN")
-if "mSwapRequested.compare_exchange_strong" in process_body.split("if (!isMinecraftMainThread(executionThread))")[0]:
-    raise AssertionError("non-main thread must not consume the queued swap request")
+if "if (gPreFrameSwapPumpDepth == 0)" not in process_body:
+    raise AssertionError("swap execution must be hard-gated to ClientInstance::preFrameTick")
+if "mSwapRequested.compare_exchange_strong" in process_body.split("if (gPreFrameSwapPumpDepth == 0)")[0]:
+    raise AssertionError("calls outside the preFrameTick pump must not consume the queued swap request")
 if "mSetItemInHandSlot(player, kMainHand" in process_body:
     raise AssertionError(
         "swap must never write MAINHAND through carried-item setter"
@@ -89,6 +92,13 @@ if process_body.count("mSetSelectedItem(player, offSnapshot.get())") < 2:
     raise AssertionError("offhand->main paths must write selected hotbar through setSelectedItem")
 if process_body.count("mSetItemInHandSlot(player, kOffHand") < 3:
     raise AssertionError("all swap directions must write offhand only through hand=1")
+
+if "mSetSelectedItem(player, gEmptyItem)" not in process_body:
+    raise AssertionError(
+        "occupied<->occupied swap must clear MAIN through native EMPTY_ITEM before moving OFF"
+    )
+if "gEmptyItem == nullptr || !mStackIsNull(gEmptyItem)" not in process_body:
+    raise AssertionError("occupied swap must validate native EMPTY_ITEM before mutation")
 
 for forbidden in (
     "InventoryTransactionPacket",
