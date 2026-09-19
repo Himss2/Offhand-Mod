@@ -92,19 +92,22 @@ public:
             );
         }
 
-        const bool swapRuntimeInstalled =
-            runtime::OffhandSwapRuntime::instance().install(context);
-        if(!swapRuntimeInstalled) {
-            context.logger().warn(
-                "Levi Offhand: native F-style swap runtime unavailable"
-            );
-        }
-
+        // Offhand interaction is the proven baseline.  Install it before the
+        // optional F-swap extension so future swap work cannot invalidate or
+        // pre-empt the block-placement/right-use hooks.
         const bool rightUseInstalled=
             runtime::RightUseRouter::instance().install(context);
         if(!rightUseInstalled) {
             context.logger().warn(
                 "Levi Offhand: Minecraft 1.26.51.1 right-use routing unavailable"
+            );
+        }
+
+        const bool swapRuntimeInstalled =
+            runtime::OffhandSwapRuntime::instance().install(context);
+        if(!swapRuntimeInstalled) {
+            context.logger().warn(
+                "Levi Offhand: native F-style swap runtime unavailable"
             );
         }
 
