@@ -1,5 +1,6 @@
 #include "render/OffhandBlockRenderPatch.hpp"
 #include "render/NativeAttachmentFix.hpp"
+#include "runtime/OffhandPlacementAnimation.hpp"
 #include <android/log.h>
 #include <array>
 #include <atomic>
@@ -5281,9 +5282,11 @@ namespace levioffhand::render {
         ) {
 
             return
-                original(
-                    transforms,
-                    type
+                placementAnimated(
+                    original(
+                        transforms,
+                        type
+                    )
                 );
         }
 
@@ -5305,6 +5308,72 @@ namespace levioffhand::render {
                 )
             );
 
+        // Visual-only first-person placement motion.  It is intentionally
+        // applied after Minecraft/Levi chooses the normal block transform, so
+        // storage, right-use routing and every block-specific calibration stay
+        // untouched.
+        const auto placementAnimated=
+            [&](Matrix64 matrix) noexcept -> Matrix64 {
+
+                if(block==nullptr) {
+                    return matrix;
+                }
+
+                const float progress=
+                    runtime::OffhandPlacementAnimation::
+                        instance().progress();
+
+                if(
+                    progress<=0.0f
+                    ||
+                    progress>=1.0f
+                ) {
+                    return matrix;
+                }
+
+                // One short placement impulse: lower/inward/forward at the
+                // midpoint, then return exactly to the native transform.
+                const float wave=
+                    std::sin(
+                        kPi*progress
+                    );
+
+                const float impulse=
+                    wave*wave;
+
+                matrix.value[12]+=
+                    0.08f*impulse;
+
+                matrix.value[13]-=
+                    0.18f*impulse;
+
+                matrix.value[14]+=
+                    0.12f*impulse;
+
+                if(
+                    instance->
+                        mMatrixMultiplyTarget
+                ) {
+                    const auto multiply=
+                        reinterpret_cast<
+                            MatrixMultiplyFn
+                        >(
+                            instance->
+                                mMatrixMultiplyTarget
+                        );
+
+                    applyIndependentEuler(
+                        matrix,
+                        multiply,
+                        -20.0f*wave,
+                        9.0f*wave,
+                        7.0f*wave
+                    );
+                }
+
+                return matrix;
+            };
+
         const ToolFamily toolFamily=
             classifyTool(
                 offhandStack()
@@ -5323,9 +5392,11 @@ namespace levioffhand::render {
             ToolFamily::None
         ) {
             return
-                original(
-                    transforms,
-                    type
+                placementAnimated(
+                    original(
+                        transforms,
+                        type
+                    )
                 );
         }
 
@@ -5341,9 +5412,11 @@ namespace levioffhand::render {
         ) {
 
             return
-                original(
-                    transforms,
-                    type
+                placementAnimated(
+                    original(
+                        transforms,
+                        type
+                    )
                 );
         }
 
@@ -5389,7 +5462,7 @@ namespace levioffhand::render {
                 );
             }
 
-            return rightHand;
+            return placementAnimated(rightHand);
         }
 
         bool banner=false;
@@ -5578,7 +5651,7 @@ namespace levioffhand::render {
                 }
             }
 
-            return result;
+            return placementAnimated(result);
         }
 
         if(
@@ -5647,13 +5720,15 @@ namespace levioffhand::render {
                 );
             }
 
-            return copper;
+            return placementAnimated(copper);
         }
 
         return
-            original(
-                transforms,
-                kFirstpersonRightHand
+            placementAnimated(
+                original(
+                    transforms,
+                    kFirstpersonRightHand
+                )
             );
     }
 

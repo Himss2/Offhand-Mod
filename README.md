@@ -35,7 +35,20 @@ Two interaction regressions are now explicitly protected:
 - **OFFHAND food/self-use with Sword/Axe/Pickaxe/empty-like MAINHAND:** the router classifies MAINHAND capability before calling generic `baseUseItem`. If MAINHAND has no real right-click owner, OFFHAND gets the first semantic attempt, so generic ComponentItem success cannot swallow eating/long-use.
 - **Sword MAINHAND + placeable OFFHAND through a pre-hooked use-on-block chain:** the normal path remains detached-snapshot + `hand=1`. Only when `GameMode::useItemOnBlock` was already patched before this mod installs do we add a narrow OFFHAND selected-item scope around that chained call, because third-party/earlier wrappers may re-query `Player::getSelectedItem`.
 
-Swap remains quarantined until these mechanics are verified in-game. Explicit eating and placement animations are intentionally deferred until the underlying actions are stable.
+Swap remains quarantined. Eating/drinking animation is not being pursued because those OFFHAND actions are not currently usable. The current visual phase is limited to **first-person OFFHAND block-placement animation**: a 220 ms visual-only matrix impulse is triggered after an accepted native OFFHAND use-on result. It does not mutate inventory, selected-item ownership, hand routing, or transactions.
+
+### FPP OFFHAND placement animation
+
+The placement animation is deliberately isolated from action logic:
+
+- trigger source: accepted OFFHAND `GameMode::useItemOnBlock` result;
+- duration: **220 ms**;
+- renderer scope: block item in `FIRSTPERSON_LEFT` only;
+- motion: short inward/down/forward impulse plus a small local X/Y/Z rotation;
+- the transform returns exactly to Minecraft's normal offhand matrix at the end;
+- no animation hook changes storage or placement success/failure.
+
+This phase is visual-only. If placement itself fails, the animation is not considered a functional fix.
 
 **Maintenance rule:** any future feature or bug fix that changes offhand storage, right-use/block placement, selected-item access, swap behavior, or render ownership must update both this README and the regression document in the same change.
 

@@ -2,6 +2,7 @@
 
 #include "runtime/ActionHandContext.hpp"
 #include "runtime/HandActionRouterCore.hpp"
+#include "runtime/OffhandPlacementAnimation.hpp"
 
 #include <android/log.h>
 
@@ -1011,6 +1012,10 @@ std::uint32_t RightUseRouter::useItemOnBlockDetour(
     }
 
     if ((offResult & 1u) != 0u) {
+        // Visual-only: do not alter storage/routing here.  The renderer reads
+        // this short impulse and animates the currently rendered OFFHAND block.
+        OffhandPlacementAnimation::instance().trigger();
+
         bool expected = false;
         if (instance->mLoggedBlockUse.compare_exchange_strong(
                 expected, true, std::memory_order_relaxed

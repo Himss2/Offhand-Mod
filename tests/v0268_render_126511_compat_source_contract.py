@@ -10,7 +10,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 
 FROZEN_HEAD_BLOBS = {
-    "src/render/OffhandBlockRenderPatch.cpp": "588113539e731f6de92d7055a6cec4e3f302cc1f",
+    "src/render/OffhandBlockRenderPatch.cpp": "a5dadd550c37483449d7673fc1dca52dd7ff9d08",
     "src/render/NativeAttachmentFix.hpp": "a5cf88b8cde4bd602be038c657d4af19917b6c37",
     "src/render/OffhandBlockRenderPatch.hpp": "ea45606173d0eed19b3e86bc93b77e91abd8b2fc",
 }
@@ -129,6 +129,23 @@ def main() -> int:
         for token in REQUIRED_CPP_TARGETS:
             if token not in generated_cpp:
                 raise AssertionError(f"generated 1.26.51.1 renderer missing {token}")
+
+        for token in (
+            'runtime/OffhandPlacementAnimation.hpp',
+            'placementAnimated',
+            'OffhandPlacementAnimation::',
+            'instance().progress()',
+            '0.08f*impulse',
+            '0.18f*impulse',
+            '0.12f*impulse',
+            '-20.0f*wave',
+            '9.0f*wave',
+            '7.0f*wave',
+        ):
+            if token not in generated_cpp:
+                raise AssertionError(
+                    f"generated renderer missing placement-animation marker {token!r}"
+                )
 
         # Do not accept the audit comment as proof that runtime constants were
         # translated.  Check the actual assignment after removing whitespace.

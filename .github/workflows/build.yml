@@ -79,6 +79,8 @@ jobs:
             manifest.json \
             scripts/build.sh \
             src/LeviOffhandMod.cpp \
+            src/render/OffhandBlockRenderPatch.cpp \
+            src/runtime/OffhandPlacementAnimation.hpp \
             src/runtime/HandActionPolicy.hpp \
             src/runtime/HandActionRouterCore.hpp \
             src/runtime/ActionHandContext.hpp \
@@ -114,6 +116,8 @@ jobs:
           grep -q 'HandActionRouter.cpp' CMakeLists.txt
           grep -q 'NativeSemanticBridge.cpp' CMakeLists.txt
           grep -q 'RightUseRouter.cpp' CMakeLists.txt
+          grep -q 'OffhandPlacementAnimation' src/runtime/RightUseRouter.cpp
+          grep -q 'placementAnimated' src/render/OffhandBlockRenderPatch.cpp
 
       - name: Run v0.2.68 action routing tests
         run: |

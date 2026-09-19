@@ -197,6 +197,7 @@ def main() -> int:
         "ScopedPlayer routedPlayer(player)",
         "if ((offResult & 1u) != 0u)",
         "MAINHAND had no right-click owner; block-use/place handled by OFFHAND first",
+        "OffhandPlacementAnimation::instance().trigger()",
     )
     if "swap" in use_block.lower() or "Packet" in use_block:
         raise AssertionError("block-use must stay on Minecraft native hand routing")
@@ -247,6 +248,14 @@ def main() -> int:
         )
     if "upperUseDetour" in combined or "mUpperUseHook" in combined:
         raise AssertionError("broad upper-use replay must not be installed")
+
+    accepted_pos = use_block.index("if ((offResult & 1u) != 0u)")
+    trigger_pos = use_block.index("OffhandPlacementAnimation::instance().trigger()")
+    accepted_return_pos = use_block.index("return offResult;", accepted_pos)
+    if not (accepted_pos < trigger_pos < accepted_return_pos):
+        raise AssertionError(
+            "placement animation must trigger only inside accepted OFFHAND block-use"
+        )
 
     pre_offhand = use_block[:first_off_assignment]
     if "const std::uint32_t mainResult = original(" in pre_offhand:

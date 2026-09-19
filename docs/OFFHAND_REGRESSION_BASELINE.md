@@ -31,7 +31,7 @@ Before swap is reintroduced, the following two behaviors are mandatory:
 1. **OFFHAND food/self-use:** when MAINHAND has no concrete native right-click owner (including ordinary Sword/Axe/Pickaxe paths), do not execute generic MAINHAND `baseUseItem` first. Attempt OFFHAND with native `hand=1`; if it enters active-use state, pin the OFFHAND long-use session through release. Only if OFFHAND passes may vanilla MAINHAND run once.
 2. **Pre-hooked block-use compatibility:** if `GameMode::useItemOnBlock` was already patched before RightUseRouter installs, keep the detached OFFHAND snapshot and `hand=1`, but scope nested `Player::getSelectedItem` lookups to OFFHAND only for that chained call. If the entry point was clean, do not spoof selectedItem; use the proven snapshot-only path.
 
-Do not add explicit eating or placement animation hooks until both mechanics above pass in-game. Animation must be layered on top of working native actions, not used to mask a failed transaction.
+A visual-only FPP block-placement animation is allowed during this verification phase, but it must remain isolated from storage and action decisions. Eating/drinking animation remains out of scope. The placement animation may trigger only after an accepted native OFFHAND use-on result and must never be treated as proof that the underlying transaction succeeded.
 
 ## Block placement / right-use invariants
 
@@ -62,6 +62,31 @@ classify MAINHAND ownership
       handled -> return OFFHAND result
       PASS    -> vanilla MAINHAND fallback once
 ```
+
+## FPP placement-animation invariant
+
+The current animation layer is intentionally narrow:
+
+- state lives in `runtime/OffhandPlacementAnimation.hpp`;
+- `RightUseRouter` may only call `trigger()` after `(offResult & 1u) != 0`;
+- duration is 220 ms and timing uses `steady_clock`;
+- renderer applies motion only while an OFFHAND block is rendered in `FIRSTPERSON_LEFT`;
+- animation changes the render matrix only; it must not write ItemStack/storage state;
+- repeated placement restarts the short visual impulse;
+- swap remains completely quarantined.
+
+Current initial calibration at the animation midpoint:
+
+```text
+translation X +0.08
+translation Y -0.18
+translation Z +0.12
+rotation X    -20 deg
+rotation Y     +9 deg
+rotation Z     +7 deg
+```
+
+These numbers are visual calibration values and may be tuned after device testing without changing action/storage semantics.
 
 ## Storage / slot-removal invariant
 
