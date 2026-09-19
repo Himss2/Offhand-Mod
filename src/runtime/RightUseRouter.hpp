@@ -67,7 +67,6 @@ private:
     std::atomic_bool mFeatureEnabled{false};
     std::atomic_bool mLoggedOffhandUse{false};
     std::atomic_bool mLoggedBlockUse{false};
-    std::atomic_bool mLoggedAttackOnlyYield{false};
     std::atomic_bool mLoggedLongUse{false};
 };
 
