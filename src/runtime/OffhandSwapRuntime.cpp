@@ -651,21 +651,23 @@ bool OffhandSwapRuntime::processPendingSwap(
             return false;
         }
 
-        // Do not replace A with B while B still exists in offhand (or vice
-        // versa).  That transient duplicate is observable by Bedrock's
-        // inventory transaction/reconciliation layer and is what makes the
-        // second swap produce ghosts, duplicates or item loss.
+        // Occupied <-> occupied must never overwrite either live storage
+        // directly.  Clear BOTH storages first, then refill them from detached
+        // snapshots.  This keeps the successful no-duplicate swap while also
+        // resetting the native offhand slot state before a different stack is
+        // installed there.  Without the explicit OFFHAND clear, the new stack
+        // could inherit stale slot/transaction state and become impossible to
+        // remove through the normal inventory UI.
         //
-        // Route through the game's native EMPTY_ITEM instead:
         //   MAIN=A, OFF=B
         //   MAIN=empty, OFF=B
+        //   MAIN=empty, OFF=empty
         //   MAIN=empty, OFF=A
         //   MAIN=B, OFF=A
         //
-        // Reusing the same slot twice also lets the native transaction layer
-        // coalesce MAIN A->empty->B while no frame ever contains two copies
-        // of A or B.
+        // The detached snapshots stay alive until all mutations finish.
         mSetSelectedItem(player, gEmptyItem);
+        mSetItemInHandSlot(player, kOffHand, gEmptyItem);
         mSetItemInHandSlot(player, kOffHand, mainSnapshot.get());
         mSetSelectedItem(player, offSnapshot.get());
     }
@@ -673,7 +675,7 @@ bool OffhandSwapRuntime::processPendingSwap(
     __android_log_print(
         ANDROID_LOG_INFO,
         kLogTag,
-        "[SwapRuntime] swapped selected hotbar <-> OFFHAND without transient duplicates"
+        "[SwapRuntime] swapped selected hotbar <-> OFFHAND via clear-both snapshot exchange"
     );
     return true;
 }
