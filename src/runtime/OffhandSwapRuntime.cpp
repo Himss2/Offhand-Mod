@@ -8,7 +8,10 @@
 #include <cstring>
 #include <dlfcn.h>
 #include <link.h>
+#include <memory>
 #include <sys/prctl.h>
+
+#include <pl/memory/Hook.hpp>
 
 namespace levioffhand::runtime {
 namespace {
@@ -29,6 +32,13 @@ constexpr std::uintptr_t kItemStackDtorRva = 0x85ADF98;
 // Actor::setItemInHandSlot(HandSlot, ItemStack const&).
 // hand=0 dispatches virtual +0x268; hand=1 dispatches virtual +0x278.
 constexpr std::uintptr_t kSetItemInHandSlotRva = 0xF579C50;
+
+// ClientInstance::preFrameTick is the reliable native per-frame pump.
+// IClientInstance vtable slot 26 => 1.26.51.1 RVA 0x9803334.
+// getLocalPlayer() is vtable slot 32 => object-vptr offset +0x100.
+constexpr std::uintptr_t kClientPreFrameTickRva = 0x9803334;
+constexpr std::uintptr_t kSelectedItemRva = 0xF9F7824;
+constexpr std::size_t kClientGetLocalPlayerVtableOffset = 0x100;
 
 constexpr std::size_t kItemStackStorageSize = 0x98;
 
@@ -55,6 +65,14 @@ constexpr std::array<std::uint8_t, 28> kItemStackDtorFingerprint{
 constexpr std::array<std::uint8_t, 16> kSetItemInHandSlotFingerprint{
     0x28, 0x1C, 0x00, 0x72, 0x00, 0x01, 0x00, 0x54,
     0x1F, 0x05, 0x00, 0x71, 0x61, 0x01, 0x00, 0x54,
+};
+constexpr std::array<std::uint8_t, 16> kClientPreFrameTickFingerprint{
+    0xFF, 0xC3, 0x00, 0xD1, 0xFD, 0x7B, 0x01, 0xA9,
+    0xF4, 0x4F, 0x02, 0xA9, 0xFD, 0x43, 0x00, 0x91,
+};
+constexpr std::array<std::uint8_t, 16> kSelectedItemFingerprint{
+    0x08, 0xB8, 0x42, 0xF9, 0x09, 0xC1, 0x42, 0x39,
+    0x89, 0x00, 0x00, 0x34, 0x60, 0xD6, 0x01, 0xF0,
 };
 
 struct ModuleSearchState {
@@ -117,22 +135,76 @@ template <std::size_t N>
     ) == 0 ? target : 0;
 }
 
-[[nodiscard]] bool validObject(const void* object) noexcept {
-    if (object == nullptr) {
-        return false;
+using ClientPreFrameTickFn = void (*)(void*);
+using GetSelectedItemFn = const void* (*)(const void*);
+using GetLocalPlayerFn = void* (*)(const void*);
+
+std::unique_ptr<pl::memory::HookHandle> gClientPreFrameTickHook;
+void* gClientPreFrameTickOriginal = nullptr;
+GetSelectedItemFn gGetSelectedItem = nullptr;
+
+[[nodiscard]] void* localPlayerFromClient(void* client) noexcept {
+    if (client == nullptr) {
+        return nullptr;
     }
 
     const void* vtable = nullptr;
-    std::memcpy(&vtable, object, sizeof(vtable));
-    return belongsToMinecraft(reinterpret_cast<std::uintptr_t>(vtable));
+    std::memcpy(&vtable, client, sizeof(vtable));
+    if (!belongsToMinecraft(reinterpret_cast<std::uintptr_t>(vtable))) {
+        return nullptr;
+    }
+
+    GetLocalPlayerFn getter = nullptr;
+    std::memcpy(
+        &getter,
+        static_cast<const std::byte*>(vtable) +
+            kClientGetLocalPlayerVtableOffset,
+        sizeof(getter)
+    );
+    if (
+        getter == nullptr ||
+        !belongsToMinecraft(reinterpret_cast<std::uintptr_t>(getter))
+    ) {
+        return nullptr;
+    }
+
+    return getter(client);
 }
 
-[[nodiscard]] bool isMinecraftMainThread() noexcept {
-    char name[16]{};
-    if (prctl(PR_GET_NAME, name, 0, 0, 0) != 0) {
-        return false;
+void clientPreFrameTickDetour(void* client) noexcept {
+    const auto original =
+        reinterpret_cast<ClientPreFrameTickFn>(gClientPreFrameTickOriginal);
+
+    // Preserve Minecraft first.  Then execute the queued hand swap at a stable
+    // per-frame point on the same native client thread.
+    if (original != nullptr) {
+        original(client);
     }
-    return std::strcmp(name, kMinecraftMainThreadName) == 0;
+
+    auto& swap = OffhandSwapRuntime::instance();
+    if (!swap.hasPendingSwap()) {
+        return;
+    }
+
+    void* player = localPlayerFromClient(client);
+    if (player == nullptr || gGetSelectedItem == nullptr) {
+        return;
+    }
+
+    __android_log_print(
+        ANDROID_LOG_INFO,
+        kLogTag,
+        "[SwapRuntime] ClientInstance::preFrameTick pumping queued F swap"
+    );
+
+    // RightUseRouter hooks this exact getter when available. Calling it here
+    // therefore also gives the existing detour a chance to drain the request.
+    // If that subsystem is unavailable, process the still-pending request
+    // directly with the returned native selected stack.
+    const void* selected = gGetSelectedItem(player);
+    if (swap.hasPendingSwap()) {
+        (void)swap.processPendingSwap(player, selected);
+    }
 }
 
 class ScopedSwapFlag final {
@@ -208,10 +280,17 @@ bool OffhandSwapRuntime::install(pl::mod::ModContext& context) noexcept {
     const auto setHand = resolveExactTarget(
         kSetItemInHandSlotRva, kSetItemInHandSlotFingerprint
     );
+    const auto clientPreFrameTick = resolveExactTarget(
+        kClientPreFrameTickRva, kClientPreFrameTickFingerprint
+    );
+    const auto selectedItem = resolveExactTarget(
+        kSelectedItemRva, kSelectedItemFingerprint
+    );
 
     if (
         offhand == 0 || isNull == 0 ||
-        copyCtor == 0 || dtor == 0 || setHand == 0
+        copyCtor == 0 || dtor == 0 || setHand == 0 ||
+        clientPreFrameTick == 0 || selectedItem == 0
     ) {
         context.logger().error(
             "Swap runtime: Minecraft 1.26.51.1 native target validation failed"
@@ -226,6 +305,34 @@ bool OffhandSwapRuntime::install(pl::mod::ModContext& context) noexcept {
     mItemStackDtor = reinterpret_cast<ItemStackDtorFn>(dtor);
     mSetItemInHandSlot =
         reinterpret_cast<SetItemInHandSlotFn>(setHand);
+    gGetSelectedItem =
+        reinterpret_cast<GetSelectedItemFn>(selectedItem);
+
+    gClientPreFrameTickOriginal = nullptr;
+    gClientPreFrameTickHook = std::make_unique<pl::memory::HookHandle>(
+        reinterpret_cast<void*>(clientPreFrameTick),
+        reinterpret_cast<void*>(&clientPreFrameTickDetour),
+        &gClientPreFrameTickOriginal,
+        pl::memory::HookPriority::Normal
+    );
+    if (
+        !gClientPreFrameTickHook ||
+        !gClientPreFrameTickHook->installed() ||
+        gClientPreFrameTickOriginal == nullptr
+    ) {
+        context.logger().error(
+            "Swap runtime: ClientInstance::preFrameTick hook failed"
+        );
+        gClientPreFrameTickHook.reset();
+        gClientPreFrameTickOriginal = nullptr;
+        gGetSelectedItem = nullptr;
+        mGetOffhandSlot = nullptr;
+        mStackIsNull = nullptr;
+        mItemStackCopyCtor = nullptr;
+        mItemStackDtor = nullptr;
+        mSetItemInHandSlot = nullptr;
+        return false;
+    }
 
     mSwapRequested.store(false, std::memory_order_release);
     mSwapInProgress.store(false, std::memory_order_release);
@@ -233,7 +340,7 @@ bool OffhandSwapRuntime::install(pl::mod::ModContext& context) noexcept {
     mInstalled.store(true, std::memory_order_release);
 
     context.logger().info(
-        "Swap runtime active: F requests are drained on MINECRAFT MAIN"
+        "Swap runtime active: F requests pumped by ClientInstance::preFrameTick"
     );
     return true;
 }
@@ -243,6 +350,13 @@ void OffhandSwapRuntime::uninstall(pl::mod::ModContext&) noexcept {
     mFeatureEnabled.store(false, std::memory_order_release);
     mSwapRequested.store(false, std::memory_order_release);
     mSwapInProgress.store(false, std::memory_order_release);
+
+    if (gClientPreFrameTickHook) {
+        gClientPreFrameTickHook->reset();
+        gClientPreFrameTickHook.reset();
+    }
+    gClientPreFrameTickOriginal = nullptr;
+    gGetSelectedItem = nullptr;
 
     mGetOffhandSlot = nullptr;
     mStackIsNull = nullptr;
@@ -282,8 +396,8 @@ void OffhandSwapRuntime::requestSwap() noexcept {
     }
 
     // The external HUD button is dispatched from Android/Java's UI thread.
-    // Never invoke Minecraft ItemStack constructors/setters here: the 1.26.51.1
-    // ItemRegistry TLS/context is not valid on this thread.
+    // Never invoke Minecraft ItemStack constructors/setters here.  The native
+    // ClientInstance::preFrameTick hook is the reliable game-thread pump.
     mSwapRequested.store(true, std::memory_order_release);
 
     __android_log_print(
@@ -307,9 +421,8 @@ bool OffhandSwapRuntime::processPendingSwap(
         return false;
     }
 
-    if (!validObject(player) || selectedStack == nullptr) {
-        // Keep the request queued; a later verified main-thread getter can
-        // provide a usable LocalPlayer/selected stack.
+    if (player == nullptr || selectedStack == nullptr) {
+        // Keep the request queued until a native client frame exposes both.
         return false;
     }
 

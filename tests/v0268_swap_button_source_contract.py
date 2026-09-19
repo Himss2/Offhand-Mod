@@ -24,8 +24,11 @@ for token in (
     "kItemStackDtorRva = 0x85ADF98",
     "kSetItemInHandSlotRva = 0xF579C50",
     "kItemStackStorageSize = 0x98",
-    'kMinecraftMainThreadName[] = "MINECRAFT MAIN"',
-    "prctl(PR_GET_NAME",
+    "kClientPreFrameTickRva = 0x9803334",
+    "kSelectedItemRva = 0xF9F7824",
+    "kClientGetLocalPlayerVtableOffset = 0x100",
+    "clientPreFrameTickDetour",
+    "ClientInstance::preFrameTick pumping queued F swap",
     "requestSwap()",
     "hasPendingSwap()",
     "processPendingSwap(",
@@ -78,12 +81,21 @@ for forbidden in (
 for token in (
     "OffhandSwapRuntime::instance()",
     "swapRuntime.hasPendingSwap()",
-    "swapRuntime.processPendingSwap(",
-    "const void* selectedForSwap = original(player)",
 ):
     if token not in router:
         raise AssertionError(
-            f"RightUseRouter must drain queued swap from native selected-item path: {token}"
+            f"RightUseRouter swap integration missing: {token}"
+        )
+
+for token in (
+    "gClientPreFrameTickHook",
+    "gGetSelectedItem",
+    "localPlayerFromClient",
+    "swap.processPendingSwap(player, selected)",
+):
+    if token not in runtime:
+        raise AssertionError(
+            f"OffhandSwapRuntime frame pump missing: {token}"
         )
 
 if "observePlayer(player)" in router:
@@ -97,4 +109,4 @@ if "OffhandSwapRuntime::instance().swapNow()" in mod:
 if "src/runtime/OffhandSwapRuntime.cpp" not in cmake:
     raise AssertionError("CMakeLists.txt missing OffhandSwapRuntime.cpp")
 
-print("v0.2.68 swap button game-thread dispatch contract passed")
+print("v0.2.68 swap button ClientInstance frame-pump contract passed")
