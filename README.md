@@ -22,6 +22,12 @@ The restored block-placement rules are:
 
 The exact regression contract is documented in `docs/OFFHAND_REGRESSION_BASELINE.md`.
 
+### 1.26.51.1 runtime hook compatibility
+
+The on-disk `libminecraftpe.so` supplied for 1.26.51.1 was rechecked against every RightUseRouter fingerprint and the bytes match the documented RVAs. If a hookable entry-point prologue is already modified **in memory**, RightUseRouter now keeps an exact fingerprint guard on the non-hook helper functions and then chains the live known-RVA target for `Player::getSelectedItem`, `GameMode::useItemOnBlock`, `GameMode::baseUseItem`, and `GameMode::releaseUsingItem`.
+
+This changes only installation/compatibility. The pre-swap block-placement and right-use decision logic remains unchanged.
+
 **Maintenance rule:** any future feature or bug fix that changes offhand storage, right-use/block placement, selected-item access, swap behavior, or render ownership must update both this README and the regression document in the same change.
 
 ## v0.2.63 — native-only Bow/Trident renderer

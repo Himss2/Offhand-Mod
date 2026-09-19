@@ -230,6 +230,47 @@ template <std::size_t N>
     ) == 0 ? target : 0;
 }
 
+[[nodiscard]] std::uintptr_t resolveKnownBuildTarget(
+    std::uintptr_t rva
+) noexcept {
+    const auto base = minecraftModuleBase();
+    if (base == 0) {
+        return 0;
+    }
+
+    const auto target = base + rva;
+    return belongsToMinecraft(target) ? target : 0;
+}
+
+template <std::size_t N>
+[[nodiscard]] std::uintptr_t resolveHookTarget(
+    const char* name,
+    std::uintptr_t rva,
+    const std::array<std::uint8_t, N>& fingerprint
+) noexcept {
+    const auto exact = resolveExactTarget(rva, fingerprint);
+    if (exact != 0) {
+        return exact;
+    }
+
+    // The stable helper fingerprints are validated before this function is
+    // used, so a mismatch here means the known 1.26.51.1 entry-point prologue
+    // has already been modified in memory (for example by another hook).
+    // HookHandle is allowed to chain that live entry point instead of
+    // disabling the entire right-use subsystem.
+    const auto live = resolveKnownBuildTarget(rva);
+    if (live != 0) {
+        __android_log_print(
+            ANDROID_LOG_WARN,
+            kLogTag,
+            "[RightUseRouter] %s prologue already modified; chaining live 1.26.51.1 target RVA=0x%llX",
+            name,
+            static_cast<unsigned long long>(rva)
+        );
+    }
+    return live;
+}
+
 [[nodiscard]] bool validObject(const void* object) noexcept {
     if (object == nullptr) {
         return false;
@@ -483,9 +524,9 @@ bool RightUseRouter::install(pl::mod::ModContext& context) noexcept {
         return true;
     }
 
-    const auto selectedTarget = resolveExactTarget(
-        kSelectedItemRva, kSelectedItemFingerprint
-    );
+    // Validate non-hook helper functions first.  These bytes are not supposed
+    // to be patched by the right-use subsystem, so they are the exact-build
+    // guard for Minecraft 1.26.51.1.
     const auto offhandTarget = resolveExactTarget(
         kOffhandSlotRva, kOffhandSlotFingerprint
     );
@@ -507,24 +548,60 @@ bool RightUseRouter::install(pl::mod::ModContext& context) noexcept {
     const auto dtorTarget = resolveExactTarget(
         kItemStackDtorRva, kItemStackDtorFingerprint
     );
-    const auto blockUseTarget = resolveExactTarget(
-        kUseItemOnBlockRva, kUseItemOnBlockFingerprint
+
+    if (
+        offhandTarget == 0 || nullTarget == 0 ||
+        usingTarget == 0 || inUseTarget == 0 || differsTarget == 0 ||
+        copyCtorTarget == 0 || dtorTarget == 0
+    ) {
+        __android_log_print(
+            ANDROID_LOG_WARN,
+            kLogTag,
+            "[RightUseRouter] stable guard failed offhand=%d null=%d using=%d inUse=%d differs=%d copy=%d dtor=%d",
+            offhandTarget != 0 ? 1 : 0,
+            nullTarget != 0 ? 1 : 0,
+            usingTarget != 0 ? 1 : 0,
+            inUseTarget != 0 ? 1 : 0,
+            differsTarget != 0 ? 1 : 0,
+            copyCtorTarget != 0 ? 1 : 0,
+            dtorTarget != 0 ? 1 : 0
+        );
+        context.logger().warn(
+            "[RightUseRouter] Minecraft 1.26.51.1 stable fingerprint validation failed; right-use disabled"
+        );
+        return false;
+    }
+
+    // Only after the exact stable guard passes do we resolve hookable entry
+    // points. Their prologues may already be changed in memory by a hook, so
+    // use the known RVA and let Levi's HookHandle chain the live target.
+    const auto selectedTarget = resolveHookTarget(
+        "Player::getSelectedItem",
+        kSelectedItemRva,
+        kSelectedItemFingerprint
     );
-    const auto useTarget = resolveExactTarget(
-        kBaseUseItemRva, kBaseUseItemFingerprint
+    const auto blockUseTarget = resolveHookTarget(
+        "GameMode::useItemOnBlock",
+        kUseItemOnBlockRva,
+        kUseItemOnBlockFingerprint
     );
-    const auto releaseTarget = resolveExactTarget(
-        kReleaseUsingItemRva, kReleaseUsingItemFingerprint
+    const auto useTarget = resolveHookTarget(
+        "GameMode::baseUseItem",
+        kBaseUseItemRva,
+        kBaseUseItemFingerprint
+    );
+    const auto releaseTarget = resolveHookTarget(
+        "GameMode::releaseUsingItem",
+        kReleaseUsingItemRva,
+        kReleaseUsingItemFingerprint
     );
 
     if (
-        selectedTarget == 0 || offhandTarget == 0 || nullTarget == 0 ||
-        usingTarget == 0 || inUseTarget == 0 || differsTarget == 0 ||
-        copyCtorTarget == 0 || dtorTarget == 0 ||
-        blockUseTarget == 0 || useTarget == 0 || releaseTarget == 0
+        selectedTarget == 0 || blockUseTarget == 0 ||
+        useTarget == 0 || releaseTarget == 0
     ) {
         context.logger().warn(
-            "[RightUseRouter] Minecraft 1.26.51.1 fingerprint validation failed; right-use disabled"
+            "[RightUseRouter] Minecraft 1.26.51.1 live hook target resolution failed; right-use disabled"
         );
         return false;
     }

@@ -116,6 +116,10 @@ def main() -> int:
         "kMainHand = 0",
         "kOffHand = 1",
         "resolveExactTarget(",
+        "resolveKnownBuildTarget(",
+        "resolveHookTarget(",
+        "stable guard failed offhand=%d null=%d using=%d inUse=%d differs=%d copy=%d dtor=%d",
+        "prologue already modified; chaining live 1.26.51.1 target",
         "std::memcmp(",
     )
 
@@ -232,6 +236,28 @@ def main() -> int:
         "stacksMatch(active, offStack)",
         "RightUseRouter::releaseUsingItemDetour",
     )
+
+    install = function_body(router, "bool RightUseRouter::install(")
+    require(
+        install,
+        "offhandTarget = resolveExactTarget(",
+        "nullTarget = resolveExactTarget(",
+        "usingTarget = resolveExactTarget(",
+        "inUseTarget = resolveExactTarget(",
+        "differsTarget = resolveExactTarget(",
+        "copyCtorTarget = resolveExactTarget(",
+        "dtorTarget = resolveExactTarget(",
+        'resolveHookTarget(\n        "Player::getSelectedItem"',
+        'resolveHookTarget(\n        "GameMode::useItemOnBlock"',
+        'resolveHookTarget(\n        "GameMode::baseUseItem"',
+        'resolveHookTarget(\n        "GameMode::releaseUsingItem"',
+    )
+    stable_guard_pos = install.index("stable guard failed")
+    hook_target_pos = install.index('resolveHookTarget(\n        "Player::getSelectedItem"')
+    if stable_guard_pos > hook_target_pos:
+        raise AssertionError(
+            "exact stable fingerprint guard must run before live hook-target fallback"
+        )
 
     require(
         levi,

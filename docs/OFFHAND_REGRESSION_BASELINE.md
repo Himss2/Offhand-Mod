@@ -11,6 +11,19 @@ This commit is the recovery authority for `RightUseRouter`, its header, the acti
 
 Do not reconstruct these mechanisms from memory or from a later swap commit.
 
+## Runtime fingerprint / hook-chain invariant
+
+The supplied Minecraft 1.26.51.1 binary has been rechecked directly: the documented RVAs and fingerprints for RightUseRouter match the file on disk.
+
+At runtime, another already-installed hook may change the first instructions of a function before RightUseRouter installs. Therefore:
+
+- non-hook helper targets (offhand getter, stack-null check, active-use helpers, stack comparator, ItemStack copy constructor/destructor) must still pass exact fingerprint validation;
+- those stable helpers form the exact 1.26.51.1 build guard;
+- only after that guard passes may the four hookable entry points use their known RVA when their live prologue differs;
+- hookable targets are `Player::getSelectedItem`, `GameMode::useItemOnBlock`, `GameMode::baseUseItem`, and `GameMode::releaseUsingItem`;
+- a live-prologue mismatch must be logged explicitly;
+- this compatibility layer must not change the action-routing or block-placement algorithms below.
+
 ## Block placement / right-use invariants
 
 The known-good logic first decides whether MAINHAND genuinely owns right-click **before** invoking the generic MAINHAND use-on wrapper.
