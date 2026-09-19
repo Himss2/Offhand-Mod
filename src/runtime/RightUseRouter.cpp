@@ -45,9 +45,28 @@ constexpr std::uintptr_t kStackDiffersForUseRva = 0xFFA5B04;
 constexpr std::uintptr_t kItemStackCopyCtorRva = 0xFF9D748;
 constexpr std::uintptr_t kItemStackDtorRva = 0x85ADF98;
 
+// 1.26.51.1 Item virtual defaults used only as capability identities.
+// MAINHAND ownership is based on concrete native action implementations, not
+// broad data-driven ComponentItem booleans.  Relocated 1.26.51.1 primary
+// vtables prove Item::use=+0x290, requiresInteract=+0x1A8 and _useOn=+0x410.
+// Generic Item/ComponentItem entries do not claim the click; specialized
+// overrides (FishingRod, Shears, etc.) do.
+constexpr std::uintptr_t kBaseItemUseRva = 0xFF8429C;
+constexpr std::uintptr_t kComponentItemUseRva = 0xFDA8274;
+constexpr std::uintptr_t kBaseItemRequiresInteractRva = 0xFF87F28;
+constexpr std::uintptr_t kComponentItemRequiresInteractRva = 0xFDAA1FC;
+constexpr std::uintptr_t kBaseItemUseOnRva = 0xFF84B84;
+constexpr std::uintptr_t kComponentItemUseOnRva = 0xFDA8A20;
+
 constexpr std::size_t kGameModePlayerOffset = sizeof(void*);
 constexpr std::size_t kItemWeakPtrOffset = 0x08;
 constexpr std::size_t kItemGetMaxUseDurationVtableOffset = 0x30;
+constexpr std::size_t kItemGetAttackDamageVtableOffset = 0x130;
+constexpr std::size_t kItemIsUseableVtableOffset = 0xB0;
+constexpr std::size_t kItemRequiresInteractVtableOffset = 0x1A8;
+constexpr std::size_t kItemUseVtableOffset = 0x290;
+constexpr std::size_t kItemCanUseAsAttackVtableOffset = 0x298;
+constexpr std::size_t kItemUseOnVtableOffset = 0x418;
 constexpr std::size_t kItemStackStorageSize = 0x98;
 
 constexpr std::array<std::uint8_t, 16> kUseItemOnBlockFingerprint{
@@ -119,6 +138,8 @@ using StackDiffersForUseFn = bool (*)(const void*, const void*);
 using ItemStackCopyCtorFn = void (*)(void*, const void*);
 using ItemStackDtorFn = void (*)(void*);
 using GetMaxUseDurationFn = int (*)(const void*, const void*);
+using GetAttackDamageFn = int (*)(const void*);
+using ItemBoolFn = bool (*)(const void*);
 
 OffhandItemFn gGetOffhandSlot = nullptr;
 StackIsNullFn gStackIsNull = nullptr;
@@ -237,13 +258,13 @@ template <std::size_t N>
         !gStackDiffersForUse(lhs, rhs);
 }
 
-[[nodiscard]] bool stackHasHoldUse(const void* stack) noexcept {
+[[nodiscard]] const void* itemFromStack(const void* stack) noexcept {
     if (stackIsNull(stack)) {
-        return false;
+        return nullptr;
     }
 
-    // ItemStackBase::mItem is a WeakPtr at +0x08.  1.26.51.1 isNull() itself
-    // follows the same two loads: stack+0x08 -> weak state -> raw Item*.
+    // ItemStackBase::mItem is a WeakPtr at +0x08.  The WeakPtr state begins
+    // with the raw Item* on this exact build.
     const void* weakState = nullptr;
     std::memcpy(
         &weakState,
@@ -251,34 +272,146 @@ template <std::size_t N>
         sizeof(weakState)
     );
     if (weakState == nullptr) {
-        return false;
+        return nullptr;
     }
 
     const void* item = nullptr;
     std::memcpy(&item, weakState, sizeof(item));
+    return validObject(item) ? item : nullptr;
+}
+
+template <typename Fn>
+[[nodiscard]] Fn itemVirtual(
+    const void* item,
+    std::size_t byteOffset
+) noexcept {
     if (!validObject(item)) {
-        return false;
+        return nullptr;
     }
 
     const void* vtable = nullptr;
     std::memcpy(&vtable, item, sizeof(vtable));
-    GetMaxUseDurationFn getMaxUseDuration = nullptr;
+    if (vtable == nullptr) {
+        return nullptr;
+    }
+
+    Fn function = nullptr;
     std::memcpy(
-        &getMaxUseDuration,
-        static_cast<const std::byte*>(vtable) +
-            kItemGetMaxUseDurationVtableOffset,
-        sizeof(getMaxUseDuration)
+        &function,
+        static_cast<const std::byte*>(vtable) + byteOffset,
+        sizeof(function)
     );
     if (
-        getMaxUseDuration == nullptr ||
-        !belongsToMinecraft(
-            reinterpret_cast<std::uintptr_t>(getMaxUseDuration)
-        )
+        function == nullptr ||
+        !belongsToMinecraft(reinterpret_cast<std::uintptr_t>(function))
     ) {
+        return nullptr;
+    }
+    return function;
+}
+
+[[nodiscard]] bool stackClaimsMainhandRightClick(
+    const void* stack,
+    bool* yieldedAttackOnly = nullptr
+) noexcept {
+    if (yieldedAttackOnly != nullptr) {
+        *yieldedAttackOnly = false;
+    }
+
+    const void* item = itemFromStack(stack);
+    if (item == nullptr) {
         return false;
     }
 
-    return getMaxUseDuration(item, stack) > 0;
+    const auto moduleBase = minecraftModuleBase();
+    if (moduleBase == 0) {
+        return false;
+    }
+
+    // First classify concrete native actions by virtual identity.  This must
+    // happen before getMaxUseDuration: ComponentItem can carry non-zero use
+    // duration data even for attack-oriented items such as Swords.
+    const auto use = itemVirtual<void*>(item, kItemUseVtableOffset);
+    const auto requiresInteract = itemVirtual<void*>(
+        item, kItemRequiresInteractVtableOffset
+    );
+    const auto useOn = itemVirtual<void*>(item, kItemUseOnVtableOffset);
+
+    const auto useAddress = reinterpret_cast<std::uintptr_t>(use);
+    const auto requiresAddress =
+        reinterpret_cast<std::uintptr_t>(requiresInteract);
+    const auto useOnAddress = reinterpret_cast<std::uintptr_t>(useOn);
+
+    const bool specializedUse =
+        use != nullptr &&
+        useAddress != moduleBase + kBaseItemUseRva &&
+        useAddress != moduleBase + kComponentItemUseRva;
+
+    const bool specializedRequiresInteract =
+        requiresInteract != nullptr &&
+        requiresAddress != moduleBase + kBaseItemRequiresInteractRva &&
+        requiresAddress != moduleBase + kComponentItemRequiresInteractRva;
+
+    const bool specializedUseOn =
+        useOn != nullptr &&
+        useOnAddress != moduleBase + kBaseItemUseOnRva &&
+        useOnAddress != moduleBase + kComponentItemUseOnRva;
+
+    if (
+        specializedUse ||
+        specializedRequiresInteract ||
+        specializedUseOn
+    ) {
+        return true;
+    }
+
+    // Axe/Pickaxe/Sword baseline: attack-oriented items with no specialized
+    // native right-click action yield the click to OFFHAND.  This uses the
+    // same virtual getAttackDamage path that DiggerItem overrides, so Sword
+    // follows the already-working Axe behavior instead of ComponentItem use
+    // metadata.  Trident/Shears/FishingRod are already returned above by
+    // their specialized right-click virtuals.
+    const auto getAttackDamage = itemVirtual<GetAttackDamageFn>(
+        item, kItemGetAttackDamageVtableOffset
+    );
+    const int attackDamage =
+        getAttackDamage != nullptr ? getAttackDamage(item) : 0;
+    if (attackDamage > 0) {
+        if (yieldedAttackOnly != nullptr) {
+            *yieldedAttackOnly = true;
+        }
+        return false;
+    }
+
+    const auto getMaxUseDuration = itemVirtual<GetMaxUseDurationFn>(
+        item, kItemGetMaxUseDurationVtableOffset
+    );
+    const int maxUseDuration =
+        getMaxUseDuration != nullptr
+        ? getMaxUseDuration(item, stack)
+        : 0;
+
+    if (maxUseDuration <= 0) {
+        return false;
+    }
+
+    // Secondary fallback for attack-oriented items whose native attack
+    // damage reports zero but whose Item ABI still marks them attack-capable.
+    // Specialized right-click actions were already returned above.
+    const auto canUseAsAttack = itemVirtual<ItemBoolFn>(
+        item, kItemCanUseAsAttackVtableOffset
+    );
+    const bool attackOnly =
+        canUseAsAttack != nullptr && canUseAsAttack(item);
+
+    if (attackOnly) {
+        if (yieldedAttackOnly != nullptr) {
+            *yieldedAttackOnly = true;
+        }
+        return false;
+    }
+
+    return true;
 }
 
 class ScopedItemStackSnapshot final {
@@ -464,6 +597,7 @@ bool RightUseRouter::install(pl::mod::ModContext& context) noexcept {
     mFeatureEnabled.store(true, std::memory_order_release);
     mLoggedOffhandUse.store(false, std::memory_order_relaxed);
     mLoggedBlockUse.store(false, std::memory_order_relaxed);
+    mLoggedAttackOnlyYield.store(false, std::memory_order_relaxed);
     mLoggedLongUse.store(false, std::memory_order_relaxed);
     context.logger().info(
         "[RightUseRouter] Minecraft 1.26.51.1 right-use active: MAINHAND first, OFFHAND fallback; left-click remains vanilla mainhand"
@@ -679,27 +813,13 @@ std::uint32_t RightUseRouter::useItemOnBlockDetour(
         );
     }
 
-    // One input, one MAINHAND attempt.  This preserves vanilla priority and
-    // avoids replaying the broad client dispatcher (which also owns inventory
-    // bookkeeping).  Only a PASS result is eligible for an OFFHAND retry.
     ScopedBool reentry(gInsideBlockUse);
-    const std::uint32_t mainResult = original(
-        gameMode,
-        interaction,
-        blockPos,
-        face,
-        hitPos,
-        hand,
-        extra,
-        flag
-    );
-    if ((mainResult & 1u) != 0u) {
-        return mainResult;
-    }
 
     const void* player = playerFromGameMode(gameMode);
     if (player == nullptr || instance->mSelectedItemOriginal == nullptr) {
-        return mainResult;
+        return original(
+            gameMode, interaction, blockPos, face, hitPos, hand, extra, flag
+        );
     }
 
     const auto selectedOriginal = reinterpret_cast<SelectedItemFn>(
@@ -707,31 +827,61 @@ std::uint32_t RightUseRouter::useItemOnBlockDetour(
     );
     const void* mainStack = selectedOriginal(player);
 
-    // Block-hit processing reaches GameMode::useItemOn before the upper input
-    // dispatcher reaches baseUseItem.  A MAINHAND bow/spear/food/shield can
-    // therefore still own this click even though useItemOn returned PASS.
-    // Respect that native hold-use capability and let the upper dispatcher
-    // continue to MAINHAND baseUseItem instead of placing from OFFHAND.
-    if (stackHasHoldUse(mainStack)) {
-        return mainResult;
+    // Decide whether MAINHAND genuinely owns right-click *before* executing
+    // GameMode::useItemOn.  Calling the generic MAINHAND use-on wrapper first
+    // can mutate/prime the client transaction even when a Sword/Pickaxe has no
+    // right-click action; a later OFFHAND placement can then report handled
+    // locally but fail to commit.  Items with a real native right-click
+    // capability keep strict MAINHAND priority.
+    bool yieldedAttackOnly = false;
+    if (stackClaimsMainhandRightClick(mainStack, &yieldedAttackOnly)) {
+        return original(
+            gameMode,
+            interaction,
+            blockPos,
+            face,
+            hitPos,
+            hand,
+            extra,
+            flag
+        );
+    }
+
+    if (yieldedAttackOnly) {
+        bool expected = false;
+        if (instance->mLoggedAttackOnlyYield.compare_exchange_strong(
+                expected, true, std::memory_order_relaxed
+            )) {
+            __android_log_print(
+                ANDROID_LOG_INFO,
+                kLogTag,
+                "[RightUseRouter] attack-only MAINHAND yielded right-click to OFFHAND before use-on"
+            );
+        }
     }
 
     const void* offStack =
         gGetOffhandSlot != nullptr ? gGetOffhandSlot(player) : nullptr;
     if (stackIsNull(offStack)) {
-        return mainResult;
+        return original(
+            gameMode, interaction, blockPos, face, hitPos, hand, extra, flag
+        );
     }
 
-    // The upper dispatcher uses a detached ItemStack snapshot as its
-    // before-state.  Preserve that ownership model for OFFHAND too.  hand=1
-    // still makes Minecraft fetch/mutate the real offhand slot internally,
-    // while this copy remains safe transaction input and is destroyed after
-    // the native call.
+    // Preserve the transaction-safe detached before-state that fixed the
+    // post-placement offhand-slot lock.  hand=1 still makes Minecraft mutate
+    // the real offhand slot internally.
     ScopedItemStackSnapshot offSnapshot(offStack);
     if (offSnapshot.get() == nullptr) {
-        return mainResult;
+        return original(
+            gameMode, interaction, blockPos, face, hitPos, hand, extra, flag
+        );
     }
 
+    // MAINHAND has no native right-click ownership, so OFFHAND gets the first
+    // and only use-on transaction attempt.  If OFFHAND passes, run the untouched
+    // MAINHAND wrapper once as vanilla fallback; never run MAINHAND before
+    // OFFHAND in this branch.
     const std::uint32_t offResult = original(
         gameMode,
         offSnapshot.get(),
@@ -751,15 +901,22 @@ std::uint32_t RightUseRouter::useItemOnBlockDetour(
             __android_log_print(
                 ANDROID_LOG_INFO,
                 kLogTag,
-                "[RightUseRouter] MAINHAND passed; block-use/place handled by OFFHAND (native hand=1)"
+                "[RightUseRouter] MAINHAND had no right-click owner; block-use/place handled by OFFHAND first (native hand=1)"
             );
         }
         return offResult;
     }
 
-    // Both hands passed. Return the original MAINHAND result; never execute
-    // either native transaction a second time.
-    return mainResult;
+    return original(
+        gameMode,
+        interaction,
+        blockPos,
+        face,
+        hitPos,
+        hand,
+        extra,
+        flag
+    );
 }
 
 const void* RightUseRouter::selectedItemDetour(const void* player) noexcept {

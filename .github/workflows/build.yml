@@ -18,47 +18,6 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Snapshot current v0.2.68 action subsystem
-        run: |
-          tar -czf /tmp/v0268-action-subsystem.tar.gz \
-            CMakeLists.txt \
-            manifest.json \
-            scripts/build.sh \
-            src/LeviOffhandMod.cpp \
-            src/ui/SwapButton.hpp \
-            src/ui/SwapButton.cpp \
-            src/runtime/OffhandSwapRuntime.hpp \
-            src/runtime/OffhandSwapRuntime.cpp \
-            src/runtime/HandActionPolicy.hpp \
-            src/runtime/HandActionRouterCore.hpp \
-            src/runtime/ActionHandContext.hpp \
-            src/runtime/ActionHandContext.cpp \
-            src/runtime/NativeCapabilityProbe.hpp \
-            src/runtime/NativeCapabilityProbe.cpp \
-            src/runtime/NativeOffhandPolicy.hpp \
-            src/runtime/NativeOffhandPolicy.cpp \
-            src/runtime/AutoInsertRouting.hpp \
-            src/runtime/AutoInsertRouting.cpp \
-            src/runtime/AutoInsertRoutingCore.hpp \
-            src/runtime/HandActionRouter.hpp \
-            src/runtime/HandActionRouter.cpp \
-            src/runtime/NativeSemanticBridge.hpp \
-            src/runtime/NativeSemanticBridge.cpp \
-            src/runtime/RightUseRouter.hpp \
-            src/runtime/RightUseRouter.cpp \
-            tests/v0262_native_routing_source_contract.py \
-            tests/v0262_auto_insert_routing_test.cpp \
-            tests/v0268_swap_button_source_contract.py \
-            tests/v0268_action_routing_source_contract.py \
-            tests/v0268_action_routing_binary_contract.py \
-            tests/v0268_hand_action_policy_test.cpp \
-            tests/v0268_action_hand_context_test.cpp \
-            tests/v0268_hand_action_router_core_test.cpp \
-            tests/v0268_semantic_bridge_source_contract.py \
-            tests/v0268_semantic_bridge_binary_contract.py \
-            tests/v0268_render_126511_compat_source_contract.py
-          test -s /tmp/v0268-action-subsystem.tar.gz
-
       - name: Materialize v0.2.65 source
         run: |
           cat \
@@ -113,14 +72,41 @@ jobs:
           test "$(git hash-object src/render/OffhandBlockRenderPatch.cpp)" = "3a3ea8cde3a0ae3df2376fff3c1bd0a9aa3c43be"
           test "$(git hash-object src/render/NativeAttachmentFix.hpp)" = "deb12b1f33aa36e91d143d996ea92c415604f128"
 
-      - name: Restore v0.2.68 action subsystem snapshot
+      - name: Restore v0.2.68 action subsystem from main
         run: |
-          tar -xzf /tmp/v0268-action-subsystem.tar.gz
+          git checkout HEAD -- \
+            CMakeLists.txt \
+            manifest.json \
+            scripts/build.sh \
+            src/LeviOffhandMod.cpp \
+            src/runtime/HandActionPolicy.hpp \
+            src/runtime/HandActionRouterCore.hpp \
+            src/runtime/ActionHandContext.hpp \
+            src/runtime/ActionHandContext.cpp \
+            src/runtime/NativeCapabilityProbe.hpp \
+            src/runtime/NativeCapabilityProbe.cpp \
+            src/runtime/NativeOffhandPolicy.hpp \
+            src/runtime/NativeOffhandPolicy.cpp \
+            src/runtime/AutoInsertRouting.hpp \
+            src/runtime/AutoInsertRouting.cpp \
+            src/runtime/AutoInsertRoutingCore.hpp \
+            src/runtime/HandActionRouter.hpp \
+            src/runtime/HandActionRouter.cpp \
+            src/runtime/NativeSemanticBridge.hpp \
+            src/runtime/NativeSemanticBridge.cpp \
+            src/runtime/RightUseRouter.hpp \
+            src/runtime/RightUseRouter.cpp \
+            tests/v0262_native_routing_source_contract.py \
+            tests/v0262_auto_insert_routing_test.cpp \
+            tests/v0268_action_routing_source_contract.py \
+            tests/v0268_action_routing_binary_contract.py \
+            tests/v0268_hand_action_policy_test.cpp \
+            tests/v0268_action_hand_context_test.cpp \
+            tests/v0268_hand_action_router_core_test.cpp \
+            tests/v0268_semantic_bridge_source_contract.py \
+            tests/v0268_semantic_bridge_binary_contract.py \
+            tests/v0268_render_126511_compat_source_contract.py
           grep -q '"version": "0.2.68"' manifest.json
-          grep -q 'SwapButton.cpp' CMakeLists.txt
-          grep -q 'OffhandSwapRuntime.cpp' CMakeLists.txt
-          grep -q 'ButtonBuilder(kButtonId, "Swap Item")' src/ui/SwapButton.cpp
-          grep -q 'kSetItemInHandSlotRva = 0xF579C50' src/runtime/OffhandSwapRuntime.cpp
           grep -q 'NativeCapabilityProbe.cpp' CMakeLists.txt
           grep -q 'NativeOffhandPolicy.cpp' CMakeLists.txt
           grep -q 'kPlannerRva126511 = 0xF9292A0' src/runtime/AutoInsertRouting.cpp
@@ -132,7 +118,6 @@ jobs:
       - name: Run v0.2.68 action routing tests
         run: |
           python3 tests/v0262_native_routing_source_contract.py
-          python3 tests/v0268_swap_button_source_contract.py
           python3 tests/v0268_action_routing_source_contract.py
           python3 tests/v0268_semantic_bridge_source_contract.py
           python3 tests/v0268_render_126511_compat_source_contract.py

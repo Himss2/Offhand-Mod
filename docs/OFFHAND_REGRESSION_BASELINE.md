@@ -1,115 +1,93 @@
 # Offhand Regression Baseline
 
-This document is the regression lock for Levi Offhand action/storage work on Minecraft Bedrock 1.26.51.1.
+## Authoritative recovery point
 
-The purpose is to prevent a later bug fix or feature from silently replacing behavior that was already proven in-game.
+For Minecraft Bedrock 1.26.51.1, the current action/storage baseline is the exact pre-swap commit:
 
-## Baseline ownership
+`198787f5b0d750fd4c89ba00ac0aab5c72018331`
+`fix: route sword like axe when no native right-click exists`
 
-The offhand interaction path is the primary subsystem. The F-style swap is an extension and must not redefine block placement, right-click ownership, slot-removal behavior, or render ownership.
+This commit is the recovery authority for `RightUseRouter`, its header, the action-routing source contract, `LeviOffhandMod.cpp`, `CMakeLists.txt`, and the build workflow.
 
-Install order in `LeviOffhandMod.cpp` must keep:
+Do not reconstruct these mechanisms from memory or from a later swap commit.
 
-```text
-AutoInsertRouting / NativeOffhandPolicy
-RightUseRouter
-OffhandSwapRuntime
-renderer
-```
+## Block placement / right-use invariants
 
-`RightUseRouter` must therefore be installed before the swap runtime.
-
-## Proven block-placement behavior
-
-Source baseline: commit `f687b626f2c941eb4ff3a6b2ce534a3cf0a3132d` (`fix: isolate offhand placement snapshot and honor main hold-use`).
+The known-good logic first decides whether MAINHAND genuinely owns right-click **before** invoking the generic MAINHAND use-on wrapper.
 
 Required behavior:
 
-1. Left-click remains vanilla MAINHAND.
-2. Right-click tries MAINHAND once.
-3. OFFHAND block placement is only eligible when the MAINHAND use-on result is PASS.
-4. MAINHAND hold-use items keep priority. Bow, Trident/Spear, food, shield and equivalent long-use actions must not be displaced by OFFHAND block fallback.
-5. OFFHAND placement uses Minecraft's native use-on path with `hand=1`.
-6. The live OFFHAND `ItemStack*` must never be passed directly as the transaction before-state.
-7. Create a detached `0x98`-byte ItemStack snapshot using the native copy constructor at RVA `0xFF9D748`, use that snapshot for the native OFFHAND action, and destroy it with the native destructor at RVA `0x85ADF98`.
-8. Do not replay the broad upper input dispatcher and do not synthesize inventory packets.
+1. Specialized native right-click owners keep MAINHAND priority. This includes Bow/Trident/Fishing Rod/Shears and hold-use items such as food/shield where applicable.
+2. Attack-only Sword/Axe/Pickaxe-style items with no specialized native right-click action yield to OFFHAND.
+3. If MAINHAND does not own right-click and OFFHAND is non-empty, OFFHAND gets the first and only initial `GameMode::useItemOn` attempt.
+4. That OFFHAND attempt uses native `hand=1`.
+5. Never pass the live OFFHAND `ItemStack*` as the transaction before-state.
+6. Copy OFFHAND into a detached `0x98` ItemStack snapshot using the native copy constructor, pass the snapshot to the native use-on call, then destroy it with the native destructor.
+7. If OFFHAND handles the action, return that result.
+8. If OFFHAND passes, call the untouched vanilla MAINHAND wrapper once as fallback.
+9. Left-click remains vanilla MAINHAND.
+10. Do not replay the broad upper input dispatcher and do not synthesize inventory packets.
 
-The core accepted shape is:
+The critical order is:
 
 ```text
-MAIN use-on once
-  handled -> return MAIN result
-  PASS ->
-    if MAIN owns hold-use -> return MAIN result
+classify MAINHAND ownership
+  MAIN owns right-click -> vanilla MAINHAND use-on once
+  MAIN does not own right-click ->
     read OFFHAND
-    copy OFFHAND to detached snapshot
-    native use-on(snapshot, hand=1)
-    destroy snapshot
+    snapshot OFFHAND
+    native OFFHAND use-on(snapshot, hand=1)
+      handled -> return OFFHAND result
+      PASS    -> vanilla MAINHAND fallback once
 ```
 
-This snapshot rule fixed the earlier condition where a placed OFFHAND stack could become locked/unremovable.
+## Storage / slot-removal invariant
 
-## Storage policy
+The detached OFFHAND snapshot is not optional. It is part of the known-good solution for preventing the real OFFHAND slot from becoming transaction-locked/unremovable after block placement.
 
-The current storage architecture must stay separate from the old ContainerValidation approach.
+Manual offhand storage/removal must remain native. Do not reintroduce ContainerValidation transfer/swap hooks or synthetic inventory packets as a shortcut.
 
-Required:
+## Swap quarantine
 
-- Arbitrary items are natively offhand-capable through `NativeOffhandPolicy`.
-- Automatic insertion filters OFFHAND from generic destination planning.
-- Manual UI storage/removal stays native.
-- Do not reintroduce `ContainerScreenValidation::tryTransfer`, `ContainerScreenValidation::trySwap`, manual pre-validation, or synthesized transaction packets as a shortcut.
+The F-style swap experiment was introduced **after** the authoritative baseline and caused regressions in action/storage behavior.
 
-## F-style swap baseline
+Until a new swap implementation passes the full runtime matrix below, it must remain isolated:
 
-The accepted swap pump executes from `ClientInstance::preFrameTick`, not from the Android HUD callback and not from a selected-item worker-thread call.
+- not listed in `CMakeLists.txt`;
+- not included or installed from `LeviOffhandMod.cpp`;
+- no swap button registered;
+- no swap hook attached to `Player::getSelectedItem`, `ClientInstance::preFrameTick`, right-use, block placement, or storage validation;
+- no mutation of OFFHAND/selected storage from swap code during normal gameplay.
 
-Required:
-
-- HUD button only queues `mSwapRequested`.
-- The Minecraft client frame drains the request.
-- MAIN selected storage is written only through `Player::setSelectedItem`.
-- OFFHAND storage is written only through the native hand=1 setter.
-- Never use `setItemInHandSlot(hand=0)` in the swap path.
-- Source stacks are copied into detached snapshots before the first mutation.
-- `ItemStack::EMPTY_ITEM()` must be validated as null before use.
-
-For occupied MAIN=A / OFF=B, use clear-both then refill:
-
-```text
-MAIN=A,     OFF=B
-MAIN=EMPTY, OFF=B
-MAIN=EMPTY, OFF=EMPTY
-MAIN=EMPTY, OFF=A
-MAIN=B,     OFF=A
-```
-
-The explicit OFFHAND clear is part of the regression lock. It prevents the replacement stack from inheriting stale OFFHAND slot state after an occupied↔occupied swap.
+Experimental swap source may remain in the repository for reference, but it is non-runtime code in the recovery baseline.
 
 ## Must-pass runtime matrix
 
-After every change that touches action routing, storage, swap, selected-item access, or offhand rendering, test from a fresh Minecraft process:
+Start from a fresh Minecraft process for every candidate baseline:
 
-1. MAIN sword/tool + OFF block: right-click places OFF block when MAIN has no right-click action.
-2. MAIN Bow/Trident/food/shield + OFF block: MAIN action retains priority.
-3. OFF block placement reduces/changes the real OFF stack and the remaining stack can be removed normally from slot 34.
-4. MAIN item + empty OFF: F moves MAIN to OFF; F again returns it.
-5. MAIN=A + OFF=B: repeated F alternates A/B without loss, ghost, or duplicate.
-6. Immediately after occupied↔occupied F swap, open inventory and remove the new OFF item. It must not be locked.
-7. After swap, OFF block right-click still follows the same snapshot-based placement logic.
-8. Crafting/pickup must not automatically route generic items into OFFHAND.
-9. Leave/re-enter world and confirm arbitrary OFFHAND storage persists.
-10. Bow/Trident visual behavior must remain independent from storage/action fixes.
+1. MAIN Sword + OFF block: right-click places the OFF block.
+2. MAIN Axe/Pickaxe + OFF block: right-click places the OFF block when MAIN has no native right-click action.
+3. MAIN Bow/Trident/Fishing Rod/Shears/food/shield + OFF block: MAIN action keeps priority where vanilla defines one.
+4. After OFFHAND block placement, the remaining OFF stack can be moved or removed normally from slot 34.
+5. Repeated OFFHAND placement updates the real stack count and never creates a ghost/locked stack.
+6. Left-click always remains MAINHAND.
+7. Crafting/pickup does not auto-route generic items into OFFHAND.
+8. Manual arbitrary-item placement/removal in OFFHAND still works.
+9. Leave and re-enter the world: OFFHAND storage remains valid.
+10. Bow/Trident rendering remains independent from action/storage behavior.
+
+Only after all ten pass may swap be reintroduced. When that happens, add swap-specific tests **without replacing or weakening this baseline**.
 
 ## Documentation rule
 
-Whenever a future change modifies any of the following, update this file and `README.md` in the same commit series:
+Any change that touches:
 
-- offhand storage policy
-- block placement/right-use routing
-- selected-item/offhand slot mutation
-- F-style swap
-- Bow/Trident/offhand render ownership
-- supported Minecraft binary/RVAs/signatures
+- right-use classification,
+- block placement,
+- OFFHAND storage/removal,
+- selected-item access,
+- swap,
+- supported Minecraft RVAs/signatures,
+- Bow/Trident/offhand render ownership,
 
-If a new implementation replaces a known-good mechanism, document the old baseline, the reason it was replaced, the exact regression tests that were run, and the commit that becomes the new baseline.
+must update both `README.md` and this file in the same change. Record the previous known-good commit and the new validated baseline commit after in-game verification.

@@ -2,18 +2,27 @@
 
 Native Levi Launcher Android mod for Minecraft Bedrock **1.26.45.1** and **1.26.51.1**.
 
-## v0.2.68 — offhand stability baseline + F-style swap
+## v0.2.68 — recovered pre-swap offhand baseline
 
-The current 1.26.51.1 baseline intentionally treats the already-working offhand interaction path as the primary subsystem and the F-style swap as an extension.
+The runtime action/storage path has been restored to the exact last known-good **pre-swap** commit:
 
-- **Block placement / right-use baseline:** restored from commit `f687b626f2c941eb4ff3a6b2ce534a3cf0a3132d`. Minecraft receives exactly one MAINHAND use-on attempt; only a PASS can fall back to OFFHAND.
-- **Transaction-safe OFFHAND placement:** never pass the live offhand slot as the transaction snapshot. Copy the offhand `ItemStack` with the native copy constructor, call the native use-on path with `hand=1`, then destroy the detached snapshot.
-- **MAINHAND hold-use priority:** Bow/Trident/food/shield-style hold-use remains MAINHAND-owned and must not be displaced by OFFHAND placement fallback.
-- **Swap:** the successful `ClientInstance::preFrameTick` pump remains. For occupied↔occupied exchange, both storages are cleared through the native empty stack before snapshots are refilled, so the new OFFHAND stack does not inherit stale slot state.
-- **Ordering:** `RightUseRouter` is installed before `OffhandSwapRuntime`. Swap changes must not alter the proven block-placement/right-use code path.
-- **No ContainerValidation hooks:** the current storage architecture keeps manual transactions native and does not restore the older `ContainerScreenValidation` hook family.
+`198787f5b0d750fd4c89ba00ac0aab5c72018331` — `fix: route sword like axe when no native right-click exists`
 
-The invariants and regression checklist are documented in `docs/OFFHAND_REGRESSION_BASELINE.md`. Any future bug fix or feature that changes offhand storage, right-click routing, swap behavior, or render ownership must update both this README and the regression document in the same change.
+This recovery is intentional. The experimental F-style swap source may remain in the repository for later work, but it is **not compiled, installed, registered, or allowed to hook Minecraft in the recovery baseline**.
+
+The restored block-placement rules are:
+
+- classify whether MAINHAND truly owns right-click before touching the generic use-on path;
+- attack-only Sword/Axe/Pickaxe-style items yield right-click to OFFHAND;
+- Bow/Trident/Fishing Rod/Shears/food/shield-style native right-click actions keep MAINHAND priority;
+- when MAINHAND has no right-click owner, OFFHAND gets the first native use-on attempt with `hand=1`;
+- OFFHAND placement uses a detached native `ItemStack` snapshot, never the live slot pointer;
+- if OFFHAND passes, vanilla MAINHAND runs once as fallback;
+- left-click remains vanilla MAINHAND.
+
+The exact regression contract is documented in `docs/OFFHAND_REGRESSION_BASELINE.md`.
+
+**Maintenance rule:** any future feature or bug fix that changes offhand storage, right-use/block placement, selected-item access, swap behavior, or render ownership must update both this README and the regression document in the same change.
 
 ## v0.2.63 — native-only Bow/Trident renderer
 
