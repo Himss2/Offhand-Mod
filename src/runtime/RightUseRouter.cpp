@@ -231,6 +231,18 @@ template <std::size_t N>
     ) == 0 ? target : 0;
 }
 
+[[nodiscard]] std::uintptr_t resolveKnownBuildTarget(
+    std::uintptr_t rva
+) noexcept {
+    const auto base = minecraftModuleBase();
+    if (base == 0) {
+        return 0;
+    }
+
+    const auto target = base + rva;
+    return belongsToMinecraft(target) ? target : 0;
+}
+
 [[nodiscard]] bool validObject(const void* object) noexcept {
     if (object == nullptr) {
         return false;
@@ -484,9 +496,8 @@ bool RightUseRouter::install(pl::mod::ModContext& context) noexcept {
         return true;
     }
 
-    const auto selectedTarget = resolveExactTarget(
-        kSelectedItemRva, kSelectedItemFingerprint
-    );
+    // First validate a group of stable, non-hook entry points.  These act as
+    // the exact-build guard for 1.26.51.1.  They must remain byte-identical.
     const auto offhandTarget = resolveExactTarget(
         kOffhandSlotRva, kOffhandSlotFingerprint
     );
@@ -508,24 +519,87 @@ bool RightUseRouter::install(pl::mod::ModContext& context) noexcept {
     const auto dtorTarget = resolveExactTarget(
         kItemStackDtorRva, kItemStackDtorFingerprint
     );
-    const auto blockUseTarget = resolveExactTarget(
-        kUseItemOnBlockRva, kUseItemOnBlockFingerprint
+
+    if (
+        offhandTarget == 0 || nullTarget == 0 ||
+        usingTarget == 0 || inUseTarget == 0 || differsTarget == 0 ||
+        copyCtorTarget == 0 || dtorTarget == 0
+    ) {
+        __android_log_print(
+            ANDROID_LOG_WARN,
+            kLogTag,
+            "[RightUseRouter] stable fingerprint guard failed: off=%d null=%d using=%d inUse=%d differs=%d copy=%d dtor=%d",
+            offhandTarget != 0 ? 1 : 0,
+            nullTarget != 0 ? 1 : 0,
+            usingTarget != 0 ? 1 : 0,
+            inUseTarget != 0 ? 1 : 0,
+            differsTarget != 0 ? 1 : 0,
+            copyCtorTarget != 0 ? 1 : 0,
+            dtorTarget != 0 ? 1 : 0
+        );
+        context.logger().warn(
+            "[RightUseRouter] Minecraft 1.26.51.1 stable fingerprint validation failed; right-use disabled"
+        );
+        return false;
+    }
+
+    // Hookable entry points can already have a live trampoline/prologue patch
+    // by the time this subsystem is installed.  The previous all-or-nothing
+    // memcmp treated that as a different Minecraft build and disabled all
+    // right-use routing, which is exactly what the runtime log showed after
+    // adding the F-swap subsystem.
+    //
+    // The stable guard above has already proven the exact 1.26.51.1 build, so
+    // for these four known RVAs we may safely chain the live target when only
+    // the prologue bytes differ.
+    auto resolveHookTarget = [&](const char* name, std::uintptr_t rva, const auto& fingerprint) noexcept {
+        const auto exact = resolveExactTarget(rva, fingerprint);
+        if (exact != 0) {
+            return exact;
+        }
+
+        const auto live = resolveKnownBuildTarget(rva);
+        if (live != 0) {
+            __android_log_print(
+                ANDROID_LOG_INFO,
+                kLogTag,
+                "[RightUseRouter] %s live prologue differs; chaining known 1.26.51.1 RVA=0x%llX",
+                name,
+                static_cast<unsigned long long>(rva)
+            );
+        }
+        return live;
+    };
+
+    const auto selectedTarget = resolveHookTarget(
+        "Player::getSelectedItem",
+        kSelectedItemRva,
+        kSelectedItemFingerprint
     );
-    const auto useTarget = resolveExactTarget(
-        kBaseUseItemRva, kBaseUseItemFingerprint
+    const auto blockUseTarget = resolveHookTarget(
+        "GameMode::useItemOnBlock",
+        kUseItemOnBlockRva,
+        kUseItemOnBlockFingerprint
     );
-    const auto releaseTarget = resolveExactTarget(
-        kReleaseUsingItemRva, kReleaseUsingItemFingerprint
+    const auto useTarget = resolveHookTarget(
+        "GameMode::baseUseItem",
+        kBaseUseItemRva,
+        kBaseUseItemFingerprint
+    );
+    const auto releaseTarget = resolveHookTarget(
+        "GameMode::releaseUsingItem",
+        kReleaseUsingItemRva,
+        kReleaseUsingItemFingerprint
     );
 
     if (
-        selectedTarget == 0 || offhandTarget == 0 || nullTarget == 0 ||
-        usingTarget == 0 || inUseTarget == 0 || differsTarget == 0 ||
-        copyCtorTarget == 0 || dtorTarget == 0 ||
-        blockUseTarget == 0 || useTarget == 0 || releaseTarget == 0
+        selectedTarget == 0 ||
+        blockUseTarget == 0 ||
+        useTarget == 0 ||
+        releaseTarget == 0
     ) {
         context.logger().warn(
-            "[RightUseRouter] Minecraft 1.26.51.1 fingerprint validation failed; right-use disabled"
+            "[RightUseRouter] known 1.26.51.1 hook target resolution failed; right-use disabled"
         );
         return false;
     }
