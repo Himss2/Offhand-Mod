@@ -6,6 +6,7 @@ The preservation baseline is successful GitHub Actions **build #550**, commit `2
 
 - Crossbow may join Bow's exact FPP generic-dispatch admission, but Trident/Spear native-3D paths stay unchanged.
 - Banner rendering must not write `ItemStack::mBlock` from historical BannerItem offsets `+0x1C0/+0x1C8`. The supplied 1.26.51.1 tombstone is consistent with an invalid small Block pointer reaching native block/id lookup.
+- Banner's custom FPP pose is renderer-only and may run through the safe `BridgeScope`: scale `1.56`, X `-0.78`, Y `-0.28`, yaw `180°`. The bridge-depth recursion guard must exempt only Banner; all other bridged special families retain the existing guard.
 - After the exact stable 1.26.51.1 guards pass, a pre-hooked `GameMode::useItemOnBlock` entry is chainable compatibility state, not a warning condition.
 - Detached OFFHAND placement snapshots remain mandatory. On accepted placement, if the snapshot count differs from the live slot count, reconcile through native `Actor::setItemInHandSlot` RVA `0xF579C50` with `hand=1`. ItemStackBase `mCount` is byte `+0x22`.
 - Do not introduce packets, physical hand swapping, ContainerValidation hooks, or a new action-routing order to solve these four defects.

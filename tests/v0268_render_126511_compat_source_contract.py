@@ -117,6 +117,30 @@ def main() -> int:
             )
     if "safe native item route active; stale Block* bridge disabled" not in render_offhand:
         raise AssertionError("Banner safe native route marker missing")
+
+    item_start = cpp.index("itemTransformDetour(")
+    item_end = cpp.index("renderObjectDetour(", item_start)
+    item_transform = cpp[item_start:item_end]
+    for token in (
+        "bannerBridgeTransform",
+        "gBridgeDepth!=0",
+        "!bannerBridgeTransform",
+        "kBannerScale",
+        "kBannerShiftX",
+        "kBannerShiftY",
+        "kBannerYawDegrees",
+        "[TransformFix] Banner safe bridge custom",
+    ):
+        if token not in item_transform:
+            raise AssertionError(
+                f"Banner safe custom FPP transform missing {token!r}"
+            )
+    bridge_guard_pos = item_transform.index("!bannerBridgeTransform")
+    banner_transform_pos = item_transform.index("if(banner)")
+    if bridge_guard_pos > banner_transform_pos:
+        raise AssertionError(
+            "Banner bridge exception must be decided before custom Banner transform"
+        )
     # The renderer and attachment helper must come from the same accepted overlay.
     assert git_blob_sha(header) == "deb12b1f33aa36e91d143d996ea92c415604f128"
     fn = cpp[cpp.index("    itemTransformDetour("):]

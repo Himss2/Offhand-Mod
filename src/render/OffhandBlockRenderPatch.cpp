@@ -3632,8 +3632,6 @@ namespace levioffhand::render {
             ||
             !inOffhand()
             ||
-            gBridgeDepth!=0
-            ||
             type
             !=
             kFirstpersonLeftHand
@@ -3649,13 +3647,37 @@ namespace levioffhand::render {
         const void* item=
             offhandItem();
 
-        const void* block=
-            offhandBlock();
-
         const char* itemClass=
             rttiName(
                 item
             );
+
+        const bool bannerBridgeTransform=
+            gBridgeDepth!=0
+            &&
+            isBannerItem(
+                itemClass
+            );
+
+        // The safe Banner path intentionally enters RenderItem through
+        // BridgeScope.  Historically this guard returned vanilla transforms
+        // for every bridged item, which also disabled Banner's already-tested
+        // custom scale/position/yaw.  Allow only Banner through here; every
+        // other bridged family keeps the old recursion guard unchanged.
+        if(
+            gBridgeDepth!=0
+            &&
+            !bannerBridgeTransform
+        ) {
+            return
+                original(
+                    transforms,
+                    type
+                );
+        }
+
+        const void* block=
+            offhandBlock();
 
         const char* blockClass=
             rttiName(
@@ -3925,8 +3947,12 @@ namespace levioffhand::render {
                         __android_log_print(
                             ANDROID_LOG_INFO,
                             kLogTag,
-                            "[TransformFix] Banner final "
-                            "lowered + bottom-safe scale"
+                            "[TransformFix] Banner safe bridge custom "
+                            "pose active scale=%.2f shift=(%.2f,%.2f) yaw=%.1f",
+                            static_cast<double>(kBannerScale),
+                            static_cast<double>(kBannerShiftX),
+                            static_cast<double>(kBannerShiftY),
+                            static_cast<double>(kBannerYawDegrees)
                         );
                     }
 
