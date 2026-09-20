@@ -1,5 +1,17 @@
 # Offhand Regression Baseline
 
+## Build #550 preservation rule for targeted fixes
+
+The preservation baseline is successful GitHub Actions **build #550**, commit `2a3a9a7e1a11ab53899e46923aee62e6cc208acc`. Its Sword -> OFFHAND placement ordering must not be rewritten while repairing the isolated regressions below.
+
+- Crossbow may join Bow's exact FPP generic-dispatch admission, but Trident/Spear native-3D paths stay unchanged.
+- Banner rendering must not write `ItemStack::mBlock` from historical BannerItem offsets `+0x1C0/+0x1C8`. The supplied 1.26.51.1 tombstone is consistent with an invalid small Block pointer reaching native block/id lookup.
+- After the exact stable 1.26.51.1 guards pass, a pre-hooked `GameMode::useItemOnBlock` entry is chainable compatibility state, not a warning condition.
+- Detached OFFHAND placement snapshots remain mandatory. On accepted placement, if the snapshot count differs from the live slot count, reconcile through native `Actor::setItemInHandSlot` RVA `0xF579C50` with `hand=1`. ItemStackBase `mCount` is byte `+0x22`.
+- Do not introduce packets, physical hand swapping, ContainerValidation hooks, or a new action-routing order to solve these four defects.
+
+Required regression checks include: Sword + OFF block routing unchanged, Crossbow visible in FPP OFFHAND, Banner insert/render without crash, no warning-level pre-hook diagnostic, and an OFFHAND placement count transition such as 16 -> 15.
+
 ## Candidate status and provenance
 
 Historical pre-swap recovery: `198787f5b0d750fd4c89ba00ac0aab5c72018331`.

@@ -2,6 +2,17 @@
 
 Native Levi Launcher Android mod for Minecraft Bedrock **1.26.45.1** and **1.26.51.1**.
 
+## v0.2.68 — targeted 1.26.51.1 fixes on build #550 baseline
+
+This candidate preserves the sword/offhand routing and renderer structure from the successful **build #550** (`2a3a9a7e1a11ab53899e46923aee62e6cc208acc`). The current changes are intentionally isolated to four reported regressions:
+
+- **Crossbow FPP OFFHAND:** Crossbow now joins Bow at the exact generic `FIRSTPERSON_LEFT` offhand-dispatch admission point. Trident/Spear native-3D routing is unchanged.
+- **Banner OFFHAND crash:** the old BannerItem `+0x1C0/+0x1C8` synthetic Block-pointer bridge is disabled. On Minecraft 1.26.51.1 those historical offsets are not safe Block pointers; Banner now stays on the native item render transaction and retains matrix-side visual handling.
+- **RightUseRouter pre-hook diagnostic:** a pre-hooked `GameMode::useItemOnBlock` entry point is treated as an expected chainable condition after the stable 1.26.51.1 guard passes, so it is logged at INFO instead of WARN. The chaining behavior itself is unchanged.
+- **OFFHAND block count reconciliation:** block placement still uses the detached ItemStack transaction snapshot from build #550. If native placement changes the snapshot count while the live OFFHAND slot remains stale, the changed snapshot is written back through native `Actor::setItemInHandSlot(hand=1)`. The verified ItemStack count byte is `+0x22`; no synthetic inventory packet or physical hand swap is used.
+
+The build #550 sword classifier and MAIN/OFF placement order are not refactored by these fixes.
+
 ## v0.2.68 — Java-style right-use corrections (candidate)
 
 This candidate fixes verified routing defects on **Bedrock Android 1.26.51.1**. It is **not yet full Java parity** and has not passed the device gameplay matrix. The pre-swap recovery commit `198787f5b0d750fd4c89ba00ac0aab5c72018331` is historical provenance, not evidence that the current implementation works in game.
