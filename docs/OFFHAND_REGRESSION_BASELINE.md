@@ -86,13 +86,16 @@ Verified 1.26.51.1 FPP helper:
 
 ```text
 per-hand FPP renderer 0xB2F7F18
-MAINHAND callsite      0xB2F6B48 -> hand=0
-OFFHAND callsite       0xB2FC2E8 -> hand=1
+OFFHAND callsite       0xB2F6B48 -> hand=0
+MAINHAND callsite      0xB2FC2E8 -> hand=1
 equip height           ItemInHandRenderer +0x180
 old equip height       ItemInHandRenderer +0x184
+swing interpolator     0xF286ED8
+swing current          Player +0x3EC
+swing previous         Player +0x430
 ```
 
-During `OffhandPlacementAnimation`, the optional renderer hook may pin only the MAINHAND equip-height pair for that scoped draw and must restore the original values immediately afterward. It must never be part of the mandatory renderer readiness condition: if the optional signature/hook is unavailable, all pre-existing visual paths must continue unchanged.
+During `OffhandPlacementAnimation`, the optional renderer hook may affect only the `hand=1` MAINHAND draw. It pins the MAINHAND equip-height pair and temporarily writes zero to the two swing-progress fields so native `0xF286ED8` returns neutral swing progress. Swing and equip fields must all be restored immediately after the original draw. The OFFHAND `hand=0` invocation must not clear the freeze latch while the placement window is active. The optional hook must never become part of mandatory renderer readiness; if unavailable, all pre-existing visual paths continue unchanged.
 
 Do not tune the OFFHAND placement matrix until this freeze behavior is verified on-device.
 

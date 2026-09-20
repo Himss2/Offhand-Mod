@@ -185,8 +185,8 @@ namespace levioffhand::render {
         // ItemInHandRenderer per-hand FPP renderer, Minecraft 1.26.51.1.
         // Static RE:
         //   target 0xB2F7F18
-        //   hand=0 callsite 0xB2F6B48 (MAINHAND)
-        //   hand=1 callsite 0xB2FC2E8 (OFFHAND)
+        //   hand=0 callsite 0xB2F6B48 (OFFHAND)
+        //   hand=1 callsite 0xB2FC2E8 (MAINHAND)
         // Resolved by a unique signature and installed as an OPTIONAL visual
         // hook so a mismatch can never take down the existing renderer.
         constexpr char kFirstPersonHandRenderSignature[]=
@@ -238,6 +238,15 @@ namespace levioffhand::render {
         // immediately afterwards.
         constexpr std::size_t kMainhandHeightOffset=0x180;
         constexpr std::size_t kMainhandOldHeightOffset=0x184;
+
+        // Player swing interpolation helper @ 0xF286ED8:
+        //   LDR S2,[X0,#0x3EC] current
+        //   LDR S1,[X0,#0x430] previous
+        //   previous + wrapped(current-previous)*partialTicks
+        // These are overridden only while drawing MAINHAND during an OFFHAND
+        // placement impulse, then restored immediately.
+        constexpr std::size_t kPlayerSwingCurrentOffset=0x3EC;
+        constexpr std::size_t kPlayerSwingPreviousOffset=0x430;
 
         constexpr std::uint32_t kFirstpersonRightHand=1;
         constexpr std::uint32_t kFirstpersonLeftHand=2;
@@ -1218,15 +1227,34 @@ namespace levioffhand::render {
             const float placementProgress=
                 runtime::OffhandPlacementAnimation::instance().progress();
 
+            const bool placementActive=
+                placementProgress>0.0f
+                &&
+                placementProgress<1.0f;
+
+            // RE correction for Minecraft 1.26.51.1:
+            //   0xB2F6B48 -> W3=0 -> OFFHAND
+            //   0xB2FC2E8 -> W3=1 -> MAINHAND
+            //
+            // Do not clear the latch merely because the OFFHAND draw also
+            // passes through this shared helper.  Clear it only after the
+            // placement window itself ends.
+            if(!placementActive) {
+                gMainhandPlacementFreezeLatched=false;
+            }
+
             const bool freezeMainhand=
                 self
-                && hand==0u
-                && OffhandBlockRenderPatch::instance().featureEnabled()
-                && placementProgress>0.0f
-                && placementProgress<1.0f;
+                &&
+                player
+                &&
+                hand==1u
+                &&
+                OffhandBlockRenderPatch::instance().featureEnabled()
+                &&
+                placementActive;
 
             if(!freezeMainhand) {
-                gMainhandPlacementFreezeLatched=false;
                 original(
                     self,
                     renderContext,
@@ -1243,11 +1271,26 @@ namespace levioffhand::render {
                     kMainhandHeightOffset,
                     1.0f
                 );
+
             const float oldHeight=
                 readValue<float>(
                     self,
                     kMainhandOldHeightOffset,
                     height
+                );
+
+            const float swingCurrent=
+                readValue<float>(
+                    player,
+                    kPlayerSwingCurrentOffset,
+                    0.0f
+                );
+
+            const float swingPrevious=
+                readValue<float>(
+                    player,
+                    kPlayerSwingPreviousOffset,
+                    swingCurrent
                 );
 
             if(!gMainhandPlacementFreezeLatched) {
@@ -1271,18 +1314,37 @@ namespace levioffhand::render {
                 gMainhandPlacementFreezeLatched=true;
             }
 
-            // Visual-only scoped freeze.  The engine's actual animation state
-            // continues to update; only this MAINHAND draw sees a fixed equip
-            // height. Restore both values immediately after the original call.
+            // Visual-only scoped freeze:
+            // 1) pin MAINHAND equip interpolation to one height;
+            // 2) neutralize the MAINHAND swing interpolation used by
+            //    0xF286ED8 -> sqrt/sin matrix motion.
+            //
+            // The live gameplay fields are restored immediately after the
+            // original render call, so attack/use/storage state is untouched.
             writeValue<float>(
                 self,
                 kMainhandHeightOffset,
                 gMainhandPlacementFrozenHeight
             );
+
             writeValue<float>(
                 self,
                 kMainhandOldHeightOffset,
                 gMainhandPlacementFrozenHeight
+            );
+
+            constexpr float kNeutralSwing=0.0f;
+
+            writeValue<float>(
+                player,
+                kPlayerSwingCurrentOffset,
+                kNeutralSwing
+            );
+
+            writeValue<float>(
+                player,
+                kPlayerSwingPreviousOffset,
+                kNeutralSwing
             );
 
             if(!gMainhandPlacementFreezeLogged) {
@@ -1290,8 +1352,8 @@ namespace levioffhand::render {
                 __android_log_print(
                     ANDROID_LOG_INFO,
                     kLogTag,
-                    "[PlacementVisual] MAINHAND FPP equip motion frozen "
-                    "during OFFHAND placement"
+                    "[PlacementVisual] MAINHAND FPP equip+swing motion "
+                    "frozen during OFFHAND placement"
                 );
             }
 
@@ -1304,10 +1366,23 @@ namespace levioffhand::render {
             );
 
             writeValue<float>(
+                player,
+                kPlayerSwingCurrentOffset,
+                swingCurrent
+            );
+
+            writeValue<float>(
+                player,
+                kPlayerSwingPreviousOffset,
+                swingPrevious
+            );
+
+            writeValue<float>(
                 self,
                 kMainhandHeightOffset,
                 height
             );
+
             writeValue<float>(
                 self,
                 kMainhandOldHeightOffset,

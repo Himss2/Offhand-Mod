@@ -122,9 +122,16 @@ Build #470 used `+0x1C0/+0x1C8`; those stale offsets caused the 1.26.51.1 crash 
 
 ### Block-placement animation phase 1 — freeze MAINHAND
 
-Before changing the OFFHAND placement motion, the renderer now installs an **optional visual-only MAINHAND freeze layer**. Static RE of Minecraft 1.26.51.1 identifies the shared FPP per-hand renderer at `0xB2F7F18`; callsite `0xB2F6B48` passes hand `0` for MAINHAND and `0xB2FC2E8` passes hand `1` for OFFHAND.
+Before changing the OFFHAND placement motion, the renderer uses an **optional visual-only MAINHAND freeze layer**. Deeper static RE of Minecraft 1.26.51.1 corrected the hand mapping in the shared FPP helper `0xB2F7F18`:
 
-While the existing `OffhandPlacementAnimation` window is active, only the MAINHAND draw temporarily pins ItemInHandRenderer's equip-height pair (`+0x180/+0x184`) to the value seen at the start of the placement. The real fields are restored immediately after the draw. No runtime/action/storage state is changed.
+```text
+0xB2F6B48 -> W3=0 -> OFFHAND
+0xB2FC2E8 -> W3=1 -> MAINHAND
+```
+
+The same MAINHAND branch also calls swing-progress interpolator `0xF286ED8`, which reads Player `+0x3EC/+0x430` before the native sqrt/sin swing matrix is composed. Therefore equip-height pinning alone cannot freeze the unwanted motion.
+
+While `OffhandPlacementAnimation` is active, only the `hand=1` MAINHAND draw temporarily pins ItemInHandRenderer `+0x180/+0x184` and neutralizes Player swing `+0x3EC/+0x430`. All four live values are restored immediately after that draw. OFFHAND `hand=0` is untouched, and no action/storage state is persistently modified.
 
 The hook is intentionally optional: failure to resolve/install it must leave every existing Banner/Bow/Crossbow/Trident/block visual active. OFFHAND placement motion values are **not tuned in this phase**; first verify that MAINHAND no longer performs the unwanted placement/equip motion.
 

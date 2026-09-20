@@ -163,12 +163,14 @@ def main() -> int:
     for token in (
         "kFirstPersonHandRenderSignature",
         "firstPersonHandRenderDetour(",
-        "hand==0u",
+        "hand==1u",
         "kMainhandHeightOffset=0x180",
         "kMainhandOldHeightOffset=0x184",
+        "kPlayerSwingCurrentOffset=0x3EC",
+        "kPlayerSwingPreviousOffset=0x430",
         "OffhandPlacementAnimation::instance().progress()",
         "gMainhandPlacementFreezeLatched",
-        "MAINHAND FPP equip motion frozen",
+        "MAINHAND FPP equip+swing motion",
         "Optional MAINHAND placement-freeze hook unavailable",
         "Placement visual: MAINHAND freeze layer active",
     ):
@@ -184,11 +186,24 @@ def main() -> int:
         raise AssertionError(
             "MAINHAND freeze must be driven only by OFFHAND placement visual state"
         )
-    if "hand==0u" not in freeze_body:
-        raise AssertionError("MAINHAND freeze must not affect OFFHAND draw")
+    if "hand==1u" not in freeze_body:
+        raise AssertionError(
+            "Minecraft 1.26.51.1 MAINHAND selector must be hand=1"
+        )
+    if "hand==0u" in freeze_body:
+        raise AssertionError(
+            "OFFHAND selector hand=0 must never activate MAINHAND freeze"
+        )
+    if "if(!placementActive)" not in freeze_body:
+        raise AssertionError(
+            "freeze latch must clear only when placement window ends"
+        )
     for token in (
         "kMainhandHeightOffset",
         "kMainhandOldHeightOffset",
+        "kPlayerSwingCurrentOffset",
+        "kPlayerSwingPreviousOffset",
+        "constexpr float kNeutralSwing=0.0f",
         "writeValue<float>",
     ):
         if token not in freeze_body:
