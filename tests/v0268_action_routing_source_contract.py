@@ -92,6 +92,7 @@ def main() -> int:
         "kReleaseUsingItemRva = 0xF8A3204",
         "kSelectedItemRva = 0xF9F7824",
         "kOffhandSlotRva = 0xF579C2C",
+        "kSetItemInHandSlotRva = 0xF579C50",
         "kStackIsNullRva = 0xFFA0F70",
         "kPlayerIsUsingItemRva = 0xF9E8D64",
         "kItemInUseStackRva = 0xF9E8D84",
@@ -99,6 +100,7 @@ def main() -> int:
         "kItemStackCopyCtorRva = 0xFF9D748",
         "kItemStackDtorRva = 0x85ADF98",
         "kItemStackStorageSize = 0x98",
+        "kItemStackCountOffset = 0x22",
         "kItemWeakPtrOffset = 0x08",
         "kItemGetMaxUseDurationVtableOffset = 0x30",
         "kItemGetAttackDamageVtableOffset = 0x130",
@@ -120,7 +122,7 @@ def main() -> int:
         "resolveKnownBuildTarget(",
         "resolveHookTarget(",
         "stable guard failed offhand=%d null=%d using=%d inUse=%d differs=%d copy=%d dtor=%d",
-        "prologue already modified; chaining live 1.26.51.1 target",
+        "pre-hooked target detected; chaining live 1.26.51.1 target",
         "std::memcmp(",
     )
 
@@ -200,6 +202,10 @@ def main() -> int:
         "if ((offResult & 1u) != 0u)",
         "MAINHAND had no right-click owner; block-use/place handled by OFFHAND first",
         "OffhandPlacementAnimation::instance().trigger()",
+        "liveCount = stackCount(offStack)",
+        "placedCount = stackCount(offSnapshot.get())",
+        "gSetItemInHandSlot(",
+        "OFFHAND placement count reconciled",
     )
     if "swap" in use_block.lower() or "Packet" in use_block:
         raise AssertionError("block-use must stay on Minecraft native hand routing")
@@ -250,7 +256,12 @@ def main() -> int:
         raise AssertionError("broad upper-use replay must not be installed")
 
     accepted_pos = use_block.index("if ((offResult & 1u) != 0u)")
+    writeback_pos = use_block.index("gSetItemInHandSlot(", accepted_pos)
     trigger_pos = use_block.index("OffhandPlacementAnimation::instance().trigger()")
+    if not (accepted_pos < writeback_pos < trigger_pos):
+        raise AssertionError(
+            "OFFHAND count reconciliation must occur after accepted placement and before visual trigger"
+        )
     accepted_return_pos = use_block.index("return offResult;", accepted_pos)
     if not (accepted_pos < trigger_pos < accepted_return_pos):
         raise AssertionError(
@@ -289,6 +300,8 @@ def main() -> int:
         "differsTarget = resolveExactTarget(",
         "copyCtorTarget = resolveExactTarget(",
         "dtorTarget = resolveExactTarget(",
+        "setHandExact = resolveExactTarget(",
+        "kSetItemInHandSlotRva",
         'resolveHookTarget(\n        "Player::getSelectedItem"',
         'resolveHookTarget(\n        "GameMode::useItemOnBlock"',
         "&blockUsePreHooked",
