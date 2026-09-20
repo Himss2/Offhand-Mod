@@ -8,6 +8,13 @@ from pathlib import Path
 
 
 RVA_REPLACEMENTS = {
+    "0x9B369C8": "0x9F01338",
+    "0x9B377FC": "0x9F0216C",
+    "0x9B3783C": "0x9F021AC",
+    "0x9B378B8": "0x9F02228",
+    "0x9B37870": "0x9F021E0",
+    "0x9B37CB0": "0x9F02614",
+
     # Core held-item render pipeline.
     "0xADDEA08": "0xB2F0F60",
     "0xA1DEE04": "0xA619618",
@@ -297,3 +304,4 @@ def main() -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
+

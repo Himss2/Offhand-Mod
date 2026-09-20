@@ -5,46 +5,44 @@
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
-#include <cstring>
-#include <type_traits>
 
 namespace levioffhand::render::native_attachment_fix {
     inline constexpr std::uint32_t kMainhandSlot=5;
     inline constexpr std::uint32_t kOffhandSlot=6;
 
     // Binary-proven ModelPart state layout for Minecraft Bedrock 1.26.45.1.
-    // The composed matrix/cache constants are intentionally retained for
-    // contracts proving the new local-pose override does not mutate them.
     inline constexpr std::size_t kBoneComposedMatrixOffset=0x30;
     inline constexpr std::size_t kBoneComposedMatrixSize=64;
     inline constexpr std::size_t kBoneLocalPoseOffset=0x70;
     inline constexpr std::size_t kBoneMatrixCachedOffset=0xDE;
+    inline constexpr std::uintptr_t kNativeAttachmentHandEquipCallsiteRva=
+        0x9B369C8;
 
-    struct LocalAttachmentPose {
-        std::array<float,3> position{};
-        std::array<float,3> rotation{};
-
-        friend constexpr bool operator==(
-            const LocalAttachmentPose&,
-            const LocalAttachmentPose&
-        ) noexcept =default;
-    };
-
-    static_assert(sizeof(LocalAttachmentPose)==24);
-    static_assert(std::is_trivially_copyable_v<LocalAttachmentPose>);
-    static_assert(offsetof(LocalAttachmentPose,position)==0);
-    static_assert(offsetof(LocalAttachmentPose,rotation)==12);
-
-    using LocalPoseMutator=bool(*)(LocalAttachmentPose&) noexcept;
+    using Matrix4=std::array<float,16>;
 
     [[nodiscard]]
-    inline bool validLocalPose(const LocalAttachmentPose& pose) noexcept {
-        for(const float value:pose.position) {
-            if(!std::isfinite(value)) {
-                return false;
-            }
-        }
-        for(const float value:pose.rotation) {
+    constexpr Matrix4 identityMatrix() noexcept {
+        return {
+            1.0F,0.0F,0.0F,0.0F,
+            0.0F,1.0F,0.0F,0.0F,
+            0.0F,0.0F,1.0F,0.0F,
+            0.0F,0.0F,0.0F,1.0F
+        };
+    }
+
+    [[nodiscard]]
+    constexpr Matrix4 mirrorXMatrix() noexcept {
+        return {
+            -1.0F,0.0F,0.0F,0.0F,
+             0.0F,1.0F,0.0F,0.0F,
+             0.0F,0.0F,1.0F,0.0F,
+             0.0F,0.0F,0.0F,1.0F
+        };
+    }
+
+    [[nodiscard]]
+    inline bool validMatrix(const Matrix4& matrix) noexcept {
+        for(const float value:matrix) {
             if(!std::isfinite(value)) {
                 return false;
             }
@@ -52,75 +50,139 @@ namespace levioffhand::render::native_attachment_fix {
         return true;
     }
 
-    // Mirror the *current animated* Trident pole pose across local X.  Bedrock
-    // Euler rotations are applied X -> Y -> Z, so the reflected orientation
-    // keeps RotX and negates RotY/RotZ.  This works for wield, raise, shake and
-    // riptide poses without hard-coding any one animation frame.
+    // Bedrock Matrix objects in this renderer are column-major: translation is
+    // stored in indices 12/13/14 and multiplication composes A * B.
     [[nodiscard]]
-    inline bool mirrorTridentOffhandLocalPose(
-        LocalAttachmentPose& pose
+    constexpr Matrix4 multiplyMatrix(
+        const Matrix4& a,
+        const Matrix4& b
     ) noexcept {
-        if(!validLocalPose(pose)) {
+        Matrix4 out{};
+        for(std::size_t column=0;column<4;++column) {
+            for(std::size_t row=0;row<4;++row) {
+                float value=0.0F;
+                for(std::size_t k=0;k<4;++k) {
+                    value+=a[k*4+row]*b[column*4+k];
+                }
+                out[column*4+row]=value;
+            }
+        }
+        return out;
+    }
+
+    [[nodiscard]]
+    inline bool invertAffineMatrix(
+        const Matrix4& matrix,
+        Matrix4& inverse
+    ) noexcept {
+        if(!validMatrix(matrix)) {
             return false;
         }
 
-        pose.position[0]=-pose.position[0];
-        pose.rotation[1]=-pose.rotation[1];
-        pose.rotation[2]=-pose.rotation[2];
+        const float a00=matrix[0];
+        const float a01=matrix[4];
+        const float a02=matrix[8];
+        const float a10=matrix[1];
+        const float a11=matrix[5];
+        const float a12=matrix[9];
+        const float a20=matrix[2];
+        const float a21=matrix[6];
+        const float a22=matrix[10];
+
+        const float determinant=
+            a00*(a11*a22-a12*a21)
+            -a01*(a10*a22-a12*a20)
+            +a02*(a10*a21-a11*a20);
+        if(!std::isfinite(determinant) || std::fabs(determinant)<1.0e-6F) {
+            return false;
+        }
+
+        const float invDet=1.0F/determinant;
+        const float r00=(a11*a22-a12*a21)*invDet;
+        const float r01=(a02*a21-a01*a22)*invDet;
+        const float r02=(a01*a12-a02*a11)*invDet;
+        const float r10=(a12*a20-a10*a22)*invDet;
+        const float r11=(a00*a22-a02*a20)*invDet;
+        const float r12=(a02*a10-a00*a12)*invDet;
+        const float r20=(a10*a21-a11*a20)*invDet;
+        const float r21=(a01*a20-a00*a21)*invDet;
+        const float r22=(a00*a11-a01*a10)*invDet;
+
+        inverse={
+            r00,r10,r20,0.0F,
+            r01,r11,r21,0.0F,
+            r02,r12,r22,0.0F,
+            0.0F,0.0F,0.0F,1.0F
+        };
+
+        const float tx=matrix[12];
+        const float ty=matrix[13];
+        const float tz=matrix[14];
+        inverse[12]=-(r00*tx+r01*ty+r02*tz);
+        inverse[13]=-(r10*tx+r11*ty+r12*tz);
+        inverse[14]=-(r20*tx+r21*ty+r22*tz);
+        return validMatrix(inverse);
+    }
+
+    // F147ED0 has already produced M = Owner * Local.  Reflecting the complete
+    // local result rather than its Euler input is:
+    //
+    //   M' = Owner * S * Owner^-1 * M * S
+    //      = Owner * (S * Local * S)
+    //
+    // where S mirrors local X.  The two reflections retain a proper transform
+    // determinant while moving the complete animated/pivoted attachment to the
+    // opposite local-hand side.  The owner matrix itself is never modified.
+    [[nodiscard]]
+    inline bool mirrorComposedTransformInOwnerX(
+        const Matrix4& owner,
+        Matrix4& composed
+    ) noexcept {
+        if(!validMatrix(owner) || !validMatrix(composed)) {
+            return false;
+        }
+
+        Matrix4 inverseOwner{};
+        if(!invertAffineMatrix(owner,inverseOwner)) {
+            return false;
+        }
+
+        const Matrix4 original=composed;
+        const Matrix4 mirror=mirrorXMatrix();
+        Matrix4 result=multiplyMatrix(owner,mirror);
+        result=multiplyMatrix(result,inverseOwner);
+        result=multiplyMatrix(result,original);
+        result=multiplyMatrix(result,mirror);
+        if(!validMatrix(result)) {
+            return false;
+        }
+        composed=result;
         return true;
     }
 
-    // Temporary local-pose mutation around Minecraft's native F147ED0 compose.
-    // Crucially this does NOT invalidate +0xDE and does NOT overwrite the
-    // composed owner matrix at +0x30; Minecraft's native hand anchor stays live.
-    class ScopedLocalPoseOverride final {
-    public:
-        ScopedLocalPoseOverride(
-            void* boneState,
-            LocalPoseMutator mutator
-        ) noexcept {
-            if(!boneState || !mutator) {
-                return;
-            }
 
-            mTarget=
-                static_cast<std::byte*>(boneState)
-                + kBoneLocalPoseOffset;
-            std::memcpy(&mOriginal,mTarget,sizeof(mOriginal));
-
-            LocalAttachmentPose corrected=mOriginal;
-            if(!mutator(corrected)) {
-                mTarget=nullptr;
-                return;
-            }
-
-            std::memcpy(mTarget,&corrected,sizeof(corrected));
-            mActive=true;
+    // Convert the player's fully animated right-item owner frame into the
+    // bilateral left-side carrier while leaving the attachment-local matrix
+    // untouched.  Spear/Trident local animation is composed *after* this
+    // carrier is seeded, so their native 3D geometry and authored pole/spear
+    // animation are not reflected a second time.
+    [[nodiscard]]
+    inline bool mirrorOwnerCarrierAcrossX(
+        Matrix4& matrix
+    ) noexcept {
+        if(!validMatrix(matrix)) {
+            return false;
         }
-
-        ~ScopedLocalPoseOverride() {
-            if(mActive) {
-                std::memcpy(mTarget,&mOriginal,sizeof(mOriginal));
-            }
+        const Matrix4 original=matrix;
+        const Matrix4 mirror=mirrorXMatrix();
+        Matrix4 result=multiplyMatrix(mirror,original);
+        result=multiplyMatrix(result,mirror);
+        if(!validMatrix(result)) {
+            return false;
         }
-
-        ScopedLocalPoseOverride(const ScopedLocalPoseOverride&)=delete;
-        ScopedLocalPoseOverride& operator=(
-            const ScopedLocalPoseOverride&
-        )=delete;
-        ScopedLocalPoseOverride(ScopedLocalPoseOverride&&)=delete;
-        ScopedLocalPoseOverride& operator=(ScopedLocalPoseOverride&&)=delete;
-
-        [[nodiscard]]
-        bool active() const noexcept {
-            return mActive;
-        }
-
-    private:
-        std::byte* mTarget=nullptr;
-        LocalAttachmentPose mOriginal{};
-        bool mActive=false;
-    };
+        matrix=result;
+        return true;
+    }
 
     template<std::size_t Size>
     [[nodiscard]]
@@ -138,6 +200,7 @@ namespace levioffhand::render::native_attachment_fix {
     inline constexpr std::uint64_t kRightItemCamelHash=fnv1("rightItem");
     inline constexpr std::uint64_t kLeftItemCamelHash=fnv1("leftItem");
     inline constexpr std::uint64_t kPoleBoneHash=fnv1("pole");
+    inline constexpr std::uint64_t kSpearBoneHash=fnv1("spear");
 
     [[nodiscard]]
     constexpr bool shouldRemapBowOwnerBone(
@@ -146,6 +209,46 @@ namespace levioffhand::render::native_attachment_fix {
         bool hooksReady
     ) noexcept {
         return isBow && slot==kOffhandSlot && hooksReady;
+    }
+
+    // Device evidence from v0.2.64: Spear becomes a 2D inventory-style item
+    // when sent through generic renderOffhandItem.  Only Bow is allowed to use
+    // this generic FIRSTPERSON_LEFT route; Spear and Trident stay native 3D.
+    [[nodiscard]]
+    constexpr bool shouldRouteGenericLeftFirstPerson(
+        bool featureEnabled,
+        bool isBow,
+        std::uint32_t slot,
+        bool isFirstPerson
+    ) noexcept {
+        return
+            featureEnabled
+            && isBow
+            && slot==kOffhandSlot
+            && isFirstPerson;
+    }
+
+    [[nodiscard]]
+    constexpr bool shouldAdmitNativeSpearFirstPerson(
+        bool featureEnabled,
+        bool isSpear,
+        std::uint32_t slot,
+        bool isFirstPerson,
+        std::uintptr_t callsiteRva
+    ) noexcept {
+        return
+            featureEnabled
+            && isSpear
+            && slot==kOffhandSlot
+            && isFirstPerson
+            && callsiteRva==kNativeAttachmentHandEquipCallsiteRva;
+    }
+
+    [[nodiscard]]
+    constexpr bool isRightOwnerBoneHash(
+        std::uint64_t hash
+    ) noexcept {
+        return hash==kRightItemLowerHash || hash==kRightItemCamelHash;
     }
 
     [[nodiscard]]

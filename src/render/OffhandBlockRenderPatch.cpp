@@ -1,6 +1,6 @@
+#include "runtime/OffhandPlacementAnimation.hpp"
 #include "render/OffhandBlockRenderPatch.hpp"
 #include "render/NativeAttachmentFix.hpp"
-#include "runtime/OffhandPlacementAnimation.hpp"
 #include <android/log.h>
 #include <array>
 #include <atomic>
@@ -23,82 +23,81 @@ namespace levioffhand::render {
         constexpr std::uintptr_t kDefaultTransformRva=0xA1DEE04;
         constexpr std::uintptr_t kMatrixMultiplyRva=0x94E96F4;
         constexpr std::uintptr_t kItemStackMatchesRva=0xF63BE90;
-        constexpr std::uintptr_t kHandEquipPredicateRva=0xF644970;
         constexpr std::uintptr_t kOffDispatchCallsiteRva=0xADEA0BC;
-        // v0.2.38: the native first-person DataDrivenRenderer runs before
-        // the generic offhand item path. Bow is temporarily hidden from that
-        // one pass only; the real stack is restored before renderOffhandItem.
-        //
-        // Static 1.26.45.1 proof:
-        //   ADE9E9C -> A31662C  : first-person DataDrivenRenderer pass
-        //   EC9D62C             : actor offhand ItemStack getter
-        constexpr std::uintptr_t kFirstPersonDataDrivenRenderRva=0xA31662C;
-        constexpr std::uintptr_t kFirstPersonDataDrivenCallsiteRva=0xADE9E9C;
-        constexpr std::uintptr_t kGetOffhandStackRva=0xEC9D62C;
-
-        // v0.2.59 keeps the proven Bow/Fishing-Rod generic LEFT route. Bow
-        // screen-plane tilt stays live-calibrated for the final TPP pass.
-        // Trident keeps native 3D and trusts Minecraft's native mode-3 Molang
-        // binding; 1.26.45.1 already maps off_hand -> leftitem.
-        constexpr bool kReferenceRouteDiagnostic=true;
-        constexpr float kFishingRodTppVerticalDelta=-0.06f;
         constexpr std::uintptr_t kThirdPersonOffhandRenderItemCallsiteRva=0xA32F030;
         constexpr std::uintptr_t kRenderItemAttachableEnabledCallsiteRva=0xADDEADC;
         constexpr std::uintptr_t kAttachableStateRva=0xA32F0F4;
         constexpr std::uint32_t kOffhandInventorySlot=34;
+        constexpr std::uintptr_t kNativeAttachmentHandEquipCallsiteRva=0x9B369C8;
+        static_assert(
+            kNativeAttachmentHandEquipCallsiteRva
+            == native_attachment_fix::kNativeAttachmentHandEquipCallsiteRva
+        );
 
-        // Native attachment pipeline recovered from libminecraftpe.so 1.26.45.1:
-        //   9B36A80 prepares one attachment and its slot/view context.
-        //   F147CB0 returns the cached owner-binding mode at state +0xDC.
-        //   AF3A1E4 resolves a name-bound attachment bone against the owner.
-        //   9B3A228 draws one attachment stack/slot.
-        //   F147ED0 composes each attachment bone matrix.
+        // Exact attachment boundaries recovered from libminecraftpe.so
+        // 1.26.45.1. Bow FPP keeps the accepted generic LEFT route. Bow TPP
+        // follows the Fishing-Rod-style generic LEFT RenderItem transaction.
+        // Native 3D Trident/Spear FPP mirror only the animated rightitem owner
+        // carrier before their local pole/spear animation is composed.
         constexpr std::uintptr_t kPrepareAttachmentRva=0x9B36A80;
-        constexpr std::uintptr_t kAttachmentBindingModeRva=0xF147CB0;
-        constexpr std::uintptr_t kAttachmentBindingModeFirstCallsiteRva=0x9B37780;
-        constexpr std::uintptr_t kAttachmentBindingModeSecondCallsiteRva=0x9B377D8;
+        constexpr std::uintptr_t kFindOwnerBoneVectorRva=0xF14355C;
+        constexpr std::uintptr_t kCopyOwnerMatrixRva=0xF147CC0;
+        constexpr std::uintptr_t kOwnerVectorMode2PrimaryCallsiteRva=0x9B377FC;
+        constexpr std::uintptr_t kOwnerVectorMode2FallbackCallsiteRva=0x9B3783C;
+        constexpr std::uintptr_t kOwnerVectorMode3CallsiteRva=0x9B378B8;
+        constexpr std::uintptr_t kOwnerMatrixCopyMode2CallsiteRva=0x9B37870;
+        constexpr std::uintptr_t kOwnerMatrixCopyMode3CallsiteRva=0x9B37CB0;
         constexpr std::uintptr_t kResolveOwnerBoneByNameRva=0xAF3A1E4;
         constexpr std::uintptr_t kResolveOwnerBoneFirstCallsiteRva=0x9B3779C;
         constexpr std::uintptr_t kResolveOwnerBoneSecondCallsiteRva=0x9B37814;
-        constexpr std::uintptr_t kDrawAttachmentRva=0x9B3A228;
+        constexpr std::uintptr_t kLegacyAttachmentRouteRva=0x9B368D4;
         constexpr std::uintptr_t kComposeAttachmentBoneMatrixRva=0xF147ED0;
-        constexpr std::uintptr_t kComposeAttachmentBoneMatrixCallsiteRva=0x9B254C8;
-        // Native query.item_slot_to_bone_name implementation in 1.26.45.1:
-        // EE89170 reads the slot-name hash.  off_hand selects the leftitem
-        // result at EE89294.  No hook is needed (or safe) on the 8-byte
-        // EEAB3AC HashedString accessor used by that query.
-        constexpr std::uint64_t kNativeOffHandSlotHash=0x5D4C22812BA3AF8CULL;
-        constexpr std::uint64_t kNativeLeftItemResultHash=0x1CF3FDCBB0AB92F7ULL;
+
+        // Exact native variable.is_first_person path used inside 9B368D4.
+        constexpr std::uintptr_t kAttachmentActorTypeRva=0xEC8A478;
+        constexpr std::uintptr_t kMolangVariableLookupRva=0xEE63508;
+        constexpr std::uintptr_t kMolangValueViewRva=0xEEA721C;
+        constexpr std::uintptr_t kVariableIsFirstPersonStringRva=0x2652B1D;
+        constexpr std::uint64_t kVariableIsFirstPersonHash=0x2739F381184DE4AEULL;
+        constexpr std::uint32_t kLegacyFirstPersonActorType=0x13F;
 
         constexpr std::array<std::uint8_t,16> kPrepareAttachmentFingerprint{
             0xFD,0x7B,0xBA,0xA9,0xFC,0x6F,0x01,0xA9,
             0xFA,0x67,0x02,0xA9,0xF8,0x5F,0x03,0xA9
         };
-        constexpr std::array<std::uint8_t,8>
-            kAttachmentBindingModeFingerprint{
-                0x00,0x70,0x43,0x39,0xC0,0x03,0x5F,0xD6
-            };
-        static_assert(
-            kAttachmentBindingModeFirstCallsiteRva
-            == native_attachment_fix::kBindingModeFirstReadCallsiteRva
-        );
-        static_assert(
-            kAttachmentBindingModeSecondCallsiteRva
-            == native_attachment_fix::kBindingModeSecondReadCallsiteRva
-        );
+        constexpr std::array<std::uint8_t,16> kFindOwnerBoneVectorFingerprint{
+            0xFD,0x7B,0xBF,0xA9,0xFD,0x03,0x00,0x91,
+            0x09,0x70,0x41,0xF9,0x69,0x06,0x00,0xB4
+        };
+        constexpr std::array<std::uint8_t,16> kCopyOwnerMatrixFingerprint{
+            0x20,0x00,0x40,0xBD,0x00,0x30,0x00,0xBD,
+            0x20,0x04,0x40,0xBD,0x00,0x34,0x00,0xBD
+        };
         constexpr std::array<std::uint8_t,16> kResolveOwnerBoneByNameFingerprint{
             0xFF,0x43,0x02,0xD1,0xFD,0x7B,0x03,0xA9,
             0xFC,0x6F,0x04,0xA9,0xFA,0x67,0x05,0xA9
         };
-        constexpr std::array<std::uint8_t,16> kDrawAttachmentFingerprint{
-            0xFF,0x03,0x05,0xD1,0xE8,0x6B,0x00,0xFD,
-            0xFD,0x7B,0x0E,0xA9,0xFC,0x6F,0x0F,0xA9
+        constexpr std::array<std::uint8_t,16> kLegacyAttachmentRouteFingerprint{
+            0xFD,0x7B,0xBA,0xA9,0xFC,0x6F,0x01,0xA9,
+            0xFA,0x67,0x02,0xA9,0xF8,0x5F,0x03,0xA9
+        };
+        constexpr std::array<std::uint8_t,16> kAttachmentActorTypeFingerprint{
+            0xFD,0x7B,0xBF,0xA9,0xFD,0x03,0x00,0x91,
+            0x09,0x08,0x40,0xF9,0x2A,0x83,0x94,0x52
+        };
+        constexpr std::array<std::uint8_t,16> kMolangVariableLookupFingerprint{
+            0xFF,0xC3,0x00,0xD1,0xFD,0x7B,0x01,0xA9,
+            0xF4,0x4F,0x02,0xA9,0xFD,0x43,0x00,0x91
+        };
+        constexpr std::array<std::uint8_t,8> kMolangValueViewFingerprint{
+            0x00,0x20,0x00,0x91,0xC0,0x03,0x5F,0xD6
         };
         constexpr std::array<std::uint8_t,16>
             kComposeAttachmentBoneMatrixFingerprint{
                 0x08,0x78,0x43,0x39,0xA8,0x00,0x00,0x34,
                 0x00,0x84,0x41,0xAD,0x02,0x8C,0x42,0xAD
             };
+
         constexpr std::uintptr_t kFinalOffhandMatrixTopRva=0x107CC804;
         constexpr std::uintptr_t kFinalOffhandMatrixReturnRva=0xADE56D8;
 
@@ -273,13 +272,11 @@ namespace levioffhand::render {
         };
 
         thread_local const void* gLastNativeToolItem=nullptr;
-        thread_local std::uint32_t gDispatchFixLoggedMask=0;
 
         thread_local ToolFamily gCurrentToolFamily=ToolFamily::None;
         thread_local bool gToolFinalMatrixApplied=false;
 
         thread_local const void* gLastCalibratedToolItem=nullptr;
-        thread_local const void* gLastSuppressedTridentItem=nullptr;
 
         constexpr std::size_t kCalibrationFamilyCount=5;
         constexpr std::size_t kCalibrationAxisCount=6;
@@ -298,110 +295,64 @@ namespace levioffhand::render {
         std::uintptr_t gItemStackMatchesTarget=0;
         std::uintptr_t gMinecraftBase=0;
 
-        std::unique_ptr<
-            pl::memory::HookHandle
-        > gHandEquipPredicateHook;
-
+        std::unique_ptr<pl::memory::HookHandle> gHandEquipPredicateHook;
         void* gHandEquipPredicateOriginal=nullptr;
         std::uintptr_t gHandEquipPredicateTarget=0;
-
-        std::unique_ptr<
-            pl::memory::HookHandle
-        > gFirstPersonDataDrivenHook;
-
-        void* gFirstPersonDataDrivenOriginal=nullptr;
-        std::uintptr_t gFirstPersonDataDrivenTarget=0;
-
-        std::uintptr_t gGetOffhandStackTarget=0;
+        thread_local std::uint32_t gGenericLeftFppLoggedMask=0;
 
         std::unique_ptr<pl::memory::HookHandle> gRenderItemRouteHook;
         void* gRenderItemRouteOriginal=nullptr;
-
+        std::uintptr_t gRenderItemRouteTarget=0;
         std::unique_ptr<pl::memory::HookHandle> gAttachableStateRouteHook;
         void* gAttachableStateRouteOriginal=nullptr;
         std::uintptr_t gAttachableStateRouteTarget=0;
-
-        thread_local std::uint32_t gRenderItemRouteDepth=0;
-        thread_local ToolFamily gRenderItemRouteFamily=ToolFamily::None;
-        thread_local std::uint32_t gRenderItemRouteSlot=0;
-        thread_local std::uintptr_t gRenderItemRouteCallsiteRva=0;
-        thread_local bool gRenderItemAttachableCheckSeen=false;
-        thread_local bool gRenderItemNativeAttachable=false;
-        thread_local bool gRenderItemForcedGeneric=false;
-        thread_local bool gTppReferenceMatrixApplied=false;
-        thread_local ToolFamily gPendingTppReferenceFamily=ToolFamily::None;
-        thread_local bool gPendingTppReferenceArmed=false;
-        thread_local std::uint32_t gTppReferenceLatchLoggedMask=0;
-        std::atomic<float> gBowTppTiltDegrees{
-            native_attachment_fix::kBowTppTiltDefault
-        };
-        std::atomic<float> gTridentFppHorizontalOffset{
-            native_attachment_fix::kTridentFppHorizontalDefault
-        };
-        thread_local bool gBowTppGripPivotLogged=false;
-        thread_local bool gFishingRodTppLowerLogged=false;
-        thread_local std::uint32_t gTppReferenceLoggedMask=0;
+        thread_local std::uint32_t gBowTppFishingRodDepth=0;
+        thread_local bool gBowTppRouteLogged=false;
         thread_local bool gBowTppNativeSuppressLogged=false;
-        thread_local bool gTridentFppNativeSuppressLogged=false;
-        thread_local bool gTridentFppGenericLogged=false;
-        thread_local bool gShieldFppReferenceLogged=false;
-        thread_local bool gShieldFppObjectLogged=false;
 
         std::unique_ptr<pl::memory::HookHandle> gPrepareAttachmentHook;
         void* gPrepareAttachmentOriginal=nullptr;
         std::atomic<void*> gPrepareAttachmentOriginalPublished{nullptr};
         std::uintptr_t gPrepareAttachmentTarget=0;
 
-        std::unique_ptr<pl::memory::HookHandle> gAttachmentBindingModeHook;
-        void* gAttachmentBindingModeOriginal=nullptr;
-        std::atomic<void*> gAttachmentBindingModeOriginalPublished{nullptr};
-        std::uintptr_t gAttachmentBindingModeTarget=0;
+        std::unique_ptr<pl::memory::HookHandle> gFindOwnerBoneVectorHook;
+        void* gFindOwnerBoneVectorOriginal=nullptr;
+        std::uintptr_t gFindOwnerBoneVectorTarget=0;
+
+        std::unique_ptr<pl::memory::HookHandle> gCopyOwnerMatrixHook;
+        void* gCopyOwnerMatrixOriginal=nullptr;
+        std::uintptr_t gCopyOwnerMatrixTarget=0;
 
         std::unique_ptr<pl::memory::HookHandle> gResolveOwnerBoneByNameHook;
         void* gResolveOwnerBoneByNameOriginal=nullptr;
         std::atomic<void*> gResolveOwnerBoneByNameOriginalPublished{nullptr};
         std::uintptr_t gResolveOwnerBoneByNameTarget=0;
 
-        thread_local bool gTridentFppPoleRotationLogged=false;
-        thread_local bool gTridentFppHorizontalLogged=false;
-
-        std::unique_ptr<pl::memory::HookHandle> gDrawAttachmentHook;
-        void* gDrawAttachmentOriginal=nullptr;
-        std::uintptr_t gDrawAttachmentTarget=0;
+        std::unique_ptr<pl::memory::HookHandle> gLegacyAttachmentRouteHook;
+        void* gLegacyAttachmentRouteOriginal=nullptr;
+        std::uintptr_t gLegacyAttachmentRouteTarget=0;
 
         std::unique_ptr<pl::memory::HookHandle> gComposeAttachmentBoneMatrixHook;
         void* gComposeAttachmentBoneMatrixOriginal=nullptr;
         std::uintptr_t gComposeAttachmentBoneMatrixTarget=0;
 
-        thread_local std::uint32_t gBowTppBindingDepth=0;
-        thread_local std::uint32_t gTridentFppBindingDepth=0;
-        thread_local std::uint32_t gFirstPersonDataDrivenDepth=0;
-        thread_local std::uint32_t gBowTppAttachmentDepth=0;
-        thread_local std::uint32_t gTridentFppAttachmentDepth=0;
-        std::atomic<float> gBowTppHorizontalOffset{
-            native_attachment_fix::kBowTppHorizontalDefault
-        };
-        thread_local float gActiveBowTppHorizontalOffset=
-            native_attachment_fix::kBowTppHorizontalDefault;
-        constexpr std::size_t kResolvedTridentBindingBoneCapacity=8;
-        std::atomic<std::uint64_t> gTridentFppBindingGeneration{1};
-        // Mutation readiness is separate from trampoline lifetime. Teardown
-        // closes mutation first, then reader admission; a reentrant prepare
-        // transaction may still forward nested mode/resolver calls safely.
+        std::uintptr_t gAttachmentActorTypeTarget=0;
+        std::uintptr_t gMolangVariableLookupTarget=0;
+        std::uintptr_t gMolangValueViewTarget=0;
+        std::uintptr_t gVariableIsFirstPersonStringTarget=0;
+
+        thread_local std::uint32_t gBowOffhandBindingDepth=0;
+        thread_local std::uint32_t gNative3dWeaponFppDepth=0;
+        thread_local ToolFamily gNative3dFppFamily=ToolFamily::None;
+        thread_local bool gBowNativeBindingLogged=false;
+        thread_local bool gNative3dLeftCarrierLogged=false;
+
+        // Mutation readiness is separate from trampoline lifetime.  Prepare
+        // calls the owner resolver reentrantly, so teardown lets admitted
+        // readers finish forwarding before the published trampolines vanish.
         std::atomic_bool gNativeAttachmentHooksReady{false};
         std::atomic_bool gNativeAttachmentTrampolinesAvailable{false};
-        std::atomic_uint32_t gActiveTridentFppBindingScopes{0};
         std::atomic_uint32_t gActiveNativeAttachmentHookReaders{0};
-        thread_local native_attachment_fix::ResolvedBindingCache<
-            kResolvedTridentBindingBoneCapacity
-        > gResolvedTridentFppBindingBones{};
-        thread_local bool gBowTppBindingLogged=false;
-        thread_local bool gTridentFppBindingLogged=false;
-        thread_local bool gTridentFppBindingCacheLogged=false;
-        thread_local bool gBowTppLocalPoseLogged=false;
-        thread_local bool gTridentFppLocalPoseLogged=false;
-        thread_local bool gTridentFppPrepareProbeLogged=false;
-        thread_local std::uint32_t gTridentFppBindingProbeCount=0;
 
         struct BindingPrefix {
             std::int32_t ownerBoneIndex{-1};
@@ -413,37 +364,11 @@ namespace levioffhand::render {
         static_assert(offsetof(BindingPrefix,ownerGeometryIndex)==4);
         static_assert(offsetof(BindingPrefix,nameHash)==8);
 
-        bool applyActiveBowTppLocalPose(
-            native_attachment_fix::LocalAttachmentPose& pose
-        ) noexcept {
-            return native_attachment_fix::mirrorAndOffsetBowLocalPose(
-                pose,
-                gActiveBowTppHorizontalOffset
-            );
-        }
-
-        void invalidateTridentFppBindingGeneration() noexcept {
-            gTridentFppBindingGeneration.fetch_add(
-                1,
-                std::memory_order_acq_rel
-            );
-        }
-
-        void synchronizeTridentFppBindingGeneration() noexcept {
-            const std::uint64_t generation=
-                gTridentFppBindingGeneration.load(
-                    std::memory_order_acquire
-                );
-
-            if(!gResolvedTridentFppBindingBones.synchronize(generation)) {
-                return;
-            }
-
-            gTridentFppBindingLogged=false;
-            gTridentFppBindingCacheLogged=false;
-            gTridentFppPrepareProbeLogged=false;
-            gTridentFppBindingProbeCount=0;
-        }
+        struct OwnerBoneVector {
+            const std::byte* begin=nullptr;
+            const std::byte* end=nullptr;
+        };
+        thread_local OwnerBoneVector gNative3dOwnerVector{};
 
         void waitForNativeAttachmentHookReaders() noexcept {
             while(
@@ -485,6 +410,49 @@ namespace levioffhand::render {
             return value;
         }
 
+        [[nodiscard]]
+        bool validOwnerBoneVector(const OwnerBoneVector& vector) noexcept {
+            if(!vector.begin || !vector.end || vector.end<vector.begin) {
+                return false;
+            }
+            const auto bytes=static_cast<std::size_t>(vector.end-vector.begin);
+            return bytes!=0
+                && bytes%0xE0==0
+                && bytes/0xE0<=256;
+        }
+
+        [[nodiscard]]
+        const float* findOwnerBoneMatrixByHash(
+            const OwnerBoneVector& vector,
+            std::uint64_t hash
+        ) noexcept {
+            if(!validOwnerBoneVector(vector)) {
+                return nullptr;
+            }
+            for(auto* bone=vector.begin;bone<vector.end;bone+=0xE0) {
+                if(readValue<std::uint64_t>(bone,8,0)==hash) {
+                    return reinterpret_cast<const float*>(
+                        bone+native_attachment_fix::kBoneComposedMatrixOffset
+                    );
+                }
+            }
+            return nullptr;
+        }
+
+        [[nodiscard]]
+        const float* findRightOwnerBoneMatrix(
+            const OwnerBoneVector& vector
+        ) noexcept {
+            if(const auto* matrix=findOwnerBoneMatrixByHash(
+                vector,native_attachment_fix::kRightItemLowerHash
+            )) {
+                return matrix;
+            }
+            return findOwnerBoneMatrixByHash(
+                vector,native_attachment_fix::kRightItemCamelHash
+            );
+        }
+
         template<typename T>
         void writeValue(
             void* base,
@@ -503,17 +471,6 @@ namespace levioffhand::render {
             );
         }
 
-        [[nodiscard]]
-        std::uint8_t nativeBindingModeDirect(
-            const void* bindingState
-        ) noexcept {
-            return readValue<std::uint8_t>(
-                bindingState,
-                native_attachment_fix::kBoneBindingModeOffset,
-                0
-            );
-        }
-
         template<std::size_t Size>
         [[nodiscard]]
         bool matchesFingerprint(
@@ -528,58 +485,6 @@ namespace levioffhand::render {
                     expected.size()
                 )==0;
         }
-
-        class BowFppWeakItemMask final {
-        public:
-            BowFppWeakItemMask(
-                void* stack,
-                bool active
-            ) noexcept
-                : mStack(stack),
-                  mOriginalWeakStorage(
-                      readValue<const void*>(
-                          stack,
-                          kItemWeakPtrOffset,
-                          nullptr
-                      )
-                  ),
-                  mActive(
-                      active
-                      &&
-                      stack
-                      &&
-                      mOriginalWeakStorage
-                  ) {
-
-                if(mActive) {
-                    writeValue<const void*>(
-                        mStack,
-                        kItemWeakPtrOffset,
-                        nullptr
-                    );
-                }
-            }
-
-            ~BowFppWeakItemMask() {
-                if(mActive) {
-                    writeValue<const void*>(
-                        mStack,
-                        kItemWeakPtrOffset,
-                        mOriginalWeakStorage
-                    );
-                }
-            }
-
-            [[nodiscard]]
-            bool active() const noexcept {
-                return mActive;
-            }
-
-        private:
-            void* mStack=nullptr;
-            const void* mOriginalWeakStorage=nullptr;
-            bool mActive=false;
-        };
 
         bool belongsToMinecraft(
             std::uintptr_t address
@@ -1145,73 +1050,6 @@ namespace levioffhand::render {
         }
 
         [[nodiscard]]
-        const char* ownerBoneHashKindName(
-            native_attachment_fix::OwnerBoneHashKind kind
-        ) noexcept {
-            using Kind=native_attachment_fix::OwnerBoneHashKind;
-
-            switch(kind) {
-                case Kind::RightItemLower:
-                    return "rightitem";
-                case Kind::RightItemCamel:
-                    return "rightItem";
-                case Kind::LeftItemLower:
-                    return "leftitem";
-                case Kind::LeftItemCamel:
-                    return "leftItem";
-                case Kind::Other:
-                default:
-                    return "other";
-            }
-        }
-
-        [[nodiscard]]
-        bool shouldForceOffhandDispatch(
-            ToolFamily family,
-            std::uintptr_t callsiteRva
-        ) noexcept {
-
-            if(
-                callsiteRva
-                !=
-                kOffDispatchCallsiteRva
-            ) {
-                return false;
-            }
-
-            switch(family) {
-
-                case ToolFamily::Bow:
-                case ToolFamily::Crossbow:
-                case ToolFamily::Trident:
-                case ToolFamily::Spear:
-                    return true;
-
-                case ToolFamily::FishingRod:
-                case ToolFamily::None:
-                default:
-                    return false;
-            }
-        }
-
-        [[nodiscard]]
-        std::uintptr_t minecraftCallsiteRva(
-            std::uintptr_t returnAddress
-        ) noexcept {
-            if(
-                gMinecraftBase==0
-                ||
-                !belongsToMinecraft(returnAddress)
-                ||
-                returnAddress<gMinecraftBase+4
-            ) {
-                return 0;
-            }
-
-            return returnAddress-gMinecraftBase-4;
-        }
-
-        [[nodiscard]]
         bool isExactMinecraftCallsite(
             std::uintptr_t returnAddress,
             std::uintptr_t callsiteRva
@@ -1221,51 +1059,88 @@ namespace levioffhand::render {
                 && returnAddress==gMinecraftBase+callsiteRva+4;
         }
 
-        void logTridentFppBindingProbe(
-            std::uintptr_t callsiteRva,
-            bool exactPrepareResolverCall,
-            const BindingPrefix& source,
-            bool leftAttempted,
-            bool leftResolved,
-            bool finalResolved,
-            const BindingPrefix& finalBinding
-        ) noexcept {
-            constexpr std::uint32_t kProbeLimit=4;
+        using HandEquipPredicateFn=bool(*)(const void*);
 
-            if(
-                !native_attachment_fix::consumeProbeBudget(
-                    gTridentFppBindingProbeCount,
-                    kProbeLimit
-                )
-            ) {
-                return;
+        bool handEquipPredicateDetour(
+            const void* stack
+        ) noexcept {
+            const auto original=reinterpret_cast<HandEquipPredicateFn>(
+                gHandEquipPredicateOriginal
+            );
+            if(!original) {
+                return false;
             }
 
-            __android_log_print(
-                ANDROID_LOG_INFO,
-                kLogTag,
-                "[TridentFppBindingProbe] caller=0x%llX exact=%d "
-                "source=%s hash=0x%llX leftAttempt=%d leftResolved=%d "
-                "finalResolved=%d bone=%d geometry=%d",
-                static_cast<unsigned long long>(callsiteRva),
-                exactPrepareResolverCall?1:0,
-                ownerBoneHashKindName(
-                    native_attachment_fix::classifyOwnerBoneHash(
-                        source.nameHash
-                    )
-                ),
-                static_cast<unsigned long long>(source.nameHash),
-                leftAttempted?1:0,
-                leftResolved?1:0,
-                finalResolved?1:0,
-                finalBinding.ownerBoneIndex,
-                finalBinding.ownerGeometryIndex
-            );
-        }
+            const bool vanilla=original(stack);
+            if(
+                !OffhandBlockRenderPatch::instance().featureEnabled()
+                || !stack
+            ) {
+                return vanilla;
+            }
 
-        [[nodiscard]]
-        bool isTppReferenceFamily(ToolFamily family) noexcept {
-            return family==ToolFamily::Bow || family==ToolFamily::FishingRod;
+            const auto returnAddress=reinterpret_cast<std::uintptr_t>(
+                __builtin_return_address(0)
+            );
+            const std::uintptr_t callsiteRva=
+                returnAddress>=gMinecraftBase+4
+                ? returnAddress-gMinecraftBase-4
+                : 0;
+            const ToolFamily family=classifyTool(stack);
+
+            if(
+                gNative3dWeaponFppDepth!=0
+                && native_attachment_fix::shouldAdmitNativeSpearFirstPerson(
+                    true,
+                    family==ToolFamily::Spear,
+                    native_attachment_fix::kOffhandSlot,
+                    true,
+                    callsiteRva
+                )
+            ) {
+                const std::uint32_t bit=
+                    1u<<static_cast<std::uint32_t>(family);
+                if((gGenericLeftFppLoggedMask&bit)==0) {
+                    gGenericLeftFppLoggedMask|=bit;
+                    __android_log_print(
+                        ANDROID_LOG_INFO,kLogTag,
+                        "[NativeSpearFppRoute] slot6 nativePredicate=0"
+                    );
+                }
+                return false;
+            }
+
+            if(vanilla) {
+                return true;
+            }
+
+            if(!isExactMinecraftCallsite(
+                returnAddress,kOffDispatchCallsiteRva
+            )) {
+                return vanilla;
+            }
+
+            const bool genericLeft=
+                native_attachment_fix::shouldRouteGenericLeftFirstPerson(
+                    true,
+                    family==ToolFamily::Bow,
+                    native_attachment_fix::kOffhandSlot,
+                    true
+                );
+            if(!genericLeft) {
+                return vanilla;
+            }
+
+            const std::uint32_t bit=
+                1u<<static_cast<std::uint32_t>(family);
+            if((gGenericLeftFppLoggedMask&bit)==0) {
+                gGenericLeftFppLoggedMask|=bit;
+                __android_log_print(
+                    ANDROID_LOG_INFO,kLogTag,
+                    "[GenericLeftFppRoute] Bow genericDispatch=1"
+                );
+            }
+            return true;
         }
 
         using RenderItemRouteFn=void(*)(
@@ -1296,80 +1171,39 @@ namespace levioffhand::render {
                 return;
             }
 
+            const auto returnAddress=reinterpret_cast<std::uintptr_t>(
+                __builtin_return_address(0)
+            );
             const ToolFamily family=
                 OffhandBlockRenderPatch::instance().featureEnabled()
                 ? classifyTool(stack)
                 : ToolFamily::None;
-            const std::uintptr_t callsiteRva=minecraftCallsiteRva(
-                reinterpret_cast<std::uintptr_t>(__builtin_return_address(0))
-            );
-            const bool referenceCall=
-                kReferenceRouteDiagnostic
-                && isTppReferenceFamily(family)
+            const bool bowTppReference=
+                family==ToolFamily::Bow
                 && slot==kOffhandInventorySlot
-                && callsiteRva==kThirdPersonOffhandRenderItemCallsiteRva;
-
-            if(!referenceCall) {
-                original(
-                    self,renderContext,actor,stack,arg4,slot,arg6,arg7
+                && isExactMinecraftCallsite(
+                    returnAddress,kThirdPersonOffhandRenderItemCallsiteRva
                 );
+
+            if(!bowTppReference) {
+                original(self,renderContext,actor,stack,arg4,slot,arg6,arg7);
                 return;
             }
 
-            const auto oldDepth=gRenderItemRouteDepth;
-            const auto oldFamily=gRenderItemRouteFamily;
-            const auto oldSlot=gRenderItemRouteSlot;
-            const auto oldCallsite=gRenderItemRouteCallsiteRva;
-            const auto oldSeen=gRenderItemAttachableCheckSeen;
-            const auto oldNative=gRenderItemNativeAttachable;
-            const auto oldForced=gRenderItemForcedGeneric;
-            const auto oldMatrixApplied=gTppReferenceMatrixApplied;
-
-            ++gRenderItemRouteDepth;
-            gRenderItemRouteFamily=family;
-            gRenderItemRouteSlot=slot;
-            gRenderItemRouteCallsiteRva=callsiteRva;
-            gRenderItemAttachableCheckSeen=false;
-            gRenderItemNativeAttachable=false;
-            gRenderItemForcedGeneric=false;
-            gTppReferenceMatrixApplied=false;
-
+            ++gBowTppFishingRodDepth;
             original(self,renderContext,actor,stack,arg4,slot,arg6,arg7);
-
-            const std::uint32_t bit=
-                family==ToolFamily::Bow ? 1U : 2U;
-            if((gTppReferenceLoggedMask & bit)==0U) {
-                gTppReferenceLoggedMask|=bit;
-                __android_log_print(
-                    ANDROID_LOG_INFO,
-                    kLogTag,
-                    "[BowFishingRodTppRoute] family=%s caller=0x%llX "
-                    "slot=%u attachableCheck=%d nativeAttachable=%d "
-                    "forcedGeneric=%d",
-                    toolFamilyName(family),
-                    static_cast<unsigned long long>(callsiteRva),
-                    static_cast<unsigned>(slot),
-                    gRenderItemAttachableCheckSeen?1:0,
-                    gRenderItemNativeAttachable?1:0,
-                    gRenderItemForcedGeneric?1:0
-                );
+            if(gBowTppFishingRodDepth!=0) {
+                --gBowTppFishingRodDepth;
             }
 
-            // RenderItem returns before the generic renderOffhandItem path that
-            // owns the final held-item matrix.  Carry the exact TPP family over
-            // that boundary as a one-shot latch instead of relying on this
-            // temporary RenderItem call depth.
-            gPendingTppReferenceFamily=family;
-            gPendingTppReferenceArmed=true;
-
-            gRenderItemRouteDepth=oldDepth;
-            gRenderItemRouteFamily=oldFamily;
-            gRenderItemRouteSlot=oldSlot;
-            gRenderItemRouteCallsiteRva=oldCallsite;
-            gRenderItemAttachableCheckSeen=oldSeen;
-            gRenderItemNativeAttachable=oldNative;
-            gRenderItemForcedGeneric=oldForced;
-            gTppReferenceMatrixApplied=oldMatrixApplied;
+            if(!gBowTppRouteLogged) {
+                gBowTppRouteLogged=true;
+                __android_log_print(
+                    ANDROID_LOG_INFO,kLogTag,
+                    "[BowFishingRodTppRoute] slot34 caller=0xA32F030 "
+                    "genericLeft=1"
+                );
+            }
         }
 
         using AttachableStateRouteFn=bool(*)(void*);
@@ -1383,39 +1217,22 @@ namespace levioffhand::render {
             }
 
             const bool nativeResult=original(renderer);
-            const std::uintptr_t callsiteRva=minecraftCallsiteRva(
-                reinterpret_cast<std::uintptr_t>(__builtin_return_address(0))
-            );
-
-            const bool exactReferenceCheck=
-                kReferenceRouteDiagnostic
-                && gRenderItemRouteDepth!=0
-                && gRenderItemRouteSlot==kOffhandInventorySlot
-                && gRenderItemRouteCallsiteRva==
-                    kThirdPersonOffhandRenderItemCallsiteRva
-                && callsiteRva==kRenderItemAttachableEnabledCallsiteRva
-                && isTppReferenceFamily(gRenderItemRouteFamily);
-
-            if(!exactReferenceCheck) {
-                return nativeResult;
-            }
-
-            gRenderItemAttachableCheckSeen=true;
-            gRenderItemNativeAttachable=nativeResult;
-
-            // Fishing Rod is the reference: it naturally continues through the
-            // generic LEFT renderer.  Bow is made equivalent only at this exact
-            // slot-34 TPP RenderItem transaction.
-            if(gRenderItemRouteFamily==ToolFamily::Bow && nativeResult) {
-                gRenderItemForcedGeneric=true;
+            if(
+                gBowTppFishingRodDepth!=0
+                && isExactMinecraftCallsite(
+                    reinterpret_cast<std::uintptr_t>(
+                        __builtin_return_address(0)
+                    ),
+                    kRenderItemAttachableEnabledCallsiteRva
+                )
+            ) {
+                // Match Fishing Rod at this exact TPP RenderItem transaction:
+                // continue through generic thirdperson_lefthand instead of the
+                // attachable branch.  No cross-call pending latch is used.
                 return false;
             }
-
             return nativeResult;
         }
-
-        using GetOffhandStackFn=
-            const void*(*)(void*);
 
         using PrepareAttachmentFn=void(*)(
             void*,
@@ -1440,222 +1257,45 @@ namespace levioffhand::render {
                 gNativeAttachmentTrampolinesAvailable,
                 gActiveNativeAttachmentHookReaders
             );
-            if(!readGuard.entered()) {
-                return;
-            }
-
             const auto original=reinterpret_cast<PrepareAttachmentFn>(
-                gPrepareAttachmentOriginalPublished.load(
+                readGuard.entered()
+                ? gPrepareAttachmentOriginalPublished.load(
                     std::memory_order_acquire
                 )
+                : gPrepareAttachmentOriginal
             );
             if(!original) {
                 return;
             }
 
             const std::uint32_t slot=readValue<std::uint32_t>(
-                slotPointer,
-                0,
-                static_cast<std::uint32_t>(-1)
+                slotPointer,0,static_cast<std::uint32_t>(-1)
             );
-            const bool featureEnabled=
-                OffhandBlockRenderPatch::instance().featureEnabled();
-            synchronizeTridentFppBindingGeneration();
             const bool isBow=
-                featureEnabled
+                OffhandBlockRenderPatch::instance().featureEnabled()
                 && stack
                 && stackMatchesId(stack,kBowIdRva);
-            const bool isTrident=
-                featureEnabled
-                && stack
-                && stackMatchesId(stack,kTridentIdRva);
-            if(
-                slot==native_attachment_fix::kOffhandSlot
-                && (
-                    !featureEnabled
-                    || (
-                        gFirstPersonDataDrivenDepth!=0
-                        && !isTrident
-                    )
-                )
-            ) {
-                gResolvedTridentFppBindingBones.clear();
-            }
-            const bool remapBowOwnerBone=
-                !kReferenceRouteDiagnostic
-                && native_attachment_fix::shouldRemapBowOwnerBone(
+            const bool remapBowOwner=
+                native_attachment_fix::shouldRemapBowOwnerBone(
                     isBow,
                     slot,
-                    isFirstPerson,
-                    gNativeAttachmentHooksReady.load(
-                        std::memory_order_acquire
-                    )
-                );
-            // The native bool is not a reliable FPP discriminator for this
-            // attachment.  ADE9E9C is, and its depth is already exact-scoped.
-            const bool remapTridentOwnerBone=
-                native_attachment_fix::shouldRemapTridentOwnerBone(
-                    isTrident,
-                    slot,
-                    gFirstPersonDataDrivenDepth!=0,
                     gNativeAttachmentHooksReady.load(
                         std::memory_order_acquire
                     )
                 );
 
-            if(remapBowOwnerBone) {
-                ++gBowTppBindingDepth;
-            }
-
-            if(remapTridentOwnerBone) {
-                gActiveTridentFppBindingScopes.fetch_add(
-                    1,
-                    std::memory_order_acq_rel
-                );
-                ++gTridentFppBindingDepth;
-
-                if(!gTridentFppPrepareProbeLogged) {
-                    gTridentFppPrepareProbeLogged=true;
-                    __android_log_print(
-                        ANDROID_LOG_INFO,
-                        kLogTag,
-                        "[TridentFppPrepareProbe] slot=%u "
-                        "nativeFirstPersonArg=%d exactFppScope=1 enabled=%d",
-                        static_cast<unsigned>(slot),
-                        isFirstPerson?1:0,
-                        enabled?1:0
-                    );
-                }
+            if(remapBowOwner) {
+                ++gBowOffhandBindingDepth;
             }
 
             original(
-                self,
-                stack,
-                slotPointer,
-                parentContext,
-                actor,
-                isFirstPerson,
-                enabled
+                self,stack,slotPointer,parentContext,actor,
+                isFirstPerson,enabled
             );
 
-            if(remapBowOwnerBone && gBowTppBindingDepth!=0) {
-                --gBowTppBindingDepth;
+            if(remapBowOwner && gBowOffhandBindingDepth!=0) {
+                --gBowOffhandBindingDepth;
             }
-
-            if(
-                remapTridentOwnerBone
-                && gTridentFppBindingDepth!=0
-            ) {
-                --gTridentFppBindingDepth;
-            }
-
-            if(remapTridentOwnerBone) {
-                gActiveTridentFppBindingScopes.fetch_sub(
-                    1,
-                    std::memory_order_acq_rel
-                );
-            }
-        }
-
-        using AttachmentBindingModeFn=std::uint8_t(*)(const void*);
-
-        std::uint8_t attachmentBindingModeDetour(
-            const void* bindingState
-        ) noexcept {
-            const std::uint8_t directMode=
-                nativeBindingModeDirect(bindingState);
-            if(!bindingState) {
-                return directMode;
-            }
-
-            native_attachment_fix::ScopedHookRead readGuard(
-                gNativeAttachmentTrampolinesAvailable,
-                gActiveNativeAttachmentHookReaders
-            );
-            if(!readGuard.entered()) {
-                return directMode;
-            }
-
-            const auto original=reinterpret_cast<AttachmentBindingModeFn>(
-                gAttachmentBindingModeOriginalPublished.load(
-                    std::memory_order_acquire
-                )
-            );
-            if(!original) {
-                return directMode;
-            }
-
-            const std::uint8_t nativeMode=original(bindingState);
-            if(
-                gActiveTridentFppBindingScopes.load(
-                    std::memory_order_acquire
-                )==0
-                || !gNativeAttachmentHooksReady.load(
-                    std::memory_order_acquire
-                )
-            ) {
-                return nativeMode;
-            }
-
-            if(
-                gTridentFppBindingDepth==0
-                || gFirstPersonDataDrivenDepth==0
-                || !OffhandBlockRenderPatch::instance().featureEnabled()
-            ) {
-                return nativeMode;
-            }
-
-            synchronizeTridentFppBindingGeneration();
-
-            const std::uintptr_t returnAddress=
-                reinterpret_cast<std::uintptr_t>(
-                    __builtin_return_address(0)
-                );
-            if(
-                !isExactMinecraftCallsite(
-                    returnAddress,
-                    kAttachmentBindingModeFirstCallsiteRva
-                )
-            ) {
-                return nativeMode;
-            }
-
-            constexpr std::uintptr_t callsiteRva=
-                kAttachmentBindingModeFirstCallsiteRva;
-            const std::uint64_t sourceHash=readValue<std::uint64_t>(
-                bindingState,
-                offsetof(BindingPrefix,nameHash),
-                0
-            );
-            const bool alreadyResolved=
-                gResolvedTridentFppBindingBones.contains(bindingState);
-            const bool forceResolve=
-                native_attachment_fix::shouldForceTridentBindingResolve(
-                    true,
-                    native_attachment_fix::kOffhandSlot,
-                    true,
-                    callsiteRva,
-                    sourceHash,
-                    nativeMode,
-                    alreadyResolved
-                );
-
-            if(!forceResolve) {
-                return nativeMode;
-            }
-
-            if(!gTridentFppBindingCacheLogged) {
-                gTridentFppBindingCacheLogged=true;
-                __android_log_print(
-                    ANDROID_LOG_INFO,
-                    kLogTag,
-                    "[TridentFppBindingCacheReset] slot6 rightitem "
-                    "mode=%u -> unresolved at first read",
-                    static_cast<unsigned>(nativeMode)
-                );
-            }
-
-            return 0;
         }
 
         using ResolveOwnerBoneByNameFn=bool(*)(
@@ -1673,14 +1313,12 @@ namespace levioffhand::render {
                 gNativeAttachmentTrampolinesAvailable,
                 gActiveNativeAttachmentHookReaders
             );
-            if(!readGuard.entered()) {
-                return false;
-            }
-
             const auto original=reinterpret_cast<ResolveOwnerBoneByNameFn>(
-                gResolveOwnerBoneByNameOriginalPublished.load(
+                readGuard.entered()
+                ? gResolveOwnerBoneByNameOriginalPublished.load(
                     std::memory_order_acquire
                 )
+                : gResolveOwnerBoneByNameOriginal
             );
             if(!original) {
                 return false;
@@ -1690,281 +1328,367 @@ namespace levioffhand::render {
                 reinterpret_cast<std::uintptr_t>(
                     __builtin_return_address(0)
                 );
-            const std::uintptr_t callsiteRva=
-                minecraftCallsiteRva(returnAddress);
-            const bool exactPrepareResolverCall=
+            const bool exactResolverCall=
                 isExactMinecraftCallsite(
-                    returnAddress,
-                    kResolveOwnerBoneFirstCallsiteRva
+                    returnAddress,kResolveOwnerBoneFirstCallsiteRva
                 )
-                ||
-                isExactMinecraftCallsite(
-                    returnAddress,
-                    kResolveOwnerBoneSecondCallsiteRva
+                || isExactMinecraftCallsite(
+                    returnAddress,kResolveOwnerBoneSecondCallsiteRva
                 );
-
-            const bool mutationReady=
-                gNativeAttachmentHooksReady.load(
+            const bool remapBow=
+                OffhandBlockRenderPatch::instance().featureEnabled()
+                && gNativeAttachmentHooksReady.load(
                     std::memory_order_acquire
-                );
-            const bool remapBowOwnerBone=
-                mutationReady
-                && gBowTppBindingDepth!=0;
-            const bool remapTridentOwnerBone=
-                !remapBowOwnerBone
-                && gTridentFppBindingDepth!=0
-                && mutationReady;
-            const bool featureEnabled=
-                OffhandBlockRenderPatch::instance().featureEnabled();
-            const BindingPrefix sourceBinding=
+                )
+                && gBowOffhandBindingDepth!=0;
+
+            if(!remapBow || !exactResolverCall || !bindingState) {
+                return original(self,ownerGeometry,bindingState);
+            }
+
+            const BindingPrefix source=
                 readValue<BindingPrefix>(bindingState,0,{});
-
-            if(
-                (remapBowOwnerBone || remapTridentOwnerBone)
-                && exactPrepareResolverCall
-                && bindingState
-                && featureEnabled
-            ) {
-                BindingPrefix candidate=sourceBinding;
-                std::uint64_t leftHash=0;
-                const bool leftAttempted=
-                    native_attachment_fix::mapRightOwnerBoneToLeft(
-                        candidate.nameHash,
-                        leftHash
-                    );
-                bool leftResolved=false;
-
-                if(leftAttempted) {
-                    candidate.ownerBoneIndex=-1;
-                    candidate.ownerGeometryIndex=-1;
-                    candidate.nameHash=leftHash;
-                    leftResolved=original(self,ownerGeometry,&candidate);
-
-                    if(leftResolved) {
-                        writeValue<std::int32_t>(
-                            bindingState,
-                            0,
-                            candidate.ownerBoneIndex
-                        );
-                        writeValue<std::int32_t>(
-                            bindingState,
-                            sizeof(std::int32_t),
-                            candidate.ownerGeometryIndex
-                        );
-
-                        if(remapTridentOwnerBone) {
-                            static_cast<void>(
-                                gResolvedTridentFppBindingBones.
-                                    recordResolution(
-                                        bindingState,
-                                        true
-                                    )
-                            );
-                        }
-
-                        if(
-                            remapBowOwnerBone
-                            && !gBowTppBindingLogged
-                        ) {
-                            gBowTppBindingLogged=true;
-                            __android_log_print(
-                                ANDROID_LOG_INFO,
-                                kLogTag,
-                                "[BowTppBoneBinding] slot6 native Bow "
-                                "bound to owner left-item bone"
-                            );
-                        }
-
-                        if(
-                            remapTridentOwnerBone
-                            && !gTridentFppBindingLogged
-                        ) {
-                            gTridentFppBindingLogged=true;
-                            __android_log_print(
-                                ANDROID_LOG_INFO,
-                                kLogTag,
-                                "[TridentFppBoneBinding] slot6 native "
-                                "Trident bound to owner left-item bone"
-                            );
-                        }
-
-                        if(remapTridentOwnerBone) {
-                            logTridentFppBindingProbe(
-                                callsiteRva,
-                                true,
-                                sourceBinding,
-                                true,
-                                true,
-                                true,
-                                candidate
-                            );
-                        }
-
-                        return true;
-                    }
-                }
-
-                if(remapTridentOwnerBone) {
-                    const bool nativeResolved=
-                        original(self,ownerGeometry,bindingState);
-                    const BindingPrefix nativeBinding=
-                        readValue<BindingPrefix>(bindingState,0,{});
-
-                    logTridentFppBindingProbe(
-                        callsiteRva,
-                        true,
-                        sourceBinding,
-                        leftAttempted,
-                        leftResolved,
-                        nativeResolved,
-                        nativeBinding
-                    );
-
-                    return nativeResolved;
-                }
+            BindingPrefix candidate=source;
+            std::uint64_t leftHash=0;
+            if(!native_attachment_fix::mapRightOwnerBoneToLeft(
+                source.nameHash,leftHash
+            )) {
+                return original(self,ownerGeometry,bindingState);
             }
 
-            const bool resolved=original(self,ownerGeometry,bindingState);
+            candidate.ownerBoneIndex=-1;
+            candidate.ownerGeometryIndex=-1;
+            candidate.nameHash=leftHash;
+            if(!original(self,ownerGeometry,&candidate)) {
+                return original(self,ownerGeometry,bindingState);
+            }
 
-            if(
-                remapTridentOwnerBone
-                && bindingState
-                && featureEnabled
-            ) {
-                const BindingPrefix finalBinding=
-                    readValue<BindingPrefix>(bindingState,0,{});
+            writeValue<std::int32_t>(
+                bindingState,0,candidate.ownerBoneIndex
+            );
+            writeValue<std::int32_t>(
+                bindingState,sizeof(std::int32_t),
+                candidate.ownerGeometryIndex
+            );
 
-                logTridentFppBindingProbe(
-                    callsiteRva,
-                    false,
-                    sourceBinding,
-                    false,
-                    false,
-                    resolved,
-                    finalBinding
+            if(!gBowNativeBindingLogged) {
+                gBowNativeBindingLogged=true;
+                __android_log_print(
+                    ANDROID_LOG_INFO,kLogTag,
+                    "[BowNativeOwnerBinding] slot6 local=rightitem owner=leftitem"
                 );
             }
-
-            return resolved;
+            return true;
         }
 
-        using DrawAttachmentFn=void(*)(
+        using FindOwnerBoneVectorFn=void*(*)(
+            void*,std::int32_t,bool
+        );
+
+        void* findOwnerBoneVectorDetour(
+            void* ownerModel,
+            std::int32_t geometryId,
+            bool createIfMissing
+        ) noexcept {
+            const auto original=reinterpret_cast<FindOwnerBoneVectorFn>(
+                gFindOwnerBoneVectorOriginal
+            );
+            if(!original) {
+                return nullptr;
+            }
+            void* result=original(ownerModel,geometryId,createIfMissing);
+            if(
+                !result
+                || gNative3dWeaponFppDepth==0
+                || !OffhandBlockRenderPatch::instance().featureEnabled()
+            ) {
+                return result;
+            }
+
+            const std::uintptr_t returnAddress=
+                reinterpret_cast<std::uintptr_t>(
+                    __builtin_return_address(0)
+                );
+            const bool ownerVectorCall=
+                isExactMinecraftCallsite(
+                    returnAddress,kOwnerVectorMode2PrimaryCallsiteRva
+                )
+                || isExactMinecraftCallsite(
+                    returnAddress,kOwnerVectorMode2FallbackCallsiteRva
+                )
+                || isExactMinecraftCallsite(
+                    returnAddress,kOwnerVectorMode3CallsiteRva
+                );
+            if(!ownerVectorCall) {
+                return result;
+            }
+
+            OwnerBoneVector candidate{
+                readValue<const std::byte*>(result,0,nullptr),
+                readValue<const std::byte*>(result,sizeof(void*),nullptr)
+            };
+            if(validOwnerBoneVector(candidate)) {
+                gNative3dOwnerVector=candidate;
+            }
+            return result;
+        }
+
+        using CopyOwnerMatrixFn=void(*)(void*,const float*);
+
+        void copyOwnerMatrixDetour(
+            void* targetBoneState,
+            const float* ownerMatrix
+        ) noexcept {
+            const auto original=reinterpret_cast<CopyOwnerMatrixFn>(
+                gCopyOwnerMatrixOriginal
+            );
+            if(!original) {
+                return;
+            }
+
+            const std::uintptr_t returnAddress=
+                reinterpret_cast<std::uintptr_t>(
+                    __builtin_return_address(0)
+                );
+            const bool exactOwnerCopy=
+                isExactMinecraftCallsite(
+                    returnAddress,kOwnerMatrixCopyMode2CallsiteRva
+                )
+                || isExactMinecraftCallsite(
+                    returnAddress,kOwnerMatrixCopyMode3CallsiteRva
+                );
+            const std::uint64_t boneHash=
+                targetBoneState
+                ? readValue<std::uint64_t>(targetBoneState,8,0)
+                : 0;
+            const bool native3dRoot=
+                gNative3dWeaponFppDepth!=0
+                && exactOwnerCopy
+                && (
+                    (
+                        gNative3dFppFamily==ToolFamily::Trident
+                        && boneHash==native_attachment_fix::kPoleBoneHash
+                    )
+                    || (
+                        gNative3dFppFamily==ToolFamily::Spear
+                        && boneHash==native_attachment_fix::kSpearBoneHash
+                    )
+                );
+            if(!native3dRoot) {
+                original(targetBoneState,ownerMatrix);
+                return;
+            }
+
+            const float* rightOwnerMatrix=
+                findRightOwnerBoneMatrix(gNative3dOwnerVector);
+            if(!rightOwnerMatrix) {
+                original(targetBoneState,ownerMatrix);
+                return;
+            }
+
+            native_attachment_fix::Matrix4 leftCarrier{};
+            std::memcpy(
+                leftCarrier.data(),rightOwnerMatrix,sizeof(leftCarrier)
+            );
+            const float beforeX=leftCarrier[12];
+            const float beforeY=leftCarrier[13];
+            const float beforeZ=leftCarrier[14];
+            if(!native_attachment_fix::mirrorOwnerCarrierAcrossX(leftCarrier)) {
+                original(targetBoneState,ownerMatrix);
+                return;
+            }
+
+            // Seed only the mirrored owner carrier. Minecraft then composes the
+            // native spear/pole local animation unchanged on top of this frame.
+            original(targetBoneState,leftCarrier.data());
+
+            if(!gNative3dLeftCarrierLogged) {
+                gNative3dLeftCarrierLogged=true;
+                __android_log_print(
+                    ANDROID_LOG_INFO,kLogTag,
+                    "[Native3dLeftCarrier] family=%u "
+                    "R=(%.3f,%.3f,%.3f) L=(%.3f,%.3f,%.3f)",
+                    static_cast<unsigned>(gNative3dFppFamily),
+                    static_cast<double>(beforeX),
+                    static_cast<double>(beforeY),
+                    static_cast<double>(beforeZ),
+                    static_cast<double>(leftCarrier[12]),
+                    static_cast<double>(leftCarrier[13]),
+                    static_cast<double>(leftCarrier[14])
+                );
+            }
+        }
+
+        using LegacyAttachmentRouteFn=void(*)(
             void*,
             const void*,
             const std::uint32_t*,
             void*,
             void*
         );
+        using AttachmentActorTypeFn=std::uint32_t(*)(void*);
+        using MolangVariableLookupFn=void*(*)(
+            void*,std::uint64_t,const char*
+        );
+        using MolangValueViewFn=const float*(*)(void*);
 
-        void drawAttachmentDetour(
+        [[nodiscard]]
+        bool queryNativeFirstPerson(
+            void* parentContext,
+            void* actor
+        ) noexcept {
+            if(
+                !parentContext
+                || !actor
+                || !belongsToMinecraft(gAttachmentActorTypeTarget)
+                || !belongsToMinecraft(gMolangVariableLookupTarget)
+                || !belongsToMinecraft(gMolangValueViewTarget)
+                || !belongsToMinecraft(gVariableIsFirstPersonStringTarget)
+            ) {
+                return false;
+            }
+
+            const auto actorType=reinterpret_cast<AttachmentActorTypeFn>(
+                gAttachmentActorTypeTarget
+            );
+            if(actorType(actor)!=kLegacyFirstPersonActorType) {
+                return false;
+            }
+
+            void* variableContext=readValue<void*>(parentContext,8,nullptr);
+            if(!variableContext) {
+                return false;
+            }
+
+            const auto lookup=reinterpret_cast<MolangVariableLookupFn>(
+                gMolangVariableLookupTarget
+            );
+            const auto view=reinterpret_cast<MolangValueViewFn>(
+                gMolangValueViewTarget
+            );
+            auto* valueObject=lookup(
+                variableContext,
+                kVariableIsFirstPersonHash,
+                reinterpret_cast<const char*>(
+                    gVariableIsFirstPersonStringTarget
+                )
+            );
+            if(!valueObject) {
+                return false;
+            }
+            const float* value=view(valueObject);
+            return value && std::isfinite(*value) && *value!=0.0F;
+        }
+
+        class ScopedNativeDepth final {
+        public:
+            explicit ScopedNativeDepth(
+                std::uint32_t& depth,
+                bool active
+            ) noexcept : mDepth(active?&depth:nullptr) {
+                if(mDepth) {
+                    ++*mDepth;
+                }
+            }
+            ~ScopedNativeDepth() {
+                if(mDepth && *mDepth!=0) {
+                    --*mDepth;
+                }
+            }
+            ScopedNativeDepth(const ScopedNativeDepth&)=delete;
+            ScopedNativeDepth& operator=(const ScopedNativeDepth&)=delete;
+        private:
+            std::uint32_t* mDepth=nullptr;
+        };
+
+        void legacyAttachmentRouteDetour(
             void* self,
             const void* stack,
             const std::uint32_t* slotPointer,
             void* parentContext,
             void* actor
         ) noexcept {
-            const auto original=reinterpret_cast<DrawAttachmentFn>(
-                gDrawAttachmentOriginal
+            const auto original=reinterpret_cast<LegacyAttachmentRouteFn>(
+                gLegacyAttachmentRouteOriginal
             );
             if(!original) {
                 return;
             }
 
             const std::uint32_t slot=readValue<std::uint32_t>(
-                slotPointer,
-                0,
-                static_cast<std::uint32_t>(-1)
+                slotPointer,0,static_cast<std::uint32_t>(-1)
             );
-            const bool featureEnabled=
-                OffhandBlockRenderPatch::instance().featureEnabled();
-            const bool hooksReady=
-                gNativeAttachmentHooksReady.load(
+            const bool enabled=
+                OffhandBlockRenderPatch::instance().featureEnabled()
+                && gNativeAttachmentHooksReady.load(
                     std::memory_order_acquire
                 );
-            const bool isBow=
-                featureEnabled
-                && hooksReady
-                && stack
-                && stackMatchesId(stack,kBowIdRva);
-            const bool isTrident=
-                featureEnabled
-                && hooksReady
-                && stack
-                && stackMatchesId(stack,kTridentIdRva);
-            const bool isFirstPerson=
-                gFirstPersonDataDrivenDepth!=0;
-            const std::uintptr_t callsiteRva=minecraftCallsiteRva(
-                reinterpret_cast<std::uintptr_t>(
-                    __builtin_return_address(0)
-                )
-            );
-            const bool effectiveOffhandDraw=
-                native_attachment_fix::isEffectiveOffhandDrawCallsite(
-                    callsiteRva
-                );
-            const bool suppressBowNative=
-                kReferenceRouteDiagnostic
-                && effectiveOffhandDraw
-                && isBow
+            const ToolFamily family=enabled
+                ? classifyTool(stack)
+                : ToolFamily::None;
+            const bool nativeFirstPerson=
+                enabled
                 && slot==native_attachment_fix::kOffhandSlot
-                && !isFirstPerson;
-            if(suppressBowNative) {
-                if(!gBowTppNativeSuppressLogged) {
-                    gBowTppNativeSuppressLogged=true;
+                && queryNativeFirstPerson(parentContext,actor);
+
+            const bool genericLeftBowFpp=
+                native_attachment_fix::shouldRouteGenericLeftFirstPerson(
+                    enabled,
+                    family==ToolFamily::Bow,
+                    slot,
+                    nativeFirstPerson
+                );
+            if(genericLeftBowFpp) {
+                const std::uint32_t bit=
+                    1u<<static_cast<std::uint32_t>(family);
+                if((gGenericLeftFppLoggedMask&bit)==0) {
+                    gGenericLeftFppLoggedMask|=bit;
                     __android_log_print(
-                        ANDROID_LOG_INFO,
-                        kLogTag,
-                        "[BowFishingRodTppNativeSuppress] slot6 native Bow "
-                        "attachment suppressed; generic LEFT route is reference"
+                        ANDROID_LOG_INFO,kLogTag,
+                        "[GenericLeftFppRoute] Bow slot6 nativeSuppressed=1"
                     );
                 }
                 return;
             }
 
-            const bool offsetBow=
-                !kReferenceRouteDiagnostic
-                && effectiveOffhandDraw
-                && native_attachment_fix::shouldFixBowLocalPose(
-                    isBow,
-                    slot,
-                    isFirstPerson
-                );
-            const bool fixTrident=
-                effectiveOffhandDraw
-                && isTrident
+            const bool bowWorldTpp=
+                enabled
+                && gBowTppFishingRodDepth!=0
                 && slot==native_attachment_fix::kOffhandSlot
-                && isFirstPerson;
-            if(offsetBow) {
-                ++gBowTppAttachmentDepth;
-            }
-            if(fixTrident) {
-                ++gTridentFppAttachmentDepth;
+                && !nativeFirstPerson
+                && family==ToolFamily::Bow;
+            if(bowWorldTpp) {
+                if(!gBowTppNativeSuppressLogged) {
+                    gBowTppNativeSuppressLogged=true;
+                    __android_log_print(
+                        ANDROID_LOG_INFO,kLogTag,
+                        "[BowFishingRodTppNativeSuppress] slot6 native Bow "
+                        "attachment suppressed; generic LEFT world route active"
+                    );
+                }
+                return;
             }
 
-            if(
-                effectiveOffhandDraw
-                && isTrident
-                && slot==native_attachment_fix::kOffhandSlot
-                && isFirstPerson
-                && !gTridentFppNativeSuppressLogged
-            ) {
-                gTridentFppNativeSuppressLogged=true;
-                __android_log_print(
-                    ANDROID_LOG_INFO,
-                    kLogTag,
-                    "[TridentFppNative3D] native slot6 attachment retained"
+            const bool native3dFpp=
+                nativeFirstPerson
+                && (
+                    family==ToolFamily::Trident
+                    || family==ToolFamily::Spear
                 );
-            }
 
+            const ToolFamily previousNative3dFamily=gNative3dFppFamily;
+            if(native3dFpp) {
+                gNative3dFppFamily=family;
+                gNative3dOwnerVector={};
+            }
+            ScopedNativeDepth native3dScope(
+                gNative3dWeaponFppDepth,native3dFpp
+            );
             original(self,stack,slotPointer,parentContext,actor);
-
-            if(offsetBow && gBowTppAttachmentDepth!=0) {
-                --gBowTppAttachmentDepth;
+            if(native3dFpp) {
+                gNative3dFppFamily=previousNative3dFamily;
+                gNative3dOwnerVector={};
             }
-            if(fixTrident && gTridentFppAttachmentDepth!=0) {
-                --gTridentFppAttachmentDepth;
-            }
-
         }
 
         using ComposeAttachmentBoneMatrixFn=void(*)(
@@ -1982,270 +1706,8 @@ namespace levioffhand::render {
                 reinterpret_cast<ComposeAttachmentBoneMatrixFn>(
                     gComposeAttachmentBoneMatrixOriginal
                 );
-            if(!original) {
-                return;
-            }
-
-            if(
-                !boneState
-                || !matrix
-                || !OffhandBlockRenderPatch::instance().featureEnabled()
-                || !isExactMinecraftCallsite(
-                    reinterpret_cast<std::uintptr_t>(
-                        __builtin_return_address(0)
-                    ),
-                    kComposeAttachmentBoneMatrixCallsiteRva
-                )
-            ) {
+            if(original) {
                 original(boneState,pivot,matrix);
-                return;
-            }
-
-            const std::uint64_t boneNameHash=readValue<std::uint64_t>(
-                boneState,
-                8,
-                0
-            );
-
-            const bool offsetBowRoot=
-                gBowTppAttachmentDepth!=0
-                && (
-                    boneNameHash
-                    ==
-                    native_attachment_fix::kRightItemLowerHash
-                    ||
-                    boneNameHash
-                    ==
-                    native_attachment_fix::kRightItemCamelHash
-                );
-            const bool rotateTridentPole=
-                gTridentFppAttachmentDepth!=0
-                && boneNameHash==native_attachment_fix::kPoleBoneHash;
-
-            if(rotateTridentPole) {
-                original(boneState,pivot,matrix);
-                const float nativeTx=matrix->value[12];
-                const float nativeTy=matrix->value[13];
-                const float nativeTz=matrix->value[14];
-                const bool rotated=
-                    native_attachment_fix::rotateTridentPoleHeadUp(
-                        matrix->value
-                    );
-
-                // The native Molang binding already chooses leftitem for
-                // slot=off_hand.  The remaining visual displacement comes from
-                // the main-hand first-person Trident animation itself.  Calibrate
-                // only camera/model X here; Y/Z stay exactly native.
-                const float horizontal=
-                    gTridentFppHorizontalOffset.load(
-                        std::memory_order_acquire
-                    );
-                matrix->value[12]=nativeTx+horizontal;
-                matrix->value[13]=nativeTy;
-                matrix->value[14]=nativeTz;
-
-                if(rotated && !gTridentFppPoleRotationLogged) {
-                    gTridentFppPoleRotationLogged=true;
-                    __android_log_print(
-                        ANDROID_LOG_INFO,
-                        kLogTag,
-                        "[TridentFppPoleRotation] postComposeZ180 "
-                        "nativeYZPreserved=1"
-                    );
-                }
-                if(!gTridentFppHorizontalLogged) {
-                    gTridentFppHorizontalLogged=true;
-                    __android_log_print(
-                        ANDROID_LOG_INFO,
-                        kLogTag,
-                        "[TridentFppHorizontal] nativeX=%.3f delta=%.3f finalX=%.3f",
-                        static_cast<double>(nativeTx),
-                        static_cast<double>(horizontal),
-                        static_cast<double>(matrix->value[12])
-                    );
-                }
-                return;
-            }
-
-            if(!offsetBowRoot) {
-                original(boneState,pivot,matrix);
-                return;
-            }
-
-            const auto localPoseBefore=
-                readValue<native_attachment_fix::LocalAttachmentPose>(
-                    boneState,
-                    native_attachment_fix::kBoneLocalPoseOffset,
-                    {}
-                );
-
-            native_attachment_fix::LocalPoseMutator localPoseMutator=nullptr;
-            float bowHorizontalOffset=
-                native_attachment_fix::kBowTppHorizontalDefault;
-            if(offsetBowRoot) {
-                bowHorizontalOffset=gBowTppHorizontalOffset.load(
-                    std::memory_order_acquire
-                );
-                gActiveBowTppHorizontalOffset=bowHorizontalOffset;
-                localPoseMutator=&applyActiveBowTppLocalPose;
-            }
-
-            // F147ED0 consumes the animated local pose at +0x70 only when its
-            // +0xDE matrix-cache flag is clear. The scoped override snapshots
-            // the pose, cached matrix, and flag; invalidates the cache for this
-            // call; then restores all native state after the corrected output
-            // matrix has been returned. Child bones still inherit that output,
-            // while later perspectives/actors cannot inherit the temporary
-            // pose or cache.
-            native_attachment_fix::ScopedLocalPoseOverride localPoseOverride(
-                boneState,
-                localPoseMutator
-            );
-
-            original(boneState,pivot,matrix);
-
-            if(
-                offsetBowRoot
-                && localPoseOverride.active()
-                && !gBowTppLocalPoseLogged
-            ) {
-                gBowTppLocalPoseLogged=true;
-                auto corrected=localPoseBefore;
-                static_cast<void>(
-                    native_attachment_fix::mirrorAndOffsetBowLocalPose(
-                        corrected,
-                        bowHorizontalOffset
-                    )
-                );
-                __android_log_print(
-                    ANDROID_LOG_INFO,
-                    kLogTag,
-                    "[BowTppLocalPose] slot6 rightitem localX %.3f -> "
-                    "%.3f (TPP slider %.3f)",
-                    static_cast<double>(localPoseBefore.position[0]),
-                    static_cast<double>(corrected.position[0]),
-                    static_cast<double>(bowHorizontalOffset)
-                );
-            }
-
-        }
-
-        using FirstPersonDataDrivenFn=
-            void(*)(
-                void*,
-                void*,
-                void*,
-                const void*,
-                const void*,
-                bool
-            );
-
-        void firstPersonDataDrivenDetour(
-            void* self,
-            void* renderContext,
-            void* actor,
-            const void* position,
-            const void* rotation,
-            bool mode
-        ) noexcept {
-
-            const auto original=
-                reinterpret_cast<FirstPersonDataDrivenFn>(
-                    gFirstPersonDataDrivenOriginal
-                );
-
-            if(!original) {
-                return;
-            }
-
-            const auto callsiteRva=
-                minecraftCallsiteRva(
-                    reinterpret_cast<std::uintptr_t>(
-                        __builtin_return_address(0)
-                    )
-                );
-
-            const bool featureEnabled=
-                OffhandBlockRenderPatch::instance().featureEnabled();
-
-            const bool isFirstPersonCallsite=
-                callsiteRva==kFirstPersonDataDrivenCallsiteRva;
-
-            if(
-                !featureEnabled
-                ||
-                !actor
-                ||
-                !gGetOffhandStackTarget
-            ) {
-                original(
-                    self,
-                    renderContext,
-                    actor,
-                    position,
-                    rotation,
-                    mode
-                );
-                return;
-            }
-
-            const auto getOffhand=
-                reinterpret_cast<GetOffhandStackFn>(
-                    gGetOffhandStackTarget
-                );
-
-            void* actorOffhand=
-                const_cast<void*>(
-                    getOffhand(actor)
-                );
-
-            const bool offhandBow=
-                actorOffhand
-                &&
-                stackMatchesId(
-                    actorOffhand,
-                    kBowIdRva
-                );
-
-            // FPP keeps the v0.2.38 mechanism that is already proven at runtime:
-            // hide Bow identity only while the exact first-person native pass runs.
-            BowFppWeakItemMask bowMask(
-                actorOffhand,
-                offhandBow
-                && isFirstPersonCallsite
-            );
-
-            if(bowMask.active()) {
-                static thread_local bool loggedFpp=false;
-                if(!loggedFpp) {
-                    loggedFpp=true;
-                    __android_log_print(
-                        ANDROID_LOG_INFO,
-                        kLogTag,
-                        "[BowFppNativeMask] temporarily hid offhand Bow "
-                        "from first-person DataDrivenRenderer"
-                    );
-                }
-            }
-
-            // The exact ADE9E9C actor pass encloses native attachment draws.
-            // Keep a narrow view scope so the Trident correction never reaches
-            // TPP, inventory preview, projectiles, or mainhand attachments.
-            if(isFirstPersonCallsite) {
-                ++gFirstPersonDataDrivenDepth;
-            }
-
-            original(
-                self,
-                renderContext,
-                actor,
-                position,
-                rotation,
-                mode
-            );
-
-            if(isFirstPersonCallsite && gFirstPersonDataDrivenDepth!=0) {
-                --gFirstPersonDataDrivenDepth;
             }
         }
 
@@ -2276,209 +1738,6 @@ namespace levioffhand::render {
             ToolFamily mOldFamily;
             bool mOldApplied;
         };
-
-        class TppReferenceRenderScope final {
-        public:
-            explicit TppReferenceRenderScope(
-                ToolFamily family
-            ) noexcept
-                :
-                mOldDepth(gRenderItemRouteDepth),
-                mOldFamily(gRenderItemRouteFamily),
-                mOldSlot(gRenderItemRouteSlot),
-                mOldCallsite(gRenderItemRouteCallsiteRva),
-                mOldMatrixApplied(gTppReferenceMatrixApplied)
-            {
-                if(!gPendingTppReferenceArmed) {
-                    return;
-                }
-
-                const ToolFamily pendingFamily=gPendingTppReferenceFamily;
-                gPendingTppReferenceArmed=false;
-                gPendingTppReferenceFamily=ToolFamily::None;
-
-                if(
-                    family!=pendingFamily
-                    || !isTppReferenceFamily(family)
-                ) {
-                    return;
-                }
-
-                mActive=true;
-                gRenderItemRouteDepth=mOldDepth+1;
-                gRenderItemRouteFamily=family;
-                gRenderItemRouteSlot=kOffhandInventorySlot;
-                gRenderItemRouteCallsiteRva=
-                    kThirdPersonOffhandRenderItemCallsiteRva;
-                gTppReferenceMatrixApplied=false;
-
-                const std::uint32_t bit=
-                    family==ToolFamily::Bow ? 1U : 2U;
-                if((gTppReferenceLatchLoggedMask & bit)==0U) {
-                    gTppReferenceLatchLoggedMask|=bit;
-                    __android_log_print(
-                        ANDROID_LOG_INFO,
-                        kLogTag,
-                        "[TppReferenceLatch] family=%s "
-                        "renderOffhand scope armed",
-                        toolFamilyName(family)
-                    );
-                }
-            }
-
-            ~TppReferenceRenderScope() {
-                if(!mActive) {
-                    return;
-                }
-
-                gRenderItemRouteDepth=mOldDepth;
-                gRenderItemRouteFamily=mOldFamily;
-                gRenderItemRouteSlot=mOldSlot;
-                gRenderItemRouteCallsiteRva=mOldCallsite;
-                gTppReferenceMatrixApplied=mOldMatrixApplied;
-            }
-
-            TppReferenceRenderScope(const TppReferenceRenderScope&)=delete;
-            TppReferenceRenderScope& operator=(
-                const TppReferenceRenderScope&
-            )=delete;
-
-        private:
-            std::uint32_t mOldDepth=0;
-            ToolFamily mOldFamily=ToolFamily::None;
-            std::uint32_t mOldSlot=0;
-            std::uintptr_t mOldCallsite=0;
-            bool mOldMatrixApplied=false;
-            bool mActive=false;
-        };
-
-        using HandEquipPredicateFn=
-            bool(*)(
-                const void*
-            );
-
-        bool handEquipPredicateDetour(
-            const void* stack
-        ) noexcept {
-
-            const auto original=
-                reinterpret_cast<HandEquipPredicateFn>(
-                    gHandEquipPredicateOriginal
-                );
-
-            if(!original) {
-                return false;
-            }
-
-            const bool result=
-                original(
-                    stack
-                );
-
-            if(
-                result
-                ||
-                !OffhandBlockRenderPatch::
-                    instance().
-                    featureEnabled()
-            ) {
-                return result;
-            }
-
-            const ToolFamily family=
-                classifyTool(
-                    stack
-                );
-
-            if(
-                family
-                ==
-                ToolFamily::None
-            ) {
-                return result;
-            }
-
-            const std::uintptr_t returnAddress=
-                reinterpret_cast<std::uintptr_t>(
-                    __builtin_return_address(0)
-                );
-
-            if(
-                gMinecraftBase==0
-                ||
-                !belongsToMinecraft(
-                    returnAddress
-                )
-                ||
-                returnAddress
-                <
-                gMinecraftBase+4
-            ) {
-                return result;
-            }
-
-            const std::uintptr_t returnRva=
-                returnAddress
-                -
-                gMinecraftBase;
-
-            const std::uintptr_t callsiteRva=
-                returnRva
-                -
-                4;
-
-            if(
-                !result
-                &&
-                shouldForceOffhandDispatch(
-                    family,
-                    callsiteRva
-                )
-            ) {
-
-                const std::uint32_t bit=
-                    1u
-                    <<
-                    static_cast<std::uint32_t>(
-                        family
-                    );
-
-                if(
-                    (
-                        gDispatchFixLoggedMask
-                        &
-                        bit
-                    )
-                    ==
-                    0
-                ) {
-
-                    gDispatchFixLoggedMask
-                        |=
-                        bit;
-
-                    __android_log_print(
-                        ANDROID_LOG_INFO,
-                        kLogTag,
-                        "[ToolDispatchFix] %s "
-                        "OFF_DISPATCH false -> true",
-                        toolFamilyName(
-                            family
-                        )
-                    );
-                }
-
-                return true;
-            }
-
-            return result;
-        }
-
-        bool isShieldItem(
-            const char* itemClass
-        ) noexcept {
-            return contains(itemClass,"ShieldItem");
-        }
 
         bool isBannerItem(
             const char* itemClass
@@ -3278,78 +2537,6 @@ namespace levioffhand::render {
                 calibration
             );
 
-            // v0.2.57 TPP-only correction must run AFTER the accepted generic
-            // calibration.  Applying it earlier rotates the basis used by the
-            // calibration's XYZ offsets and moves the already-correct grip.
-            if(
-                gRenderItemRouteDepth!=0
-                && !gTppReferenceMatrixApplied
-                && gRenderItemRouteSlot==kOffhandInventorySlot
-                && gRenderItemRouteCallsiteRva==
-                    kThirdPersonOffhandRenderItemCallsiteRva
-            ) {
-                if(gRenderItemRouteFamily==ToolFamily::Bow) {
-                    const float preservedBowTx=matrix->value[12];
-                    const float preservedBowTy=matrix->value[13];
-                    const float preservedBowTz=matrix->value[14];
-
-                    const float bowTppTilt=
-                        gBowTppTiltDegrees.load(std::memory_order_acquire);
-                    // Screen-plane lean is semantic Rot Z, which the recovered
-                    // held-item axis mapping converts to native Rx.
-                    applyIndependentEuler(
-                        *matrix,
-                        multiply,
-                        bowTppTilt,
-                        0.0f,
-                        0.0f
-                    );
-
-                    // Keep the hand anchor exactly where v0.2.55 placed it.
-                    matrix->value[12]=preservedBowTx;
-                    matrix->value[13]=preservedBowTy;
-                    matrix->value[14]=preservedBowTz;
-
-                    if(!gBowTppGripPivotLogged) {
-                        gBowTppGripPivotLogged=true;
-                        __android_log_print(
-                            ANDROID_LOG_INFO,
-                            kLogTag,
-                            "[BowTppGripPivot] semanticRotZDelta=%.2f "
-                            "translationPreserved=1",
-                            static_cast<double>(bowTppTilt)
-                        );
-                    }
-                } else if(
-                    gRenderItemRouteFamily==ToolFamily::FishingRod
-                ) {
-                    float yx=0.0f;
-                    float yy=0.0f;
-                    float yz=0.0f;
-                    if(normalizeBasisVector(*matrix,8,yx,yy,yz)) {
-                        matrix->value[12]+=
-                            yx*kFishingRodTppVerticalDelta;
-                        matrix->value[13]+=
-                            yy*kFishingRodTppVerticalDelta;
-                        matrix->value[14]+=
-                            yz*kFishingRodTppVerticalDelta;
-
-                        if(!gFishingRodTppLowerLogged) {
-                            gFishingRodTppLowerLogged=true;
-                            __android_log_print(
-                                ANDROID_LOG_INFO,
-                                kLogTag,
-                                "[FishingRodTppLower] semanticYDelta=%.2f",
-                                static_cast<double>(
-                                    kFishingRodTppVerticalDelta
-                                )
-                            );
-                        }
-                    }
-                }
-                gTppReferenceMatrixApplied=true;
-            }
-
             gToolFinalMatrixApplied=true;
 
             const void* item=
@@ -3424,249 +2611,129 @@ namespace levioffhand::render {
     install(
         pl::mod::ModContext& context
     ) noexcept {
-
-        if(
-            installed()
-        ) {
+        if(installed()) {
             return true;
         }
 
-        uninstall(
-            context
+        uninstall(context);
+        auto& logger=context.logger();
+
+        mRenderOffhandTarget=pl::memory::resolveSignature(
+            kRenderOffhandSignature,kMinecraftLibrary
+        );
+        mBlockPredicateTarget=pl::memory::resolveSignature(
+            kBlockPredicateSignature,kMinecraftLibrary
+        );
+        mCanTessellateTarget=pl::memory::resolveSignature(
+            kCanTessellateSignature,kMinecraftLibrary
+        );
+        mRenderObjectTarget=pl::memory::resolveSignature(
+            kRenderObjectSignature,kMinecraftLibrary
+        );
+        mItemTransformTarget=pl::memory::resolveSignature(
+            kItemTransformSignature,kMinecraftLibrary
         );
 
-        auto& logger=
-            context.logger();
+        gHandEquipPredicateTarget=pl::memory::resolveSignature(
+            kHandEquipPredicateSignature,kMinecraftLibrary
+        );
 
-        mRenderOffhandTarget=
-            pl::memory::
-            resolveSignature(
-                kRenderOffhandSignature,
-                kMinecraftLibrary
-            );
-
-        mBlockPredicateTarget=
-            pl::memory::
-            resolveSignature(
-                kBlockPredicateSignature,
-                kMinecraftLibrary
-            );
-
-        mCanTessellateTarget=
-            pl::memory::
-            resolveSignature(
-                kCanTessellateSignature,
-                kMinecraftLibrary
-            );
-
-        mRenderObjectTarget=
-            pl::memory::
-            resolveSignature(
-                kRenderObjectSignature,
-                kMinecraftLibrary
-            );
-
-        mItemTransformTarget=
-            pl::memory::
-            resolveSignature(
-                kItemTransformSignature,
-                kMinecraftLibrary
-            );
-
-        gHandEquipPredicateTarget=
-            pl::memory::
-            resolveSignature(
-                kHandEquipPredicateSignature,
-                kMinecraftLibrary
-            );
-
-        const std::uintptr_t base=
-            moduleBaseOf(
-                mRenderOffhandTarget
-            );
-
+        const std::uintptr_t base=moduleBaseOf(mRenderOffhandTarget);
         if(base) {
+            mRenderItemTarget=base+kRenderItemRva;
+            gRenderItemRouteTarget=base+kRenderItemRva;
+            gAttachableStateRouteTarget=base+kAttachableStateRva;
+            mDefaultTransformTarget=base+kDefaultTransformRva;
+            mMatrixMultiplyTarget=base+kMatrixMultiplyRva;
+            gMinecraftBase=base;
+            gItemStackMatchesTarget=base+kItemStackMatchesRva;
+            gFinalOffhandMatrixTarget=base+kFinalOffhandMatrixTopRva;
 
-            mRenderItemTarget=
-                base
-                +
-                kRenderItemRva;
-
-            mDefaultTransformTarget=
-                base
-                +
-                kDefaultTransformRva;
-
-            mMatrixMultiplyTarget=
-                base
-                +
-                kMatrixMultiplyRva;
-
-            gMinecraftBase=
-                base;
-
-            gItemStackMatchesTarget=
-                base
-                +
-                kItemStackMatchesRva;
-
-            gFinalOffhandMatrixTarget=
-                base
-                +
-                kFinalOffhandMatrixTopRva;
-
-            gFirstPersonDataDrivenTarget=
-                base
-                +
-                kFirstPersonDataDrivenRenderRva;
-
-            gGetOffhandStackTarget=
-                base
-                +
-                kGetOffhandStackRva;
-
-            gAttachableStateRouteTarget=
-                base
-                +
-                kAttachableStateRva;
-
-            gPrepareAttachmentTarget=
-                base
-                +
-                kPrepareAttachmentRva;
-
-            gAttachmentBindingModeTarget=
-                base
-                +
-                kAttachmentBindingModeRva;
-
-            gResolveOwnerBoneByNameTarget=
-                base
-                +
-                kResolveOwnerBoneByNameRva;
-
-            gDrawAttachmentTarget=
-                base
-                +
-                kDrawAttachmentRva;
-
+            gPrepareAttachmentTarget=base+kPrepareAttachmentRva;
+            gFindOwnerBoneVectorTarget=base+kFindOwnerBoneVectorRva;
+            gCopyOwnerMatrixTarget=base+kCopyOwnerMatrixRva;
+            gResolveOwnerBoneByNameTarget=base+kResolveOwnerBoneByNameRva;
+            gLegacyAttachmentRouteTarget=base+kLegacyAttachmentRouteRva;
             gComposeAttachmentBoneMatrixTarget=
-                base
-                +
-                kComposeAttachmentBoneMatrixRva;
+                base+kComposeAttachmentBoneMatrixRva;
 
-            gToolMatrixMultiplyTarget=
-                mMatrixMultiplyTarget;
+            gAttachmentActorTypeTarget=base+kAttachmentActorTypeRva;
+            gMolangVariableLookupTarget=base+kMolangVariableLookupRva;
+            gMolangValueViewTarget=base+kMolangValueViewRva;
+            gVariableIsFirstPersonStringTarget=
+                base+kVariableIsFirstPersonStringRva;
+
+            gToolMatrixMultiplyTarget=mMatrixMultiplyTarget;
         }
 
-        if(
-            !belongsToMinecraft(
-                mRenderOffhandTarget
+        const bool nativeTargetsValid=
+            belongsToMinecraft(gPrepareAttachmentTarget)
+            && belongsToMinecraft(gFindOwnerBoneVectorTarget)
+            && belongsToMinecraft(gCopyOwnerMatrixTarget)
+            && belongsToMinecraft(gResolveOwnerBoneByNameTarget)
+            && belongsToMinecraft(gLegacyAttachmentRouteTarget)
+            && belongsToMinecraft(gComposeAttachmentBoneMatrixTarget)
+            && belongsToMinecraft(gAttachmentActorTypeTarget)
+            && belongsToMinecraft(gMolangVariableLookupTarget)
+            && belongsToMinecraft(gMolangValueViewTarget)
+            && belongsToMinecraft(gVariableIsFirstPersonStringTarget)
+            && matchesFingerprint(
+                gPrepareAttachmentTarget,kPrepareAttachmentFingerprint
             )
-            ||
-            !belongsToMinecraft(
-                mBlockPredicateTarget
+            && matchesFingerprint(
+                gFindOwnerBoneVectorTarget,kFindOwnerBoneVectorFingerprint
             )
-            ||
-            !belongsToMinecraft(
-                mCanTessellateTarget
+            && matchesFingerprint(
+                gCopyOwnerMatrixTarget,kCopyOwnerMatrixFingerprint
             )
-            ||
-            !belongsToMinecraft(
-                mRenderObjectTarget
-            )
-            ||
-            !belongsToMinecraft(
-                mItemTransformTarget
-            )
-            ||
-            !belongsToMinecraft(
-                mRenderItemTarget
-            )
-            ||
-            !belongsToMinecraft(
-                mDefaultTransformTarget
-            )
-            ||
-            !belongsToMinecraft(
-                mMatrixMultiplyTarget
-            )
-            ||
-            !belongsToMinecraft(
-                gItemStackMatchesTarget
-            )
-
-
-            ||
-            !belongsToMinecraft(
-                gHandEquipPredicateTarget
-            )
-            ||
-            !belongsToMinecraft(
-                gFinalOffhandMatrixTarget
-            )
-            ||
-            !belongsToMinecraft(
-                gFirstPersonDataDrivenTarget
-            )
-            ||
-            !belongsToMinecraft(
-                gGetOffhandStackTarget
-            )
-            ||
-            !belongsToMinecraft(gAttachableStateRouteTarget)
-            ||
-            !belongsToMinecraft(gPrepareAttachmentTarget)
-            ||
-            !belongsToMinecraft(gAttachmentBindingModeTarget)
-            ||
-            !belongsToMinecraft(gResolveOwnerBoneByNameTarget)
-            ||
-            !belongsToMinecraft(gDrawAttachmentTarget)
-            ||
-            !belongsToMinecraft(gComposeAttachmentBoneMatrixTarget)
-            ||
-            !matchesFingerprint(
-                gPrepareAttachmentTarget,
-                kPrepareAttachmentFingerprint
-            )
-            ||
-            !matchesFingerprint(
-                gAttachmentBindingModeTarget,
-                kAttachmentBindingModeFingerprint
-            )
-            ||
-            !matchesFingerprint(
+            && matchesFingerprint(
                 gResolveOwnerBoneByNameTarget,
                 kResolveOwnerBoneByNameFingerprint
             )
-            ||
-            !matchesFingerprint(
-                gDrawAttachmentTarget,
-                kDrawAttachmentFingerprint
+            && matchesFingerprint(
+                gLegacyAttachmentRouteTarget,
+                kLegacyAttachmentRouteFingerprint
             )
-            ||
-            !matchesFingerprint(
+            && matchesFingerprint(
                 gComposeAttachmentBoneMatrixTarget,
                 kComposeAttachmentBoneMatrixFingerprint
             )
-            ||
-            gHandEquipPredicateTarget
-            !=
-            base
-            +
-            kHandEquipPredicateRva
+            && matchesFingerprint(
+                gAttachmentActorTypeTarget,kAttachmentActorTypeFingerprint
+            )
+            && matchesFingerprint(
+                gMolangVariableLookupTarget,kMolangVariableLookupFingerprint
+            )
+            && matchesFingerprint(
+                gMolangValueViewTarget,kMolangValueViewFingerprint
+            )
+            && std::strcmp(
+                reinterpret_cast<const char*>(
+                    gVariableIsFirstPersonStringTarget
+                ),
+                "variable.is_first_person"
+            )==0;
+
+        if(
+            !belongsToMinecraft(mRenderOffhandTarget)
+            || !belongsToMinecraft(mBlockPredicateTarget)
+            || !belongsToMinecraft(mCanTessellateTarget)
+            || !belongsToMinecraft(mRenderObjectTarget)
+            || !belongsToMinecraft(mItemTransformTarget)
+            || !belongsToMinecraft(mRenderItemTarget)
+            || !belongsToMinecraft(gRenderItemRouteTarget)
+            || !belongsToMinecraft(gAttachableStateRouteTarget)
+            || !belongsToMinecraft(mDefaultTransformTarget)
+            || !belongsToMinecraft(mMatrixMultiplyTarget)
+            || !belongsToMinecraft(gItemStackMatchesTarget)
+            || !belongsToMinecraft(gHandEquipPredicateTarget)
+            || !belongsToMinecraft(gFinalOffhandMatrixTarget)
+            || !nativeTargetsValid
         ) {
-
             logger.error(
-                "Offhand visual: "
-                "target resolution failed"
+                "Offhand visual: Minecraft 1.26.45.1 target validation failed"
             );
-
-            uninstall(
-                context
-            );
-
+            uninstall(context);
             return false;
         }
 
@@ -3674,393 +2741,216 @@ namespace levioffhand::render {
         mBlockPredicateOriginal=nullptr;
         mRenderObjectOriginal=nullptr;
         mItemTransformOriginal=nullptr;
-
-        gHandEquipPredicateOriginal=nullptr;
-        gFirstPersonDataDrivenOriginal=nullptr;
         gRenderItemRouteOriginal=nullptr;
         gAttachableStateRouteOriginal=nullptr;
         gPrepareAttachmentOriginal=nullptr;
-        gPrepareAttachmentOriginalPublished.store(
-            nullptr,
-            std::memory_order_release
-        );
-        gAttachmentBindingModeOriginal=nullptr;
-        gAttachmentBindingModeOriginalPublished.store(
-            nullptr,
-            std::memory_order_release
-        );
         gResolveOwnerBoneByNameOriginal=nullptr;
-        gResolveOwnerBoneByNameOriginalPublished.store(
-            nullptr,
-            std::memory_order_release
-        );
-        gDrawAttachmentOriginal=nullptr;
+        gLegacyAttachmentRouteOriginal=nullptr;
         gComposeAttachmentBoneMatrixOriginal=nullptr;
+        gHandEquipPredicateOriginal=nullptr;
         gFinalOffhandMatrixOriginal=nullptr;
+        gPrepareAttachmentOriginalPublished.store(nullptr,std::memory_order_release);
+        gResolveOwnerBoneByNameOriginalPublished.store(
+            nullptr,std::memory_order_release
+        );
+        gNativeAttachmentHooksReady.store(false,std::memory_order_seq_cst);
+        gNativeAttachmentTrampolinesAvailable.store(
+            false,std::memory_order_seq_cst
+        );
 
-        gLastNativeToolItem=nullptr;
-        gDispatchFixLoggedMask=0;
-        gBowTppBindingDepth=0;
-        gTridentFppBindingDepth=0;
-        gFirstPersonDataDrivenDepth=0;
-        gBowTppAttachmentDepth=0;
-        gTridentFppAttachmentDepth=0;
-        gResolvedTridentFppBindingBones.clear();
-        gBowTppBindingLogged=false;
-        gTridentFppBindingLogged=false;
-        gTridentFppBindingCacheLogged=false;
-        gBowTppLocalPoseLogged=false;
-        gTridentFppLocalPoseLogged=false;
-        gTridentFppPrepareProbeLogged=false;
-        gTridentFppBindingProbeCount=0;
-        gTridentFppPoleRotationLogged=false;
-        gTridentFppHorizontalLogged=false;
-
-        gCurrentToolFamily=
-            ToolFamily::None;
-
-        gToolFinalMatrixApplied=false;
-
-        gLastCalibratedToolItem=nullptr;
-        gLastSuppressedTridentItem=nullptr;
-        gRenderItemRouteDepth=0;
-        gRenderItemRouteFamily=ToolFamily::None;
-        gRenderItemRouteSlot=0;
-        gRenderItemRouteCallsiteRva=0;
-        gRenderItemAttachableCheckSeen=false;
-        gRenderItemNativeAttachable=false;
-        gRenderItemForcedGeneric=false;
-        gPendingTppReferenceFamily=ToolFamily::None;
-        gPendingTppReferenceArmed=false;
-        gTppReferenceLatchLoggedMask=0;
-        gTppReferenceLoggedMask=0;
+        gBowOffhandBindingDepth=0;
+        gNative3dWeaponFppDepth=0;
+        gNative3dFppFamily=ToolFamily::None;
+        gNative3dOwnerVector={};
+        gGenericLeftFppLoggedMask=0;
+        gBowTppFishingRodDepth=0;
+        gBowNativeBindingLogged=false;
+        gNative3dLeftCarrierLogged=false;
+        gBowTppRouteLogged=false;
         gBowTppNativeSuppressLogged=false;
-        gTridentFppNativeSuppressLogged=false;
-        gTridentFppGenericLogged=false;
-        gShieldFppReferenceLogged=false;
-        gShieldFppObjectLogged=false;
-
-
-        mBannerBridgeLogged.store(
-            false,
-            std::memory_order_relaxed
-        );
-
-        mBannerCompositeLogged.store(
-            false,
-            std::memory_order_relaxed
-        );
-
-        mPotCompositeLogged.store(
-            false,
-            std::memory_order_relaxed
-        );
-
+        gLastNativeToolItem=nullptr;
+        gCurrentToolFamily=ToolFamily::None;
+        gToolFinalMatrixApplied=false;
+        gLastCalibratedToolItem=nullptr;
         gOffhandDepth=0;
         gRenderer=nullptr;
         gPlayer=nullptr;
-
-
         gBridgeDepth=0;
         gBridgeConsumed=false;
-
         gLastPolicyItem=nullptr;
         gLastBridgeItem=nullptr;
         gLastTransformItem=nullptr;
         gLastSkullTransformItem=nullptr;
+        mBannerBridgeLogged.store(false,std::memory_order_relaxed);
+        mBannerCompositeLogged.store(false,std::memory_order_relaxed);
+        mPotCompositeLogged.store(false,std::memory_order_relaxed);
 
         sInstance=this;
 
-        mRenderOffhandHook=
-            std::make_unique<
-                pl::memory::HookHandle
-            >(
-                reinterpret_cast<void*>(
-                    mRenderOffhandTarget
-                ),
-
-                reinterpret_cast<void*>(
-                    &OffhandBlockRenderPatch::
-                    renderOffhandDetour
-                ),
-
-                &mRenderOffhandOriginal,
-
-                pl::memory::
-                    HookPriority::Normal
-            );
-
-        if(
-            !mRenderOffhandHook
-            ||
-            !mRenderOffhandHook->
-                installed()
-            ||
-            !mRenderOffhandOriginal
-        ) {
-
-            logger.error(
-                "renderOffhand hook failed"
-            );
-
-            uninstall(
-                context
-            );
-
+        auto fail=[&](const char* message) noexcept {
+            logger.error(message);
+            uninstall(context);
             return false;
+        };
+
+        mRenderOffhandHook=std::make_unique<pl::memory::HookHandle>(
+            reinterpret_cast<void*>(mRenderOffhandTarget),
+            reinterpret_cast<void*>(&OffhandBlockRenderPatch::renderOffhandDetour),
+            &mRenderOffhandOriginal,
+            pl::memory::HookPriority::Normal
+        );
+        if(!mRenderOffhandHook || !mRenderOffhandHook->installed()
+            || !mRenderOffhandOriginal) {
+            return fail("renderOffhand hook failed");
         }
 
-        mBlockPredicateHook=
-            std::make_unique<
-                pl::memory::HookHandle
-            >(
-                reinterpret_cast<void*>(
-                    mBlockPredicateTarget
-                ),
-
-                reinterpret_cast<void*>(
-                    &OffhandBlockRenderPatch::
-                    blockRenderPredicateDetour
-                ),
-
-                &mBlockPredicateOriginal,
-
-                pl::memory::
-                    HookPriority::Normal
-            );
-
-        if(
-            !mBlockPredicateHook
-            ||
-            !mBlockPredicateHook->
-                installed()
-            ||
-            !mBlockPredicateOriginal
-        ) {
-
-            logger.error(
-                "predicate hook failed"
-            );
-
-            uninstall(
-                context
-            );
-
-            return false;
+        mBlockPredicateHook=std::make_unique<pl::memory::HookHandle>(
+            reinterpret_cast<void*>(mBlockPredicateTarget),
+            reinterpret_cast<void*>(
+                &OffhandBlockRenderPatch::blockRenderPredicateDetour
+            ),
+            &mBlockPredicateOriginal,
+            pl::memory::HookPriority::Normal
+        );
+        if(!mBlockPredicateHook || !mBlockPredicateHook->installed()
+            || !mBlockPredicateOriginal) {
+            return fail("predicate hook failed");
         }
 
-        mRenderObjectHook=
-            std::make_unique<
-                pl::memory::HookHandle
-            >(
-                reinterpret_cast<void*>(
-                    mRenderObjectTarget
-                ),
-
-                reinterpret_cast<void*>(
-                    &OffhandBlockRenderPatch::
-                    renderObjectDetour
-                ),
-
-                &mRenderObjectOriginal,
-
-                pl::memory::
-                    HookPriority::Normal
-            );
-
-        if(
-            !mRenderObjectHook
-            ||
-            !mRenderObjectHook->
-                installed()
-            ||
-            !mRenderObjectOriginal
-        ) {
-
-            logger.error(
-                "renderObject hook failed"
-            );
-
-            uninstall(
-                context
-            );
-
-            return false;
+        mRenderObjectHook=std::make_unique<pl::memory::HookHandle>(
+            reinterpret_cast<void*>(mRenderObjectTarget),
+            reinterpret_cast<void*>(&OffhandBlockRenderPatch::renderObjectDetour),
+            &mRenderObjectOriginal,
+            pl::memory::HookPriority::Normal
+        );
+        if(!mRenderObjectHook || !mRenderObjectHook->installed()
+            || !mRenderObjectOriginal) {
+            return fail("renderObject hook failed");
         }
 
-        mItemTransformHook=
-            std::make_unique<
-                pl::memory::HookHandle
-            >(
-                reinterpret_cast<void*>(
-                    mItemTransformTarget
-                ),
-
-                reinterpret_cast<void*>(
-                    &OffhandBlockRenderPatch::
-                    itemTransformDetour
-                ),
-
-                &mItemTransformOriginal,
-
-                pl::memory::
-                    HookPriority::Normal
-            );
-
-        if(
-            !mItemTransformHook
-            ||
-            !mItemTransformHook->
-                installed()
-            ||
-            !mItemTransformOriginal
-        ) {
-
-            logger.error(
-                "item transform hook failed"
-            );
-
-            uninstall(
-                context
-            );
-
-            return false;
+        mItemTransformHook=std::make_unique<pl::memory::HookHandle>(
+            reinterpret_cast<void*>(mItemTransformTarget),
+            reinterpret_cast<void*>(&OffhandBlockRenderPatch::itemTransformDetour),
+            &mItemTransformOriginal,
+            pl::memory::HookPriority::Normal
+        );
+        if(!mItemTransformHook || !mItemTransformHook->installed()
+            || !mItemTransformOriginal) {
+            return fail("item transform hook failed");
         }
 
-        gRenderItemRouteHook=
-            std::make_unique<pl::memory::HookHandle>(
-                reinterpret_cast<void*>(mRenderItemTarget),
-                reinterpret_cast<void*>(&renderItemRouteDetour),
-                &gRenderItemRouteOriginal,
-                pl::memory::HookPriority::Normal
-            );
+        gHandEquipPredicateHook=std::make_unique<pl::memory::HookHandle>(
+            reinterpret_cast<void*>(gHandEquipPredicateTarget),
+            reinterpret_cast<void*>(&handEquipPredicateDetour),
+            &gHandEquipPredicateOriginal,
+            pl::memory::HookPriority::Normal
+        );
+        if(
+            !gHandEquipPredicateHook
+            || !gHandEquipPredicateHook->installed()
+            || !gHandEquipPredicateOriginal
+        ) {
+            return fail("Bow generic-left FPP route hook failed");
+        }
 
+        gRenderItemRouteHook=std::make_unique<pl::memory::HookHandle>(
+            reinterpret_cast<void*>(gRenderItemRouteTarget),
+            reinterpret_cast<void*>(&renderItemRouteDetour),
+            &gRenderItemRouteOriginal,
+            pl::memory::HookPriority::Normal
+        );
         if(
             !gRenderItemRouteHook
             || !gRenderItemRouteHook->installed()
             || !gRenderItemRouteOriginal
         ) {
-            logger.error("TPP reference RenderItem hook failed");
-            uninstall(context);
-            return false;
+            return fail("Bow TPP RenderItem route hook failed");
         }
 
-        gAttachableStateRouteHook=
-            std::make_unique<pl::memory::HookHandle>(
-                reinterpret_cast<void*>(gAttachableStateRouteTarget),
-                reinterpret_cast<void*>(&attachableStateRouteDetour),
-                &gAttachableStateRouteOriginal,
-                pl::memory::HookPriority::Normal
-            );
-
+        gAttachableStateRouteHook=std::make_unique<pl::memory::HookHandle>(
+            reinterpret_cast<void*>(gAttachableStateRouteTarget),
+            reinterpret_cast<void*>(&attachableStateRouteDetour),
+            &gAttachableStateRouteOriginal,
+            pl::memory::HookPriority::Normal
+        );
         if(
             !gAttachableStateRouteHook
             || !gAttachableStateRouteHook->installed()
             || !gAttachableStateRouteOriginal
         ) {
-            logger.error("TPP attachable-state reference hook failed");
-            uninstall(context);
-            return false;
+            return fail("Bow TPP attachable-state route hook failed");
         }
 
-        gPrepareAttachmentHook=
-            std::make_unique<pl::memory::HookHandle>(
-                reinterpret_cast<void*>(gPrepareAttachmentTarget),
-                reinterpret_cast<void*>(&prepareAttachmentDetour),
-                &gPrepareAttachmentOriginal,
-                pl::memory::HookPriority::Normal
-            );
-
-        if(
-            !gPrepareAttachmentHook
-            || !gPrepareAttachmentHook->installed()
-            || !gPrepareAttachmentOriginal
-        ) {
-            logger.error("native attachment preparation hook failed");
-            uninstall(context);
-            return false;
+        gPrepareAttachmentHook=std::make_unique<pl::memory::HookHandle>(
+            reinterpret_cast<void*>(gPrepareAttachmentTarget),
+            reinterpret_cast<void*>(&prepareAttachmentDetour),
+            &gPrepareAttachmentOriginal,
+            pl::memory::HookPriority::Normal
+        );
+        if(!gPrepareAttachmentHook || !gPrepareAttachmentHook->installed()
+            || !gPrepareAttachmentOriginal) {
+            return fail("native Bow attachment prepare hook failed");
         }
-
         gPrepareAttachmentOriginalPublished.store(
-            gPrepareAttachmentOriginal,
-            std::memory_order_release
+            gPrepareAttachmentOriginal,std::memory_order_release
         );
 
-        gResolveOwnerBoneByNameHook=
-            std::make_unique<pl::memory::HookHandle>(
-                reinterpret_cast<void*>(gResolveOwnerBoneByNameTarget),
-                reinterpret_cast<void*>(&resolveOwnerBoneByNameDetour),
-                &gResolveOwnerBoneByNameOriginal,
-                pl::memory::HookPriority::Normal
-            );
-
+        gFindOwnerBoneVectorHook=std::make_unique<pl::memory::HookHandle>(
+            reinterpret_cast<void*>(gFindOwnerBoneVectorTarget),
+            reinterpret_cast<void*>(&findOwnerBoneVectorDetour),
+            &gFindOwnerBoneVectorOriginal,
+            pl::memory::HookPriority::Normal
+        );
         if(
-            !gResolveOwnerBoneByNameHook
+            !gFindOwnerBoneVectorHook
+            || !gFindOwnerBoneVectorHook->installed()
+            || !gFindOwnerBoneVectorOriginal
+        ) {
+            return fail("native 3D owner-vector hook failed");
+        }
+
+        gCopyOwnerMatrixHook=std::make_unique<pl::memory::HookHandle>(
+            reinterpret_cast<void*>(gCopyOwnerMatrixTarget),
+            reinterpret_cast<void*>(&copyOwnerMatrixDetour),
+            &gCopyOwnerMatrixOriginal,
+            pl::memory::HookPriority::Normal
+        );
+        if(
+            !gCopyOwnerMatrixHook
+            || !gCopyOwnerMatrixHook->installed()
+            || !gCopyOwnerMatrixOriginal
+        ) {
+            return fail("native 3D owner-matrix copy hook failed");
+        }
+
+        gResolveOwnerBoneByNameHook=std::make_unique<pl::memory::HookHandle>(
+            reinterpret_cast<void*>(gResolveOwnerBoneByNameTarget),
+            reinterpret_cast<void*>(&resolveOwnerBoneByNameDetour),
+            &gResolveOwnerBoneByNameOriginal,
+            pl::memory::HookPriority::Normal
+        );
+        if(!gResolveOwnerBoneByNameHook
             || !gResolveOwnerBoneByNameHook->installed()
-            || !gResolveOwnerBoneByNameOriginal
-        ) {
-            logger.error("native owner-bone resolver hook failed");
-            uninstall(context);
-            return false;
+            || !gResolveOwnerBoneByNameOriginal) {
+            return fail("native Bow owner-bone resolver hook failed");
         }
-
         gResolveOwnerBoneByNameOriginalPublished.store(
-            gResolveOwnerBoneByNameOriginal,
-            std::memory_order_release
-        );
-
-        // v0.2.59: do not hook EEAB3AC. It is only two AArch64
-        // instructions (ADD x0,x0,#8; RET); an inline hook overwrites the
-        // following routine and causes SIGILL at EEAB3B4. Minecraft already
-        // resolves off_hand to leftitem natively.
-
-        // Keep the legacy name-binding hooks installed for Bow/native safety.
-        // Trident mode-3 expression binding is left untouched in v0.2.59.
-        // The reverse uninstall order prevents a concurrent prepare from
-        // being forced into the unmodified right-owner resolver.
-        gAttachmentBindingModeHook=
-            std::make_unique<pl::memory::HookHandle>(
-                reinterpret_cast<void*>(gAttachmentBindingModeTarget),
-                reinterpret_cast<void*>(&attachmentBindingModeDetour),
-                &gAttachmentBindingModeOriginal,
-                pl::memory::HookPriority::Normal
-            );
-
-        if(
-            !gAttachmentBindingModeHook
-            || !gAttachmentBindingModeHook->installed()
-            || !gAttachmentBindingModeOriginal
-        ) {
-            logger.error("native attachment binding-mode hook failed");
-            uninstall(context);
-            return false;
-        }
-
-        gAttachmentBindingModeOriginalPublished.store(
-            gAttachmentBindingModeOriginal,
-            std::memory_order_release
+            gResolveOwnerBoneByNameOriginal,std::memory_order_release
         );
         gNativeAttachmentTrampolinesAvailable.store(
-            true,
-            std::memory_order_seq_cst
+            true,std::memory_order_seq_cst
         );
 
-        gDrawAttachmentHook=
-            std::make_unique<pl::memory::HookHandle>(
-                reinterpret_cast<void*>(gDrawAttachmentTarget),
-                reinterpret_cast<void*>(&drawAttachmentDetour),
-                &gDrawAttachmentOriginal,
-                pl::memory::HookPriority::Normal
-            );
-
-        if(
-            !gDrawAttachmentHook
-            || !gDrawAttachmentHook->installed()
-            || !gDrawAttachmentOriginal
-        ) {
-            logger.error("native attachment draw hook failed");
-            uninstall(context);
-            return false;
+        gLegacyAttachmentRouteHook=std::make_unique<pl::memory::HookHandle>(
+            reinterpret_cast<void*>(gLegacyAttachmentRouteTarget),
+            reinterpret_cast<void*>(&legacyAttachmentRouteDetour),
+            &gLegacyAttachmentRouteOriginal,
+            pl::memory::HookPriority::Normal
+        );
+        if(!gLegacyAttachmentRouteHook
+            || !gLegacyAttachmentRouteHook->installed()
+            || !gLegacyAttachmentRouteOriginal) {
+            return fail("native Trident/Spear FPP route hook failed");
         }
 
         gComposeAttachmentBoneMatrixHook=
@@ -4070,194 +2960,42 @@ namespace levioffhand::render {
                 &gComposeAttachmentBoneMatrixOriginal,
                 pl::memory::HookPriority::Normal
             );
-
-        if(
-            !gComposeAttachmentBoneMatrixHook
+        if(!gComposeAttachmentBoneMatrixHook
             || !gComposeAttachmentBoneMatrixHook->installed()
-            || !gComposeAttachmentBoneMatrixOriginal
-        ) {
-            logger.error("native attachment bone-matrix hook failed");
-            uninstall(context);
-            return false;
+            || !gComposeAttachmentBoneMatrixOriginal) {
+            return fail("native Bow TPP compose hook failed");
         }
 
-        gFirstPersonDataDrivenHook=
-            std::make_unique<
-                pl::memory::HookHandle
-            >(
-                reinterpret_cast<void*>(
-                    gFirstPersonDataDrivenTarget
-                ),
-                reinterpret_cast<void*>(
-                    &firstPersonDataDrivenDetour
-                ),
-                &gFirstPersonDataDrivenOriginal,
-                pl::memory::HookPriority::Normal
-            );
-
-        if(
-            !gFirstPersonDataDrivenHook
-            ||
-            !gFirstPersonDataDrivenHook->installed()
-            ||
-            !gFirstPersonDataDrivenOriginal
-        ) {
-            logger.error(
-                "first-person DataDrivenRenderer scope hook failed"
-            );
-            uninstall(context);
-            return false;
+        gFinalOffhandMatrixHook=std::make_unique<pl::memory::HookHandle>(
+            reinterpret_cast<void*>(gFinalOffhandMatrixTarget),
+            reinterpret_cast<void*>(&finalOffhandMatrixTopDetour),
+            &gFinalOffhandMatrixOriginal,
+            pl::memory::HookPriority::Normal
+        );
+        if(!gFinalOffhandMatrixHook || !gFinalOffhandMatrixHook->installed()
+            || !gFinalOffhandMatrixOriginal) {
+            return fail("tool orientation final-matrix hook failed");
         }
 
-        gFinalOffhandMatrixHook=
-            std::make_unique<
-                pl::memory::HookHandle
-            >(
-                reinterpret_cast<void*>(
-                    gFinalOffhandMatrixTarget
-                ),
+        mFeatureEnabled.store(true,std::memory_order_release);
+        gNativeAttachmentHooksReady.store(true,std::memory_order_seq_cst);
 
-                reinterpret_cast<void*>(
-                    &finalOffhandMatrixTopDetour
-                ),
-
-                &gFinalOffhandMatrixOriginal,
-
-                pl::memory::
-                    HookPriority::Normal
-            );
-
-        if(
-            !gFinalOffhandMatrixHook
-            ||
-            !gFinalOffhandMatrixHook->
-                installed()
-            ||
-            !gFinalOffhandMatrixOriginal
-        ) {
-
-            logger.error(
-                "tool orientation "
-                "final-matrix hook failed"
-            );
-
-            uninstall(
-                context
-            );
-
-            return false;
-        }
-
-        gHandEquipPredicateHook=
-            std::make_unique<
-                pl::memory::HookHandle
-            >(
-                reinterpret_cast<void*>(
-                    gHandEquipPredicateTarget
-                ),
-
-                reinterpret_cast<void*>(
-                    &handEquipPredicateDetour
-                ),
-
-                &gHandEquipPredicateOriginal,
-
-                pl::memory::
-                    HookPriority::Normal
-            );
-
-        if(
-            !gHandEquipPredicateHook
-            ||
-            !gHandEquipPredicateHook->
-                installed()
-            ||
-            !gHandEquipPredicateOriginal
-        ) {
-
-            logger.error(
-                "tool offhand dispatch hook failed"
-            );
-
-            uninstall(
-                context
-            );
-
-            return false;
-        }
-
-        mFeatureEnabled.store(
-            true,
-            std::memory_order_release
-        );
-
-        invalidateTridentFppBindingGeneration();
-        gNativeAttachmentHooksReady.store(
-            true,
-            std::memory_order_seq_cst
-        );
-
+        logger.info("Offhand visual active");
         logger.info(
-            "Offhand visual active"
-        );
-
-        logger.info(
-            "Banner final: "
-            "scale=1.56 X=-0.78 Y=-0.28 yaw=180"
-        );
-
-        logger.info(
-            "Decorated Pot final: "
-            "S=1.40 XYZ=(-0.04,-0.24,0.28) "
-            "R=(-32.40,-180.00,-39.60)"
-        );
-
-        logger.info(
-            "Copper Statue final: "
-            "S=1.03 XYZ=(-0.32,-0.04,0.08) "
-            "R=(-14.40,140.40,3.60)"
-        );
-
-        logger.info(
-            "Head/Skull frozen: "
-            "RIGHT + X=-0.50"
-        );
-
-        logger.info(
-            "Native tool offhand fix active: "
-            "Bow/Crossbow/Trident/Spear "
-            "OFF_DISPATCH enabled only at 0xADEA0BC"
-        );
-
-        logger.info(
-            "Tool transforms use Minecraft native "
-            "FIRSTPERSON_LEFT; FishingRod remains "
-            "fully vanilla-dispatched"
-        );
-
-        logger.info(
-            "Tool calibration frozen: "
-            "Bow/Crossbow/FishingRod; Spear native"
-        );
-
-        logger.info(
-            "Bow generic FIRSTPERSON_LEFT active; "
-            "native FPP Bow masked only during DataDrivenRenderer pass"
-        );
-
-        logger.info(
-            "v0.2.59 Bow TPP: generic LEFT route + semantic Rot-Z tilt; "
-            "native slot6 Bow draw suppressed"
-        );
-
-        logger.info(
-            "v0.2.59 Trident FPP: native 3D + native off_hand->leftitem; "
-            "pole Z180 + live horizontal calibration"
+            "Bow native-only: slot6 local rightitem resolves owner leftitem"
         );
         logger.info(
-            "[TridentFppNativeBinding] off_hand->leftitem verified statically"
+            "Trident/Spear FPP: native 3D with mirrored rightitem owner carrier"
         );
-
+        logger.info(
+            "Bow FPP: one generic LEFT submission with calibrated final matrix"
+        );
+        logger.info(
+            "Bow TPP: Fishing-Rod-style generic thirdperson LEFT route"
+        );
+        logger.info(
+            "Banner/Pot/Copper/Skull and unrelated item paths retained"
+        );
         return true;
     }
 
@@ -4267,39 +3005,45 @@ namespace levioffhand::render {
     uninstall(
         pl::mod::ModContext& context
     ) noexcept {
-
-        gNativeAttachmentHooksReady.store(
-            false,
-            std::memory_order_seq_cst
-        );
+        gNativeAttachmentHooksReady.store(false,std::memory_order_seq_cst);
         gNativeAttachmentTrampolinesAvailable.store(
-            false,
-            std::memory_order_seq_cst
+            false,std::memory_order_seq_cst
         );
         waitForNativeAttachmentHookReaders();
-        gAttachmentBindingModeOriginalPublished.store(
-            nullptr,
-            std::memory_order_release
-        );
         gResolveOwnerBoneByNameOriginalPublished.store(
-            nullptr,
-            std::memory_order_release
+            nullptr,std::memory_order_release
         );
         gPrepareAttachmentOriginalPublished.store(
-            nullptr,
-            std::memory_order_release
+            nullptr,std::memory_order_release
         );
-        invalidateTridentFppBindingGeneration();
 
-        // Remove the closed entry hooks immediately after admitted readers
-        // drain, minimizing the interval in which a brand-new native caller
-        // would see the safe no-op/direct fallback.
-        if(gAttachmentBindingModeHook) {
-            gAttachmentBindingModeHook->reset();
-            gAttachmentBindingModeHook.reset();
+        if(gComposeAttachmentBoneMatrixHook) {
+            gComposeAttachmentBoneMatrixHook->reset();
+            gComposeAttachmentBoneMatrixHook.reset();
         }
-        gAttachmentBindingModeOriginal=nullptr;
-        gAttachmentBindingModeTarget=0;
+        gComposeAttachmentBoneMatrixOriginal=nullptr;
+        gComposeAttachmentBoneMatrixTarget=0;
+
+        if(gLegacyAttachmentRouteHook) {
+            gLegacyAttachmentRouteHook->reset();
+            gLegacyAttachmentRouteHook.reset();
+        }
+        gLegacyAttachmentRouteOriginal=nullptr;
+        gLegacyAttachmentRouteTarget=0;
+
+        if(gCopyOwnerMatrixHook) {
+            gCopyOwnerMatrixHook->reset();
+            gCopyOwnerMatrixHook.reset();
+        }
+        gCopyOwnerMatrixOriginal=nullptr;
+        gCopyOwnerMatrixTarget=0;
+
+        if(gFindOwnerBoneVectorHook) {
+            gFindOwnerBoneVectorHook->reset();
+            gFindOwnerBoneVectorHook.reset();
+        }
+        gFindOwnerBoneVectorOriginal=nullptr;
+        gFindOwnerBoneVectorTarget=0;
 
         if(gResolveOwnerBoneByNameHook) {
             gResolveOwnerBoneByNameHook->reset();
@@ -4315,41 +3059,10 @@ namespace levioffhand::render {
         gPrepareAttachmentOriginal=nullptr;
         gPrepareAttachmentTarget=0;
 
-        if(
-            gHandEquipPredicateHook
-        ) {
-
-            gHandEquipPredicateHook->
-                reset();
-
-            gHandEquipPredicateHook.
-                reset();
-        }
-
-        gHandEquipPredicateOriginal=nullptr;
-        gHandEquipPredicateTarget=0;
-
-        if(gComposeAttachmentBoneMatrixHook) {
-            gComposeAttachmentBoneMatrixHook->reset();
-            gComposeAttachmentBoneMatrixHook.reset();
-        }
-        gComposeAttachmentBoneMatrixOriginal=nullptr;
-        gComposeAttachmentBoneMatrixTarget=0;
-
-        if(gDrawAttachmentHook) {
-            gDrawAttachmentHook->reset();
-            gDrawAttachmentHook.reset();
-        }
-        gDrawAttachmentOriginal=nullptr;
-        gDrawAttachmentTarget=0;
-
-        if(gFirstPersonDataDrivenHook) {
-            gFirstPersonDataDrivenHook->reset();
-            gFirstPersonDataDrivenHook.reset();
-        }
-        gFirstPersonDataDrivenOriginal=nullptr;
-        gFirstPersonDataDrivenTarget=0;
-        gGetOffhandStackTarget=0;
+        gAttachmentActorTypeTarget=0;
+        gMolangVariableLookupTarget=0;
+        gMolangValueViewTarget=0;
+        gVariableIsFirstPersonStringTarget=0;
 
         if(gAttachableStateRouteHook) {
             gAttachableStateRouteHook->reset();
@@ -4363,150 +3076,86 @@ namespace levioffhand::render {
             gRenderItemRouteHook.reset();
         }
         gRenderItemRouteOriginal=nullptr;
+        gRenderItemRouteTarget=0;
 
-        if(
-            gFinalOffhandMatrixHook
-        ) {
-
-            gFinalOffhandMatrixHook->
-                reset();
-
-            gFinalOffhandMatrixHook.
-                reset();
+        if(gHandEquipPredicateHook) {
+            gHandEquipPredicateHook->reset();
+            gHandEquipPredicateHook.reset();
         }
+        gHandEquipPredicateOriginal=nullptr;
+        gHandEquipPredicateTarget=0;
 
+        if(gFinalOffhandMatrixHook) {
+            gFinalOffhandMatrixHook->reset();
+            gFinalOffhandMatrixHook.reset();
+        }
         gFinalOffhandMatrixOriginal=nullptr;
         gFinalOffhandMatrixTarget=0;
         gToolMatrixMultiplyTarget=0;
 
-        gItemStackMatchesTarget=0;
-        gMinecraftBase=0;
-
-        if(
-            mItemTransformHook
-        ) {
-
-            mItemTransformHook->
-                reset();
-
-            mItemTransformHook.
-                reset();
+        if(mItemTransformHook) {
+            mItemTransformHook->reset();
+            mItemTransformHook.reset();
+        }
+        if(mRenderObjectHook) {
+            mRenderObjectHook->reset();
+            mRenderObjectHook.reset();
+        }
+        if(mBlockPredicateHook) {
+            mBlockPredicateHook->reset();
+            mBlockPredicateHook.reset();
+        }
+        if(mRenderOffhandHook) {
+            mRenderOffhandHook->reset();
+            mRenderOffhandHook.reset();
         }
 
-        if(
-            mRenderObjectHook
-        ) {
-
-            mRenderObjectHook->
-                reset();
-
-            mRenderObjectHook.
-                reset();
-        }
-
-        if(
-            mBlockPredicateHook
-        ) {
-
-            mBlockPredicateHook->
-                reset();
-
-            mBlockPredicateHook.
-                reset();
-        }
-
-        if(
-            mRenderOffhandHook
-        ) {
-
-            mRenderOffhandHook->
-                reset();
-
-            mRenderOffhandHook.
-                reset();
-        }
-
-        if(
-            sInstance
-            ==
-            this
-        ) {
+        if(sInstance==this) {
             sInstance=nullptr;
         }
 
         gOffhandDepth=0;
         gRenderer=nullptr;
         gPlayer=nullptr;
-
         gBridgeDepth=0;
         gBridgeConsumed=false;
-
         gLastPolicyItem=nullptr;
         gLastBridgeItem=nullptr;
         gLastTransformItem=nullptr;
         gLastSkullTransformItem=nullptr;
-
         gLastNativeToolItem=nullptr;
-        gDispatchFixLoggedMask=0;
-
-        gCurrentToolFamily=
-            ToolFamily::None;
-
+        gCurrentToolFamily=ToolFamily::None;
         gToolFinalMatrixApplied=false;
-
         gLastCalibratedToolItem=nullptr;
-        gLastSuppressedTridentItem=nullptr;
-        gRenderItemRouteDepth=0;
-        gRenderItemRouteFamily=ToolFamily::None;
-        gRenderItemRouteSlot=0;
-        gRenderItemRouteCallsiteRva=0;
-        gRenderItemAttachableCheckSeen=false;
-        gRenderItemNativeAttachable=false;
-        gRenderItemForcedGeneric=false;
-        gPendingTppReferenceFamily=ToolFamily::None;
-        gPendingTppReferenceArmed=false;
-        gTppReferenceLatchLoggedMask=0;
-        gTppReferenceLoggedMask=0;
+        gBowOffhandBindingDepth=0;
+        gNative3dWeaponFppDepth=0;
+        gNative3dFppFamily=ToolFamily::None;
+        gNative3dOwnerVector={};
+        gGenericLeftFppLoggedMask=0;
+        gBowTppFishingRodDepth=0;
+        gBowNativeBindingLogged=false;
+        gNative3dLeftCarrierLogged=false;
+        gBowTppRouteLogged=false;
         gBowTppNativeSuppressLogged=false;
-        gTridentFppNativeSuppressLogged=false;
-        gTridentFppGenericLogged=false;
-        gShieldFppReferenceLogged=false;
-        gShieldFppObjectLogged=false;
-
-        gBowTppBindingDepth=0;
-        gTridentFppBindingDepth=0;
-        gFirstPersonDataDrivenDepth=0;
-        gBowTppAttachmentDepth=0;
-        gTridentFppAttachmentDepth=0;
-        gResolvedTridentFppBindingBones.clear();
-        gBowTppBindingLogged=false;
-        gTridentFppBindingLogged=false;
-        gTridentFppBindingCacheLogged=false;
-        gBowTppLocalPoseLogged=false;
-        gTridentFppLocalPoseLogged=false;
-        gTridentFppPrepareProbeLogged=false;
-        gTridentFppBindingProbeCount=0;
-        gTridentFppPoleRotationLogged=false;
-        gTridentFppHorizontalLogged=false;
-
 
         mRenderOffhandOriginal=nullptr;
         mBlockPredicateOriginal=nullptr;
         mRenderObjectOriginal=nullptr;
         mItemTransformOriginal=nullptr;
-
         mRenderOffhandTarget=0;
         mBlockPredicateTarget=0;
         mRenderObjectTarget=0;
         mRenderItemTarget=0;
+        gRenderItemRouteTarget=0;
+        gAttachableStateRouteTarget=0;
         mCanTessellateTarget=0;
         mItemTransformTarget=0;
         mDefaultTransformTarget=0;
         mMatrixMultiplyTarget=0;
+        gItemStackMatchesTarget=0;
+        gMinecraftBase=0;
 
-        context.logger().info(
-            "Levi Offhand visual hooks removed"
-        );
+        context.logger().info("Levi Offhand visual hooks removed");
     }
 
 
@@ -4673,90 +3322,20 @@ namespace levioffhand::render {
     }
 
 
-    void
-    OffhandBlockRenderPatch::
-    setBowTppTiltDegrees(
-        float value
-    ) noexcept {
-        const float normalized=
-            native_attachment_fix::normalizeBowTppTiltDegrees(value);
-        gBowTppTiltDegrees.store(normalized,std::memory_order_release);
-        gBowTppGripPivotLogged=false;
-        __android_log_print(
-            ANDROID_LOG_INFO,
-            kLogTag,
-            "[BowTppTiltSlider] semanticRotZ=%.2f",
-            static_cast<double>(normalized)
-        );
-    }
-
-    float
-    OffhandBlockRenderPatch::
-    bowTppTiltDegrees() const noexcept {
-        return gBowTppTiltDegrees.load(std::memory_order_acquire);
-    }
 
 
-    void
-    OffhandBlockRenderPatch::
-    setTridentFppHorizontalOffset(
-        float value
-    ) noexcept {
-        const float normalized=
-            native_attachment_fix::normalizeTridentFppHorizontalOffset(value);
-        gTridentFppHorizontalOffset.store(
-            normalized,
-            std::memory_order_release
-        );
-        gTridentFppHorizontalLogged=false;
-        __android_log_print(
-            ANDROID_LOG_INFO,
-            kLogTag,
-            "[TridentFppHorizontalSlider] delta=%.3f",
-            static_cast<double>(normalized)
-        );
-    }
-
-    float
-    OffhandBlockRenderPatch::
-    tridentFppHorizontalOffset() const noexcept {
-        return gTridentFppHorizontalOffset.load(
-            std::memory_order_acquire
-        );
-    }
 
 
-    void
-    OffhandBlockRenderPatch::
-    setBowTppHorizontalOffset(
-        float value
-    ) noexcept {
-
-        const float normalized=
-            native_attachment_fix::normalizeBowTppHorizontalOffset(value);
-        gBowTppHorizontalOffset.store(
-            normalized,
-            std::memory_order_release
-        );
-
-        __android_log_print(
-            ANDROID_LOG_INFO,
-            kLogTag,
-            "[BowTppSlider] horizontal=%.3f (TPP only)",
-            static_cast<double>(normalized)
-        );
-    }
 
 
-    float
-    OffhandBlockRenderPatch::
-    bowTppHorizontalOffset()
-    const noexcept {
 
-        return gBowTppHorizontalOffset.load(
-            std::memory_order_acquire
-        );
-    }
+
+
+
+
+
+
+
 
 
     void
@@ -4764,68 +3343,29 @@ namespace levioffhand::render {
     setFeatureEnabled(
         bool enabled
     ) noexcept {
-
-        invalidateTridentFppBindingGeneration();
-        mFeatureEnabled.store(
-            enabled,
-            std::memory_order_release
-        );
-
+        mFeatureEnabled.store(enabled,std::memory_order_release);
         gLastPolicyItem=nullptr;
         gLastBridgeItem=nullptr;
         gLastTransformItem=nullptr;
         gLastSkullTransformItem=nullptr;
-
         gLastNativeToolItem=nullptr;
-        gDispatchFixLoggedMask=0;
-
-        gCurrentToolFamily=
-            ToolFamily::None;
-
+        gCurrentToolFamily=ToolFamily::None;
         gToolFinalMatrixApplied=false;
-
         gLastCalibratedToolItem=nullptr;
-        gLastSuppressedTridentItem=nullptr;
-        gRenderItemRouteDepth=0;
-        gRenderItemRouteFamily=ToolFamily::None;
-        gRenderItemRouteSlot=0;
-        gRenderItemRouteCallsiteRva=0;
-        gRenderItemAttachableCheckSeen=false;
-        gRenderItemNativeAttachable=false;
-        gRenderItemForcedGeneric=false;
-        gPendingTppReferenceFamily=ToolFamily::None;
-        gPendingTppReferenceArmed=false;
-        gTppReferenceLatchLoggedMask=0;
-        gTppReferenceLoggedMask=0;
+        gBowOffhandBindingDepth=0;
+        gNative3dWeaponFppDepth=0;
+        gNative3dFppFamily=ToolFamily::None;
+        gNative3dOwnerVector={};
+        gGenericLeftFppLoggedMask=0;
+        gBowTppFishingRodDepth=0;
+        gBowNativeBindingLogged=false;
+        gNative3dLeftCarrierLogged=false;
+        gBowTppRouteLogged=false;
         gBowTppNativeSuppressLogged=false;
-        gTridentFppNativeSuppressLogged=false;
-        gTridentFppGenericLogged=false;
-        gShieldFppReferenceLogged=false;
-        gShieldFppObjectLogged=false;
-
-        gBowTppBindingDepth=0;
-        gTridentFppBindingDepth=0;
-        gFirstPersonDataDrivenDepth=0;
-        gBowTppAttachmentDepth=0;
-        gTridentFppAttachmentDepth=0;
-        gResolvedTridentFppBindingBones.clear();
-        gBowTppBindingLogged=false;
-        gTridentFppBindingLogged=false;
-        gTridentFppBindingCacheLogged=false;
-        gBowTppLocalPoseLogged=false;
-        gTridentFppLocalPoseLogged=false;
-        gTridentFppPrepareProbeLogged=false;
-        gTridentFppBindingProbeCount=0;
 
         __android_log_print(
-            ANDROID_LOG_INFO,
-            kLogTag,
-            "Offhand visual %s",
-            enabled
-            ?
-            "ON"
-            :
-            "OFF"
+            ANDROID_LOG_INFO,kLogTag,
+            "Offhand visual %s",enabled?"ON":"OFF"
         );
     }
 
@@ -4846,90 +3386,27 @@ namespace levioffhand::render {
     OffhandBlockRenderPatch::
     installed()
     const noexcept {
-
         return
-            mRenderOffhandHook
-            &&
-            mRenderOffhandHook->
-                installed()
-
-            &&
-
-            mBlockPredicateHook
-            &&
-            mBlockPredicateHook->
-                installed()
-
-            &&
-
-            mRenderObjectHook
-            &&
-            mRenderObjectHook->
-                installed()
-
-            &&
-
-            mItemTransformHook
-            &&
-            mItemTransformHook->
-                installed()
-
-            &&
-
-            gHandEquipPredicateHook
-            &&
-            gHandEquipPredicateHook->
-                installed()
-
-            &&
-
-            gRenderItemRouteHook
-            &&
-            gRenderItemRouteHook->installed()
-
-            &&
-
-            gAttachableStateRouteHook
-            &&
-            gAttachableStateRouteHook->installed()
-
-            &&
-
-            gPrepareAttachmentHook
-            &&
-            gPrepareAttachmentHook->installed()
-            &&
-
-            gAttachmentBindingModeHook
-            &&
-            gAttachmentBindingModeHook->installed()
-            &&
-
-            gResolveOwnerBoneByNameHook
-            &&
-            gResolveOwnerBoneByNameHook->installed()
-            &&
-
-            gDrawAttachmentHook
-            &&
-            gDrawAttachmentHook->installed()
-            &&
-
-            gComposeAttachmentBoneMatrixHook
-            &&
-            gComposeAttachmentBoneMatrixHook->installed()
-            &&
-
-            gFirstPersonDataDrivenHook
-            &&
-            gFirstPersonDataDrivenHook->installed()
-
-            &&
-
-            gFinalOffhandMatrixHook
-            &&
-            gFinalOffhandMatrixHook->
-                installed();
+            mRenderOffhandHook && mRenderOffhandHook->installed()
+            && mBlockPredicateHook && mBlockPredicateHook->installed()
+            && mRenderObjectHook && mRenderObjectHook->installed()
+            && mItemTransformHook && mItemTransformHook->installed()
+            && gHandEquipPredicateHook && gHandEquipPredicateHook->installed()
+            && gRenderItemRouteHook && gRenderItemRouteHook->installed()
+            && gAttachableStateRouteHook && gAttachableStateRouteHook->installed()
+            && gPrepareAttachmentHook && gPrepareAttachmentHook->installed()
+            && gFindOwnerBoneVectorHook
+            && gFindOwnerBoneVectorHook->installed()
+            && gCopyOwnerMatrixHook
+            && gCopyOwnerMatrixHook->installed()
+            && gResolveOwnerBoneByNameHook
+            && gResolveOwnerBoneByNameHook->installed()
+            && gLegacyAttachmentRouteHook
+            && gLegacyAttachmentRouteHook->installed()
+            && gComposeAttachmentBoneMatrixHook
+            && gComposeAttachmentBoneMatrixHook->installed()
+            && gFinalOffhandMatrixHook
+            && gFinalOffhandMatrixHook->installed();
     }
 
 
@@ -4989,42 +3466,10 @@ namespace levioffhand::render {
             :
             ToolFamily::None;
 
-        TppReferenceRenderScope
-            tppReferenceRenderScope(
-                toolFamily
-            );
-
         ToolRenderScope
             toolRenderScope(
                 toolFamily
             );
-
-        if(
-            instance->featureEnabled()
-            && toolFamily==ToolFamily::Trident
-            && !gTridentFppGenericLogged
-        ) {
-            gTridentFppGenericLogged=true;
-            __android_log_print(
-                ANDROID_LOG_INFO,
-                kLogTag,
-                "[TridentFppNative3D] renderOffhandItem observed; "
-                "generic 2D submission will be suppressed"
-            );
-        }
-
-        if(
-            instance->featureEnabled()
-            && isShieldItem(itemClass)
-            && !gShieldFppReferenceLogged
-        ) {
-            gShieldFppReferenceLogged=true;
-            __android_log_print(
-                ANDROID_LOG_INFO,
-                kLogTag,
-                "[ShieldFppReference] Shield entered renderOffhandItem"
-            );
-        }
 
         if(
             toolFamily
@@ -5282,11 +3727,9 @@ namespace levioffhand::render {
         ) {
 
             return
-                placementAnimated(
-                    original(
-                        transforms,
-                        type
-                    )
+                original(
+                    transforms,
+                    type
                 );
         }
 
@@ -5308,73 +3751,22 @@ namespace levioffhand::render {
                 )
             );
 
-        // Visual-only first-person placement motion.  It is intentionally
-        // applied after Minecraft/Levi chooses the normal block transform, so
-        // storage, right-use routing and every block-specific calibration stay
-        // untouched.
-        const auto placementAnimated=
-            [&](Matrix64 matrix) noexcept -> Matrix64 {
-
-                if(block==nullptr) {
-                    return matrix;
-                }
-
-                const float progress=
-                    runtime::OffhandPlacementAnimation::
-                        instance().progress();
-
-                if(
-                    progress<=0.0f
-                    ||
-                    progress>=1.0f
-                ) {
-                    return matrix;
-                }
-
-                // One short placement impulse: lower/inward/forward at the
-                // midpoint, then return exactly to the native transform.
-                const float wave=
-                    std::sin(
-                        kPi*progress
-                    );
-
-                const float impulse=
-                    wave*wave;
-
-                matrix.value[12]+=
-                    0.08f*impulse;
-
-                matrix.value[13]-=
-                    0.18f*impulse;
-
-                // On the tested FPP path, negative local Z moves the
-                // OFFHAND block forward (away from the camera).
-                matrix.value[14]-=
-                    0.12f*impulse;
-
-                if(
-                    instance->
-                        mMatrixMultiplyTarget
-                ) {
-                    const auto multiply=
-                        reinterpret_cast<
-                            MatrixMultiplyFn
-                        >(
-                            instance->
-                                mMatrixMultiplyTarget
-                        );
-
-                    applyIndependentEuler(
-                        matrix,
-                        multiply,
-                        -20.0f*wave,
-                        9.0f*wave,
-                        7.0f*wave
-                    );
-                }
-
-                return matrix;
-            };
+        // Apply only inside the validated first-person OFFHAND block scope.
+        const auto placementAnimated=[&](Matrix64 matrix) noexcept -> Matrix64 {
+            if(block==nullptr) return matrix;
+            const float progress=runtime::OffhandPlacementAnimation::instance().progress();
+            if(progress<=0.0f || progress>=1.0f) return matrix;
+            const float wave=std::sin(kPi*progress);
+            const float impulse=wave*wave;
+            matrix.value[12]+=0.08f*impulse;
+            matrix.value[13]-=0.18f*impulse;
+            // Device test: +Z moved the OFFHAND block backward; reverse only Z.\n            matrix.value[14]-=0.12f*impulse;
+            if(instance->mMatrixMultiplyTarget) {
+                const auto multiply=reinterpret_cast<MatrixMultiplyFn>(instance->mMatrixMultiplyTarget);
+                applyIndependentEuler(matrix,multiply,-20.0f*wave,9.0f*wave,7.0f*wave);
+            }
+            return matrix;
+        };
 
         const ToolFamily toolFamily=
             classifyTool(
@@ -5393,13 +3785,7 @@ namespace levioffhand::render {
             !=
             ToolFamily::None
         ) {
-            return
-                placementAnimated(
-                    original(
-                        transforms,
-                        type
-                    )
-                );
+            return placementAnimated(original(transforms, type));
         }
 
         if(
@@ -5413,13 +3799,7 @@ namespace levioffhand::render {
             )
         ) {
 
-            return
-                placementAnimated(
-                    original(
-                        transforms,
-                        type
-                    )
-                );
+            return placementAnimated(original(transforms, type));
         }
 
         if(
@@ -5490,11 +3870,7 @@ namespace levioffhand::render {
                     mMatrixMultiplyTarget
             ) {
 
-                return
-                    original(
-                        transforms,
-                        type
-                    );
+                return placementAnimated(original(transforms, type));
             }
 
             const auto getDefault=
@@ -5725,13 +4101,7 @@ namespace levioffhand::render {
             return placementAnimated(copper);
         }
 
-        return
-            placementAnimated(
-                original(
-                    transforms,
-                    kFirstpersonRightHand
-                )
-            );
+        return placementAnimated(original(transforms, kFirstpersonRightHand));
     }
 
 
@@ -5802,43 +4172,6 @@ namespace levioffhand::render {
 
         const void* stack=
             offhandStack();
-
-        const ToolFamily toolFamily=
-            classifyTool(
-                stack
-            );
-
-        /*
-         * v0.2.57: the visible Trident must come only from Minecraft's native
-         * slot-6 DataDriven attachment.  Suppress the duplicate generic item
-         * form here; this is the 2D sprite observed in v0.2.55.
-         */
-        if(toolFamily==ToolFamily::Trident) {
-            if(gLastSuppressedTridentItem!=offhandItem()) {
-                gLastSuppressedTridentItem=offhandItem();
-                __android_log_print(
-                    ANDROID_LOG_INFO,
-                    kLogTag,
-                    "[TridentFppNative3D] suppress generic 2D item form"
-                );
-            }
-            return;
-        }
-
-        const void* referenceItem=offhandItem();
-        if(
-            kReferenceRouteDiagnostic
-            && referenceItem
-            && isShieldItem(rttiName(referenceItem))
-            && !gShieldFppObjectLogged
-        ) {
-            gShieldFppObjectLogged=true;
-            __android_log_print(
-                ANDROID_LOG_INFO,
-                kLogTag,
-                "[ShieldFppReference] Shield reached generic renderObject"
-            );
-        }
 
         if(
             !currentSpecialFamily()
