@@ -42,10 +42,16 @@ struct Item { void** table; int damage = 0; int duration = 0; };
 struct Stack {
     void* table{};
     const Item** weak{};
+    void* userData{};
+    void* block{};
+    std::uint16_t aux{};
+    std::uint8_t count{};
+    bool valid{true};
     int id{};
-    int count{};
-    std::array<std::byte, 128> pad{};
+    std::array<std::byte, 112> pad{};
 };
+static_assert(offsetof(Stack, count) == 0x22);
+static_assert(offsetof(Stack, valid) == 0x23);
 static_assert(sizeof(Stack) == 0x98);
 struct Player { void* table{}; } player;
 struct GameMode { void* table{}; const Player* owner = &player; } gameMode;
@@ -59,7 +65,9 @@ static std::uint32_t mainResult = 0, offResult = 1;
 static bool usingItem = false, startUse = false, detached = true;
 static int copies = 0, destroys = 0;
 static bool mutateOffOnMain = false;
+static bool mutateOffCountOnBlock = false;
 static int offInputCount = -1;
+static int offhandSetterCalls = 0;
 static int damage(const void* p) { return static_cast<const Item*>(p)->damage; }
 static int duration(const void* p, const void*) { return static_cast<const Item*>(p)->duration; }
 static bool cannotAttack(const void*) { return false; }
@@ -69,13 +77,29 @@ static bool differs(const void* a, const void* b) {
 }
 static const void* selected(const void*) { return &mainStack; }
 static const void* offhand(const void*) { return &offStack; }
+static void setHand(void* owner, unsigned char hand, const void* stack) {
+    if (owner == &player && hand == 1 && stack != nullptr) {
+        ++offhandSetterCalls;
+        offStack = *static_cast<const Stack*>(stack);
+    }
+}
 static bool isUsing(const void*) { return usingItem; }
 static const void* active(const void*) { return &activeStack; }
 static void copyStack(void* out, const void* in) { ++copies; std::memcpy(out, in, sizeof(Stack)); }
 static void destroyStack(void*) { ++destroys; }
 static std::uint32_t blockUse(void*, const void* stack, const void*, int, const void*, unsigned char hand, std::uintptr_t, bool) {
     calls.push_back(hand);
-    if (hand == 1) detached &= stack != &offStack;
+    if (hand == 1) {
+        detached &= stack != &offStack;
+        if (mutateOffCountOnBlock && offResult != 0) {
+            auto* mutableStack = const_cast<Stack*>(
+                static_cast<const Stack*>(stack)
+            );
+            if (mutableStack->count != 0) {
+                --mutableStack->count;
+            }
+        }
+    }
     return hand == 0 ? mainResult : offResult;
 }
 static bool airUse(void*, const void* stack, unsigned char hand) {
@@ -112,7 +136,8 @@ int main(int argc, char** argv) {
     router.mSelectedItemOriginal = reinterpret_cast<void*>(&selected);
     router.mUseItemOnBlockOriginal = reinterpret_cast<void*>(&blockUse);
     router.mBaseUseItemOriginal = reinterpret_cast<void*>(&airUse);
-    gGetOffhandSlot = offhand; gStackIsNull = isNull;
+    gGetOffhandSlot = offhand; gSetItemInHandSlot = setHand;
+    gStackIsNull = isNull;
     gPlayerIsUsingItem = isUsing; gItemInUseStack = active;
     gStackDiffersForUse = differs; gItemStackCopyCtor = copyStack; gItemStackDtor = destroyStack;
     const std::string test = argv[1];
@@ -124,6 +149,18 @@ int main(int argc, char** argv) {
         ok &= check(!stackClaimsMainhandRightClick(&mainStack), "no-op sword must yield right-click");
         RightUseRouter::useItemOnBlockDetour(&gameMode, &mainStack, nullptr, 0, nullptr, 0, 0, false);
         ok &= check(calls == std::vector<unsigned char>{1}, "sword must not swallow offhand placement");
+    } else if (test == "off_count_sync") {
+        mainItem.damage = 7;
+        mainTable[0x290/8] = reinterpret_cast<void*>(testBase + 0xFD66F30);
+        offStack.count = 16;
+        mutateOffCountOnBlock = true;
+        const auto result = RightUseRouter::useItemOnBlockDetour(
+            &gameMode, &mainStack, nullptr, 0, nullptr, 0, 0, false
+        );
+        ok &= check(result == 1, "OFF placement must remain handled");
+        ok &= check(detached, "OFF placement must keep detached transaction input");
+        ok &= check(offStack.count == 15, "OFFHAND count must reconcile 16 -> 15");
+        ok &= check(offhandSetterCalls == 1, "native OFFHAND setter must run once");
     } else if (test == "main_pass" || test == "both_pass" || test == "main_success" || test == "main_terminal") {
         mainTable[0x418/8] = reinterpret_cast<void*>(testBase + 0x1000AF40);
         if (test == "main_success") mainResult = 1;
