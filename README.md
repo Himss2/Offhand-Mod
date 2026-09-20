@@ -104,3 +104,18 @@ Use a supported build from `manifest.json` and start from a fresh game launch. F
 
 
 Renderer review also corrected six 1.26.51.1 callsite translations for spear admission and native owner-vector/matrix lookup. Their BL targets are verified by the binary test.
+
+### Banner FPP — build #470 logic ported to 1.26.51.1
+
+Banner now uses the **rendering logic from successful build #470** rather than the later generic safe-item approximation. The old build temporarily exposed BannerItem's cached standing-banner `Block*` through the offhand ItemStack so Minecraft entered the same block-transform path that produced the accepted custom FPP position/orientation.
+
+Only the layout-dependent part was updated for Minecraft 1.26.51.1. Static RE of the new BannerItem constructor shows:
+
+```text
+BannerItem ctor       0x1000B5A0
+wall Block* store     0x1000B5D8 -> this+0x1D0
+standing Block* store 0x1000B5F0 -> this+0x1D8
+```
+
+Build #470 used `+0x1C0/+0x1C8`; those stale offsets caused the 1.26.51.1 crash and are forbidden. The custom pose remains the build-#470 calibration: scale `1.56`, X `-0.78`, Y `-0.28`, yaw `180°`. No Minecraft signatures/RVAs from build #470 were copied.
+

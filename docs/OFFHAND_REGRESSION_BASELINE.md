@@ -67,6 +67,17 @@ A follow-up must establish the native transaction envelope and hand-aware writeb
 
 The source contracts and existing host policy/context/router/auto-insert tests remain required. The Android CI build must also succeed. None replaces the gameplay matrix below.
 
+## Banner build-#470 rendering baseline
+
+Banner FPP must follow the accepted build #470 **logic**, not its old binary addresses.
+
+- Preserve the scoped `StackBlockOverride` strategy so Minecraft selects the block-transform path used by the accepted Banner pose.
+- Minecraft 1.26.51.1 BannerItem constructor stores the cached wall/standing Block pointers at `+0x1D0/+0x1D8` (stores at `0x1000B5D8` and `0x1000B5F0`).
+- Never restore build #470's old `+0x1C0/+0x1C8` offsets.
+- Keep the override scoped to `renderOffhandDetour` and restore `ItemStack::mBlock` immediately after the original call.
+- Retain the accepted Banner matrix calibration: scale `1.56`, X `-0.78`, Y `-0.28`, yaw `180°`.
+- Do not port any 1.26.45.1 signatures/RVAs while applying this logic.
+
 ## FPP placement-animation invariant
 
 The current animation layer is intentionally narrow:

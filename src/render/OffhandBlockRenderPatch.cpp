@@ -201,6 +201,18 @@ namespace levioffhand::render {
         constexpr std::size_t kItemStackBlockOffset=0x18;
         constexpr std::size_t kBlockTypeOffset=0x68;
 
+        // Build #470 used BannerItem's cached wall/standing Block* members to
+        // make the native offhand renderer enter the block-transform path.
+        // Minecraft 1.26.51.1 moved both members by +0x10:
+        //
+        //   BannerItem ctor @ 0x1000B5A0
+        //   STR X0,[X19,#0x1D0] @ 0x1000B5D8
+        //   STR X0,[X19,#0x1D8] @ 0x1000B5F0
+        //
+        // The older 0x1C0/0x1C8 offsets must never be reused on 1.26.51.1.
+        constexpr std::size_t kBannerWallBlockOffset=0x1D0;
+        constexpr std::size_t kBannerStandingBlockOffset=0x1D8;
+
         constexpr std::uint32_t kFirstpersonRightHand=1;
         constexpr std::uint32_t kFirstpersonLeftHand=2;
 
@@ -691,6 +703,64 @@ namespace levioffhand::render {
                     --gBridgeDepth;
                 }
             }
+        };
+
+
+        // Scoped build-#470 Banner routing: temporarily expose the verified
+        // standing-banner Block* through ItemStack::mBlock, let Minecraft
+        // render it through the block path, then restore the original value.
+        class StackBlockOverride final {
+        public:
+            StackBlockOverride(
+                void* stack,
+                const void* replacement
+            ) noexcept
+                :
+                mStack(stack),
+                mOriginal(
+                    readValue<const void*>(
+                        stack,
+                        kItemStackBlockOffset,
+                        nullptr
+                    )
+                ),
+                mActive(
+                    stack
+                    &&
+                    replacement
+                    &&
+                    reinterpret_cast<std::uintptr_t>(replacement)>=0x10000u
+                    &&
+                    !mOriginal
+                )
+            {
+                if(mActive) {
+                    writeValue<const void*>(
+                        mStack,
+                        kItemStackBlockOffset,
+                        replacement
+                    );
+                }
+            }
+
+            ~StackBlockOverride() {
+                if(mActive) {
+                    writeValue<const void*>(
+                        mStack,
+                        kItemStackBlockOffset,
+                        mOriginal
+                    );
+                }
+            }
+
+            [[nodiscard]] bool active() const noexcept {
+                return mActive;
+            }
+
+        private:
+            void* mStack;
+            const void* mOriginal;
+            bool mActive;
         };
 
         bool inOffhand() noexcept {
@@ -3450,10 +3520,25 @@ namespace levioffhand::render {
             &&
             item
         ) {
-            // 1.26.51.1: never fabricate ItemStack::mBlock from historical
-            // BannerItem field offsets. The supplied crash showed that those
-            // offsets now yield an invalid small pointer in native item/block
-            // lookup. Keep the native item render transaction instead.
+            const void* wall=
+                readValue<const void*>(
+                    item,
+                    kBannerWallBlockOffset,
+                    nullptr
+                );
+
+            const void* standing=
+                readValue<const void*>(
+                    item,
+                    kBannerStandingBlockOffset,
+                    nullptr
+                );
+
+            StackBlockOverride blockOverride(
+                stack,
+                standing
+            );
+
             bool expected=false;
             if(
                 instance->
@@ -3467,7 +3552,11 @@ namespace levioffhand::render {
                 __android_log_print(
                     ANDROID_LOG_INFO,
                     kLogTag,
-                    "[BannerFix] safe native item route active; stale Block* bridge disabled"
+                    blockOverride.active()
+                        ? "[BannerFix] build470 block bridge restored for 1.26.51.1: wall=%p standing=%p offsets=(0x1D0,0x1D8)"
+                        : "[BannerFix] build470 block bridge unavailable; native route retained wall=%p standing=%p",
+                    wall,
+                    standing
                 );
             }
 
@@ -3632,6 +3721,8 @@ namespace levioffhand::render {
             ||
             !inOffhand()
             ||
+            gBridgeDepth!=0
+            ||
             type
             !=
             kFirstpersonLeftHand
@@ -3647,37 +3738,13 @@ namespace levioffhand::render {
         const void* item=
             offhandItem();
 
+        const void* block=
+            offhandBlock();
+
         const char* itemClass=
             rttiName(
                 item
             );
-
-        const bool bannerBridgeTransform=
-            gBridgeDepth!=0
-            &&
-            isBannerItem(
-                itemClass
-            );
-
-        // The safe Banner path intentionally enters RenderItem through
-        // BridgeScope.  Historically this guard returned vanilla transforms
-        // for every bridged item, which also disabled Banner's already-tested
-        // custom scale/position/yaw.  Allow only Banner through here; every
-        // other bridged family keeps the old recursion guard unchanged.
-        if(
-            gBridgeDepth!=0
-            &&
-            !bannerBridgeTransform
-        ) {
-            return
-                original(
-                    transforms,
-                    type
-                );
-        }
-
-        const void* block=
-            offhandBlock();
 
         const char* blockClass=
             rttiName(
@@ -3947,8 +4014,8 @@ namespace levioffhand::render {
                         __android_log_print(
                             ANDROID_LOG_INFO,
                             kLogTag,
-                            "[TransformFix] Banner safe bridge custom "
-                            "pose active scale=%.2f shift=(%.2f,%.2f) yaw=%.1f",
+                            "[TransformFix] Banner build470 pose active "
+                            "scale=%.2f shift=(%.2f,%.2f) yaw=%.1f",
                             static_cast<double>(kBannerScale),
                             static_cast<double>(kBannerShiftX),
                             static_cast<double>(kBannerShiftY),
