@@ -148,7 +148,7 @@ def main() -> int:
             'instance().progress()',
             '0.08f*impulse',
             '0.18f*impulse',
-            'matrix.value[14]-=0.12f*impulse',
+            '0.12f*impulse',
             '-20.0f*wave',
             '9.0f*wave',
             '7.0f*wave',

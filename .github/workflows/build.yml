@@ -123,6 +123,7 @@ jobs:
 
       - name: Run v0.2.68 action routing tests
         run: |
+          bash tests/run_right_use_runtime_tests.sh
           python3 tests/v0262_native_routing_source_contract.py
           python3 tests/v0268_action_routing_source_contract.py
           python3 tests/v0268_semantic_bridge_source_contract.py

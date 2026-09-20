@@ -3760,7 +3760,7 @@ namespace levioffhand::render {
             const float impulse=wave*wave;
             matrix.value[12]+=0.08f*impulse;
             matrix.value[13]-=0.18f*impulse;
-            // Device test: +Z moved the OFFHAND block backward; reverse only Z.\n            matrix.value[14]-=0.12f*impulse;
+            matrix.value[14]+=0.12f*impulse;
             if(instance->mMatrixMultiplyTarget) {
                 const auto multiply=reinterpret_cast<MatrixMultiplyFn>(instance->mMatrixMultiplyTarget);
                 applyIndependentEuler(matrix,multiply,-20.0f*wave,9.0f*wave,7.0f*wave);

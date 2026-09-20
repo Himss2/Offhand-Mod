@@ -2,70 +2,41 @@
 
 Native Levi Launcher Android mod for Minecraft Bedrock **1.26.45.1** and **1.26.51.1**.
 
-## v0.2.68 — recovered pre-swap offhand baseline
+## v0.2.68 — Java-style right-use corrections (candidate)
 
-The runtime action/storage path has been restored to the exact last known-good **pre-swap** commit:
+This candidate fixes verified routing defects on **Bedrock Android 1.26.51.1**. It is **not yet full Java parity** and has not passed the device gameplay matrix. The pre-swap recovery commit `198787f5b0d750fd4c89ba00ac0aab5c72018331` is historical provenance, not evidence that the current implementation works in game.
 
-`198787f5b0d750fd4c89ba00ac0aab5c72018331` — `fix: route sword like axe when no native right-click exists`
+### Corrected behavior
 
-This recovery is intentional. The experimental F-style swap source may remain in the repository for later work, but it is **not compiled, installed, registered, or allowed to hook Minecraft in the recovery baseline**.
+- Sword's native `WeaponItem::use` override only returns its input. It no longer falsely claims MAIN priority and blocks OFF placement/self-use.
+- A MAIN block-use action runs once. A zero/PASS result can fall through to OFF for block-only owners; a nonzero native result is preserved. Bow/food/other MAIN self-use owners defer to the upper native dispatcher before OFF block placement.
+- OFF placement **and air-use** use a detached native ItemStack snapshot. The air-use snapshot is created only when OFF is attempted, after any MAIN attempt, so it reflects the current slot.
+- An explicit MAIN action scope wins over an older OFF active-use session.
+- The renderer and its attachment helper now come from the matching accepted v0.2.67 build overlay. The 220 ms OFF block placement animation runs only after the first-person OFF guard. This repairs the source/header mismatch and undeclared-lambda build regression introduced by the animation commit.
+- CI executes the actual production routing detours against fake ABI objects, in addition to source contracts. The renderer generation test checks working files and verifies that generation does not modify them.
 
-The restored block-placement rules are:
+### Remaining parity gaps
 
-- classify whether MAINHAND truly owns right-click before touching the generic use-on path;
-- attack-only Sword/Axe/Pickaxe-style items yield right-click to OFFHAND;
-- Bow/Trident/Fishing Rod/Shears/food/shield-style native right-click actions keep MAINHAND priority;
-- when MAINHAND has no right-click owner, OFFHAND gets the first native use-on attempt with `hand=1`;
-- OFFHAND placement uses a detached native `ItemStack` snapshot, never the live slot pointer;
-- if OFFHAND passes, vanilla MAINHAND runs once as fallback;
-- left-click remains vanilla MAINHAND.
+Full Java behavior requires one ordered interaction pipeline, including block/entity interaction, self-use, PASS/FAIL semantics, and active-use lifecycle. The current native hooks do not yet establish all of that.
 
-The exact regression contract is documented in `docs/OFFHAND_REGRESSION_BASELINE.md`.
+- **Consumption/release is not verified:** binary inspection shows native release starts a MAIN-hand transaction and calls the MAIN setter. Redirecting `getSelectedItem` alone does not fix transaction/writeback ownership.
+- **Active-use isolation is incomplete:** the existing session-based selected getter can affect unrelated native reads outside an explicit MAIN scope. In-game attack, slot-change, cancellation, world-exit and food/drink completion require validation.
+- **Swap remains disabled:** the prior clear/refill setter experiment does not provide a verified atomic native transaction. It is not compiled or installed.
+- **Mixed block/self-use fallback remains incomplete:** for example MAIN bow self-use PASS followed by OFF block placement requires coordination at an upper dispatcher boundary.
 
-### 1.26.51.1 runtime hook compatibility
+Do not treat a green build or host test as proof that items cannot be lost, duplicated or locked. The exact evidence and outstanding gameplay matrix are in [the regression document](docs/OFFHAND_REGRESSION_BASELINE.md).
 
-The on-disk `libminecraftpe.so` supplied for 1.26.51.1 was rechecked against every RightUseRouter fingerprint and the bytes match the documented RVAs. If a hookable entry-point prologue is already modified **in memory**, RightUseRouter now keeps an exact fingerprint guard on the non-hook helper functions and then chains the live known-RVA target for `Player::getSelectedItem`, `GameMode::useItemOnBlock`, `GameMode::baseUseItem`, and `GameMode::releaseUsingItem`.
+### Verification
 
-This changes only installation/compatibility. The pre-swap block-placement and right-use decision logic remains unchanged.
+```bash
+bash tests/run_right_use_runtime_tests.sh
+python3 tests/right_use_126511_binary_test.py /path/to/libminecraftpe.so
+python3 tests/v0268_render_126511_compat_source_contract.py
+```
 
-### Current action fixes before swap returns
+The binary test requires the exact 1.26.51.1 file with SHA-256 `b8a6351503d330628335a80e8131acd45291fa9a747465f0f34a31b2346847b4`. It checks all eleven router fingerprints, the WeaponItem no-op, and relocated Item/ComponentItem use slots. Host tests execute production C++ detours with fake native objects; they do not emulate Bedrock transactions.
 
-Two interaction regressions are now explicitly protected:
-
-- **OFFHAND food/self-use with Sword/Axe/Pickaxe/empty-like MAINHAND:** the router classifies MAINHAND capability before calling generic `baseUseItem`. If MAINHAND has no real right-click owner, OFFHAND gets the first semantic attempt, so generic ComponentItem success cannot swallow eating/long-use.
-- **Sword MAINHAND + placeable OFFHAND through a pre-hooked use-on-block chain:** the normal path remains detached-snapshot + `hand=1`. Only when `GameMode::useItemOnBlock` was already patched before this mod installs do we add a narrow OFFHAND selected-item scope around that chained call, because third-party/earlier wrappers may re-query `Player::getSelectedItem`.
-
-Swap remains quarantined. Eating/drinking animation is not being pursued because those OFFHAND actions are not currently usable. The current visual phase is limited to **first-person OFFHAND block-placement animation**: a 220 ms visual-only matrix impulse is triggered after an accepted native OFFHAND use-on result. It does not mutate inventory, selected-item ownership, hand routing, or transactions.
-
-### Visual workstream scope
-
-Current work in this branch/conversation is intentionally limited to **rendering, animation, offhand appearance, and UI/button presentation**. Java-like offhand action/storage logic is handled separately. Runtime action code should not be changed for visual calibration unless a very small integration fix is explicitly required.
-
-
-**Renderer build invariant:** `OffhandBlockRenderPatch.cpp`, `NativeAttachmentFix.hpp`, and `OffhandBlockRenderPatch.hpp` are a matched source set. CI must restore all three from current `main` after the archived v0.2.67 overlay. Mixing the current renderer CPP with the archived helper header causes compile-time missing-symbol failures.
- The public header must also retain declarations for every out-of-line visual calibration method implemented by the renderer CPP.
-
-### Visual recovery baseline
-
-The FPP visual stack has been rolled back to the last device-tested renderer baseline from commit `7d0846d93bd04821e011ab8e3a62a62caacbc957`. The experimental `ItemInHandRenderer::renderFirstPerson` mainhand-freeze hook was removed because it caused the complete visual patch to fail target resolution and disabled all previously calibrated FPP block transforms.
-
-For now the only change on top of that tested renderer is the OFFHAND placement impulse direction: local Z is `-0.12` so the block moves forward. Mainhand-freeze work is deferred until it can be implemented without adding a new mandatory renderer target.
-
-### FPP OFFHAND placement animation
-
-The placement animation is deliberately isolated from action logic:
-
-- trigger source: accepted OFFHAND `GameMode::useItemOnBlock` result;
-- duration: **220 ms**;
-- renderer scope: block item in `FIRSTPERSON_LEFT` only;
-- motion: short inward/down/**forward** impulse plus a small local X/Y/Z rotation;
-- the transform returns exactly to Minecraft's normal offhand matrix at the end;
-- no animation hook changes storage or placement success/failure;
-- while this OFFHAND placement impulse is active, the renderer temporarily freezes the MAINHAND equip-height pair for that draw only, then restores Minecraft's real values immediately.
-
-This phase is visual-only. If placement itself fails, the animation is not considered a functional fix.
-
-**Maintenance rule:** any future feature or bug fix that changes offhand storage, right-use/block placement, selected-item access, swap behavior, or render ownership must update both this README and the regression document in the same change.
+**Maintenance rule:** any change to offhand storage, routing, selected-item access, swap or rendering must update this README and the regression document together.
 
 ## v0.2.63 — native-only Bow/Trident renderer
 
@@ -119,3 +90,6 @@ Use a supported build from `manifest.json` and start from a fresh game launch. F
 8. After OFFHAND placement, the remaining item can still be removed/moved normally from slot 34.
 9. F swap with one empty hand works repeatedly without ghost/duplicate stacks.
 10. F swap with both MAINHAND and OFFHAND occupied alternates correctly, and the new OFFHAND item can immediately be removed through normal inventory UI.
+
+
+Renderer review also corrected six 1.26.51.1 callsite translations for spear admission and native owner-vector/matrix lookup. Their BL targets are verified by the binary test.
