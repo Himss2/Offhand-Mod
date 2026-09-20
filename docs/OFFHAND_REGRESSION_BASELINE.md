@@ -71,6 +71,8 @@ For the current visual pass, changes should stay in `src/render`, renderer compa
 Renderer compatibility source-set rule:
 
 - restore `OffhandBlockRenderPatch.cpp`, `NativeAttachmentFix.hpp`, and `OffhandBlockRenderPatch.hpp` together after archived overlays;
+- keep the public-header calibration declarations in sync with the renderer CPP; removed UI controls do not imply their out-of-line methods may be undeclared;
+- a local animation lambda may only be referenced after its declaration inside `itemTransformDetour`;
 - the complete helper header is required by Bow/Trident attachment code (`ResolvedBindingCache`, owner-bone classification, binding-mode callsites, and calibration defaults);
 - Minecraft 1.26.51.1 callsite relocations recovered for that helper are `0x9B36370 -> 0x9F00C90` and `0xA2C87BC -> 0xA650958`;
 - the renderer source contract must validate the generated helper header, not only the generated CPP.

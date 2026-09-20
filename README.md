@@ -43,6 +43,7 @@ Current work in this branch/conversation is intentionally limited to **rendering
 
 
 **Renderer build invariant:** `OffhandBlockRenderPatch.cpp`, `NativeAttachmentFix.hpp`, and `OffhandBlockRenderPatch.hpp` are a matched source set. CI must restore all three from current `main` after the archived v0.2.67 overlay. Mixing the current renderer CPP with the archived helper header causes compile-time missing-symbol failures.
+ The public header must also retain declarations for every out-of-line visual calibration method implemented by the renderer CPP.
 
 ### FPP OFFHAND placement animation
 

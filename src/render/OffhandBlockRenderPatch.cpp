@@ -5478,11 +5478,9 @@ namespace levioffhand::render {
         ) {
 
             return
-                placementAnimated(
-                    original(
-                        transforms,
-                        type
-                    )
+                original(
+                    transforms,
+                    type
                 );
         }
 

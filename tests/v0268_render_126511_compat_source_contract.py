@@ -10,9 +10,9 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 
 FROZEN_HEAD_BLOBS = {
-    "src/render/OffhandBlockRenderPatch.cpp": "150b41dbe07caaaf303ec96095e41aec3b73cf98",
+    "src/render/OffhandBlockRenderPatch.cpp": "0a577697ebf9259f358670bb89b3fb09d7d78b5f",
     "src/render/NativeAttachmentFix.hpp": "2187ec21af29f75ecaf7fbb73412758ace9a65a1",
-    "src/render/OffhandBlockRenderPatch.hpp": "ea45606173d0eed19b3e86bc93b77e91abd8b2fc",
+    "src/render/OffhandBlockRenderPatch.hpp": "7b56b1d47610f55a4701b0fa5af049fe9dcbc7c1",
 }
 
 REQUIRED_NAMED_RVAS = {
@@ -95,6 +95,29 @@ def main() -> int:
             raise AssertionError(
                 f"renderer source changed: {path}: expected {expected}, got {actual}"
             )
+
+    public_header = (ROOT / "src" / "render" / "OffhandBlockRenderPatch.hpp").read_text()
+    for token in (
+        "setBowTppTiltDegrees(float value) noexcept",
+        "bowTppTiltDegrees() const noexcept",
+        "setTridentFppHorizontalOffset(float value) noexcept",
+        "tridentFppHorizontalOffset() const noexcept",
+        "setBowTppHorizontalOffset(float value) noexcept",
+        "bowTppHorizontalOffset() const noexcept",
+    ):
+        if token not in public_header:
+            raise AssertionError(
+                f"renderer public header missing declaration {token!r}"
+            )
+
+    tracked_cpp = (ROOT / "src" / "render" / "OffhandBlockRenderPatch.cpp").read_text()
+    item_fn = tracked_cpp.split("OffhandBlockRenderPatch::\n    itemTransformDetour(", 1)[1]
+    lambda_pos = item_fn.index("const auto placementAnimated=")
+    prefix = item_fn[:lambda_pos]
+    if "placementAnimated(" in prefix:
+        raise AssertionError(
+            "placementAnimated must not be referenced before its local lambda declaration"
+        )
 
     generator = ROOT / "scripts" / "generate_render_126511_compat.py"
     if not generator.exists():
