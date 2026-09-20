@@ -78,6 +78,12 @@ Banner FPP must follow the accepted build #470 **logic**, not its old binary add
 - Retain the accepted Banner matrix calibration: scale `1.56`, X `-0.78`, Y `-0.28`, yaw `180°`.
 - Do not port any 1.26.45.1 signatures/RVAs while applying this logic.
 
+## Renderer-only animation safety invariant
+
+Do not hook `LocalPlayer::swing`, upper-use, block-use, selected-item access, or any gameplay/action function from `src/render`. A rejected experiment at the LocalPlayer swing boundary altered return/control-flow semantics and regressed Shears: MAINHAND Shears must retain its specialized native right-click action and must not fall through to OFFHAND block placement.
+
+This is now a source-contract rule. Placement-animation work may inspect Freecam's first-person render predicates as RE references, but implementation must stay on a render-only boundary that cannot affect hand ownership or action routing.
+
 ## Placement animation phase 1: MAINHAND visual freeze
 
 This phase is renderer-only. Do not modify RightUseRouter, storage, block count reconciliation, Banner routing, or tool-family rendering.

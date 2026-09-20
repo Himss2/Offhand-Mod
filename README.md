@@ -120,6 +120,12 @@ standing Block* store 0x1000B5F0 -> this+0x1D8
 Build #470 used `+0x1C0/+0x1C8`; those stale offsets caused the 1.26.51.1 crash and are forbidden. The custom pose remains the build-#470 calibration: scale `1.56`, X `-0.78`, Y `-0.28`, yaw `180°`. No Minecraft signatures/RVAs from build #470 were copied.
 
 
+### Renderer-only animation safety rule
+
+Animation work under `src/render` must not hook or override `LocalPlayer::swing`, the upper-use dispatcher, or any other gameplay/action function. The rejected MAINHAND-swing experiment changed the boolean/control-flow semantics of the use path and caused specialized MAINHAND items such as Shears to yield incorrectly to OFFHAND block placement.
+
+For Shears/Fishing Rod/Bow/Trident/food/shield and other items with a native right-click action, MAINHAND ownership remains authoritative. Future placement-animation work must operate only on render transforms/predicates/state that cannot change action dispatch, inventory, stack counts, or hand ownership.
+
 ### Block-placement animation phase 1 — freeze MAINHAND
 
 Before changing the OFFHAND placement motion, the renderer uses an **optional visual-only MAINHAND freeze layer**. Deeper static RE of Minecraft 1.26.51.1 corrected the hand mapping in the shared FPP helper `0xB2F7F18`:

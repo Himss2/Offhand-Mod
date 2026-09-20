@@ -219,6 +219,23 @@ def main() -> int:
             "optional MAINHAND freeze hook must never disable proven visual paths"
         )
 
+    # Renderer-only invariant: never hook/override gameplay swing or upper-use
+    # control flow from src/render.  A previous experiment returned a synthetic
+    # bool from LocalPlayer::swing and changed MAINHAND ownership for specialized
+    # items such as Shears, allowing OFFHAND block placement to run incorrectly.
+    for forbidden in (
+        "kLocalPlayerSwingSignature",
+        "localPlayerSwingDetour(",
+        "kUpperUsePlacementSwingCallsiteA",
+        "kUpperUsePlacementSwingCallsiteB",
+        "0x97F8C28",
+        "0x97F8D04",
+    ):
+        if forbidden in cpp:
+            raise AssertionError(
+                f"renderer must not intercept gameplay swing/use routing: {forbidden!r}"
+            )
+
     # The renderer and attachment helper must come from the same accepted overlay.
     assert git_blob_sha(header) == "deb12b1f33aa36e91d143d996ea92c415604f128"
     fn = cpp[cpp.index("    itemTransformDetour("):]
