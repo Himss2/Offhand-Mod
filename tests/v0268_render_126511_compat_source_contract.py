@@ -160,64 +160,71 @@ def main() -> int:
             "Banner must use build470 block-path routing, not the later bridge-depth exception"
         )
 
+    # Suppress the exact vanilla MAINHAND swing emitted after a successful
+    # upper-use path. Do not spoof renderer fields or suppress normal attacks.
     for token in (
-        "kFirstPersonHandRenderSignature",
-        "firstPersonHandRenderDetour(",
-        "hand==1u",
-        "kMainhandHeightOffset=0x180",
-        "kMainhandOldHeightOffset=0x184",
-        "kPlayerSwingCurrentOffset=0x3EC",
-        "kPlayerSwingPreviousOffset=0x430",
+        "kLocalPlayerSwingSignature",
+        "kUpperUsePlacementSwingCallsiteA=0x97F8C28",
+        "kUpperUsePlacementSwingCallsiteB=0x97F8D04",
+        "kPlacementSwingSourceAttack=4",
+        "kMainhandHandSlot=0",
+        "localPlayerSwingDetour(",
         "OffhandPlacementAnimation::instance().progress()",
-        "gMainhandPlacementFreezeLatched",
-        "MAINHAND FPP equip+swing motion",
-        "Optional MAINHAND placement-freeze hook unavailable",
-        "Placement visual: MAINHAND freeze layer active",
+        "swingSource==kPlacementSwingSourceAttack",
+        "handSlot==kMainhandHandSlot",
+        "suppressed vanilla MAINHAND swing",
+        "Optional MAINHAND placement-swing suppressor unavailable",
+        "Placement visual: MAINHAND swing suppressor active",
     ):
         if token not in cpp:
             raise AssertionError(
-                f"MAINHAND placement-freeze visual layer missing {token!r}"
+                f"MAINHAND placement-swing suppressor missing {token!r}"
             )
 
-    freeze_start = cpp.index("firstPersonHandRenderDetour(")
-    freeze_end = cpp.index("using RenderItemRouteFn", freeze_start)
-    freeze_body = cpp[freeze_start:freeze_end]
-    if "runtime::OffhandPlacementAnimation::instance().progress()" not in freeze_body:
-        raise AssertionError(
-            "MAINHAND freeze must be driven only by OFFHAND placement visual state"
-        )
-    if "hand==1u" not in freeze_body:
-        raise AssertionError(
-            "Minecraft 1.26.51.1 MAINHAND selector must be hand=1"
-        )
-    if "hand==0u" in freeze_body:
-        raise AssertionError(
-            "OFFHAND selector hand=0 must never activate MAINHAND freeze"
-        )
-    if "if(!placementActive)" not in freeze_body:
-        raise AssertionError(
-            "freeze latch must clear only when placement window ends"
-        )
-    for token in (
-        "kMainhandHeightOffset",
-        "kMainhandOldHeightOffset",
-        "kPlayerSwingCurrentOffset",
-        "kPlayerSwingPreviousOffset",
-        "constexpr float kNeutralSwing=0.0f",
-        "writeValue<float>",
+    swing_start = cpp.index("localPlayerSwingDetour(")
+    swing_end = cpp.index("using RenderItemRouteFn", swing_start)
+    swing_body = cpp[swing_start:swing_end]
+
+    for callsite in (
+        "kUpperUsePlacementSwingCallsiteA",
+        "kUpperUsePlacementSwingCallsiteB",
     ):
-        if token not in freeze_body:
+        if callsite not in swing_body:
             raise AssertionError(
-                f"MAINHAND freeze must stay scoped to renderer equip fields: {token!r}"
+                f"placement swing suppressor missing exact caller guard {callsite!r}"
             )
 
-    install_pos = cpp.index("gFirstPersonHandRenderHook=")
+    if "return true;" not in swing_body:
+        raise AssertionError(
+            "matched post-placement MAINHAND swing must be swallowed"
+        )
+
+    suppress_pos = swing_body.index("if(suppressMainhandPlacementSwing)")
+    fallback_pos = swing_body.rindex("return original(")
+    if suppress_pos > fallback_pos:
+        raise AssertionError(
+            "suppression must be evaluated before vanilla swing fallback"
+        )
+
+    install_pos = cpp.index("gLocalPlayerSwingHook=")
     feature_pos = cpp.index("mFeatureEnabled.store(true", install_pos)
     optional_install = cpp[install_pos:feature_pos]
     if "return fail(" in optional_install or "uninstall(context)" in optional_install:
         raise AssertionError(
-            "optional MAINHAND freeze hook must never disable proven visual paths"
+            "optional MAINHAND swing hook must never disable proven visual paths"
         )
+
+    for stale in (
+        "kFirstPersonHandRenderSignature",
+        "firstPersonHandRenderDetour(",
+        "gMainhandPlacementFreezeLatched",
+        "kPlayerSwingCurrentOffset",
+        "kPlayerSwingPreviousOffset",
+    ):
+        if stale in cpp:
+            raise AssertionError(
+                f"ineffective renderer-field freeze must not return: {stale!r}"
+            )
 
     # The renderer and attachment helper must come from the same accepted overlay.
     assert git_blob_sha(header) == "deb12b1f33aa36e91d143d996ea92c415604f128"
