@@ -119,3 +119,12 @@ standing Block* store 0x1000B5F0 -> this+0x1D8
 
 Build #470 used `+0x1C0/+0x1C8`; those stale offsets caused the 1.26.51.1 crash and are forbidden. The custom pose remains the build-#470 calibration: scale `1.56`, X `-0.78`, Y `-0.28`, yaw `180°`. No Minecraft signatures/RVAs from build #470 were copied.
 
+
+### Block-placement animation phase 1 — freeze MAINHAND
+
+Before changing the OFFHAND placement motion, the renderer now installs an **optional visual-only MAINHAND freeze layer**. Static RE of Minecraft 1.26.51.1 identifies the shared FPP per-hand renderer at `0xB2F7F18`; callsite `0xB2F6B48` passes hand `0` for MAINHAND and `0xB2FC2E8` passes hand `1` for OFFHAND.
+
+While the existing `OffhandPlacementAnimation` window is active, only the MAINHAND draw temporarily pins ItemInHandRenderer's equip-height pair (`+0x180/+0x184`) to the value seen at the start of the placement. The real fields are restored immediately after the draw. No runtime/action/storage state is changed.
+
+The hook is intentionally optional: failure to resolve/install it must leave every existing Banner/Bow/Crossbow/Trident/block visual active. OFFHAND placement motion values are **not tuned in this phase**; first verify that MAINHAND no longer performs the unwanted placement/equip motion.
+

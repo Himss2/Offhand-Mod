@@ -78,6 +78,24 @@ Banner FPP must follow the accepted build #470 **logic**, not its old binary add
 - Retain the accepted Banner matrix calibration: scale `1.56`, X `-0.78`, Y `-0.28`, yaw `180°`.
 - Do not port any 1.26.45.1 signatures/RVAs while applying this logic.
 
+## Placement animation phase 1: MAINHAND visual freeze
+
+This phase is renderer-only. Do not modify RightUseRouter, storage, block count reconciliation, Banner routing, or tool-family rendering.
+
+Verified 1.26.51.1 FPP helper:
+
+```text
+per-hand FPP renderer 0xB2F7F18
+MAINHAND callsite      0xB2F6B48 -> hand=0
+OFFHAND callsite       0xB2FC2E8 -> hand=1
+equip height           ItemInHandRenderer +0x180
+old equip height       ItemInHandRenderer +0x184
+```
+
+During `OffhandPlacementAnimation`, the optional renderer hook may pin only the MAINHAND equip-height pair for that scoped draw and must restore the original values immediately afterward. It must never be part of the mandatory renderer readiness condition: if the optional signature/hook is unavailable, all pre-existing visual paths must continue unchanged.
+
+Do not tune the OFFHAND placement matrix until this freeze behavior is verified on-device.
+
 ## FPP placement-animation invariant
 
 The current animation layer is intentionally narrow:

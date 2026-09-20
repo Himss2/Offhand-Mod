@@ -160,6 +160,50 @@ def main() -> int:
             "Banner must use build470 block-path routing, not the later bridge-depth exception"
         )
 
+    for token in (
+        "kFirstPersonHandRenderSignature",
+        "firstPersonHandRenderDetour(",
+        "hand==0u",
+        "kMainhandHeightOffset=0x180",
+        "kMainhandOldHeightOffset=0x184",
+        "OffhandPlacementAnimation::instance().progress()",
+        "gMainhandPlacementFreezeLatched",
+        "MAINHAND FPP equip motion frozen",
+        "Optional MAINHAND placement-freeze hook unavailable",
+        "Placement visual: MAINHAND freeze layer active",
+    ):
+        if token not in cpp:
+            raise AssertionError(
+                f"MAINHAND placement-freeze visual layer missing {token!r}"
+            )
+
+    freeze_start = cpp.index("firstPersonHandRenderDetour(")
+    freeze_end = cpp.index("using RenderItemRouteFn", freeze_start)
+    freeze_body = cpp[freeze_start:freeze_end]
+    if "runtime::OffhandPlacementAnimation::instance().progress()" not in freeze_body:
+        raise AssertionError(
+            "MAINHAND freeze must be driven only by OFFHAND placement visual state"
+        )
+    if "hand==0u" not in freeze_body:
+        raise AssertionError("MAINHAND freeze must not affect OFFHAND draw")
+    for token in (
+        "kMainhandHeightOffset",
+        "kMainhandOldHeightOffset",
+        "writeValue<float>",
+    ):
+        if token not in freeze_body:
+            raise AssertionError(
+                f"MAINHAND freeze must stay scoped to renderer equip fields: {token!r}"
+            )
+
+    install_pos = cpp.index("gFirstPersonHandRenderHook=")
+    feature_pos = cpp.index("mFeatureEnabled.store(true", install_pos)
+    optional_install = cpp[install_pos:feature_pos]
+    if "return fail(" in optional_install or "uninstall(context)" in optional_install:
+        raise AssertionError(
+            "optional MAINHAND freeze hook must never disable proven visual paths"
+        )
+
     # The renderer and attachment helper must come from the same accepted overlay.
     assert git_blob_sha(header) == "deb12b1f33aa36e91d143d996ea92c415604f128"
     fn = cpp[cpp.index("    itemTransformDetour("):]
