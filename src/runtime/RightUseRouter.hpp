@@ -74,6 +74,7 @@ private:
     std::atomic_bool mLoggedBlockUse{false};
     std::atomic_bool mLoggedAttackOnlyYield{false};
     std::atomic_bool mLoggedLongUse{false};
+    std::atomic_bool mLoggedOffhandWriteback{false};
 };
 
 } // namespace levioffhand::runtime

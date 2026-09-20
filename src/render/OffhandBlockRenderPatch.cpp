@@ -201,9 +201,6 @@ namespace levioffhand::render {
         constexpr std::size_t kItemStackBlockOffset=0x18;
         constexpr std::size_t kBlockTypeOffset=0x68;
 
-        constexpr std::size_t kBannerWallBlockOffset=0x1C0;
-        constexpr std::size_t kBannerStandingBlockOffset=0x1C8;
-
         constexpr std::uint32_t kFirstpersonRightHand=1;
         constexpr std::uint32_t kFirstpersonLeftHand=2;
 
@@ -696,65 +693,6 @@ namespace levioffhand::render {
             }
         };
 
-        class StackBlockOverride final {
-        public:
-
-            StackBlockOverride(
-                void* stack,
-                const void* replacement
-            ) noexcept
-                :
-                mStack(stack),
-                mOriginal(
-                    readValue<const void*>(
-                        stack,
-                        kItemStackBlockOffset,
-                        nullptr
-                    )
-                ),
-                mActive(
-                    stack
-                    &&
-                    replacement
-                    &&
-                    !mOriginal
-                )
-            {
-
-                if(mActive) {
-
-                    writeValue<const void*>(
-                        mStack,
-                        kItemStackBlockOffset,
-                        replacement
-                    );
-                }
-            }
-
-            ~StackBlockOverride() {
-
-                if(mActive) {
-
-                    writeValue<const void*>(
-                        mStack,
-                        kItemStackBlockOffset,
-                        mOriginal
-                    );
-                }
-            }
-
-            [[nodiscard]]
-            bool active() const noexcept {
-                return mActive;
-            }
-
-        private:
-
-            void* mStack;
-            const void* mOriginal;
-            bool mActive;
-        };
-
         bool inOffhand() noexcept {
 
             return
@@ -1123,7 +1061,11 @@ namespace levioffhand::render {
             const bool genericLeft=
                 native_attachment_fix::shouldRouteGenericLeftFirstPerson(
                     true,
-                    family==ToolFamily::Bow,
+                    (
+                        family==ToolFamily::Bow
+                        ||
+                        family==ToolFamily::Crossbow
+                    ),
                     native_attachment_fix::kOffhandSlot,
                     true
                 );
@@ -1137,7 +1079,8 @@ namespace levioffhand::render {
                 gGenericLeftFppLoggedMask|=bit;
                 __android_log_print(
                     ANDROID_LOG_INFO,kLogTag,
-                    "[GenericLeftFppRoute] Bow genericDispatch=1"
+                    "[GenericLeftFppRoute] %s genericDispatch=1",
+                    toolFamilyName(family)
                 );
             }
             return true;
@@ -3507,54 +3450,25 @@ namespace levioffhand::render {
             &&
             item
         ) {
-
-            const void* wall=
-                readValue<const void*>(
-                    item,
-                    kBannerWallBlockOffset,
-                    nullptr
-                );
-
-            const void* standing=
-                readValue<const void*>(
-                    item,
-                    kBannerStandingBlockOffset,
-                    nullptr
-                );
-
-            StackBlockOverride
-                blockOverride(
-                    stack,
-                    standing
-                );
-
+            // 1.26.51.1: never fabricate ItemStack::mBlock from historical
+            // BannerItem field offsets. The supplied crash showed that those
+            // offsets now yield an invalid small pointer in native item/block
+            // lookup. Keep the native item render transaction instead.
+            bool expected=false;
             if(
-                blockOverride.
-                    active()
-            ) {
-
-                bool expected=false;
-
-                if(
-                    instance->
+                instance->
                     mBannerBridgeLogged.
                     compare_exchange_strong(
                         expected,
                         true,
                         std::memory_order_relaxed
                     )
-                ) {
-
-                    __android_log_print(
-                        ANDROID_LOG_INFO,
-                        kLogTag,
-                        "[BannerFix] "
-                        "block bridge active once: "
-                        "wall=%p standing=%p",
-                        wall,
-                        standing
-                    );
-                }
+            ) {
+                __android_log_print(
+                    ANDROID_LOG_INFO,
+                    kLogTag,
+                    "[BannerFix] safe native item route active; stale Block* bridge disabled"
+                );
             }
 
             original(
@@ -3563,7 +3477,6 @@ namespace levioffhand::render {
                 player,
                 itemFlags
             );
-
             return;
         }
 

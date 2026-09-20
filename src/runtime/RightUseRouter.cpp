@@ -39,6 +39,7 @@ constexpr std::uintptr_t kBaseUseItemRva = 0xF8A285C;
 constexpr std::uintptr_t kReleaseUsingItemRva = 0xF8A3204;
 constexpr std::uintptr_t kSelectedItemRva = 0xF9F7824;
 constexpr std::uintptr_t kOffhandSlotRva = 0xF579C2C;
+constexpr std::uintptr_t kSetItemInHandSlotRva = 0xF579C50;
 constexpr std::uintptr_t kStackIsNullRva = 0xFFA0F70;
 constexpr std::uintptr_t kPlayerIsUsingItemRva = 0xF9E8D64;
 constexpr std::uintptr_t kItemInUseStackRva = 0xF9E8D84;
@@ -72,6 +73,7 @@ constexpr std::size_t kItemUseVtableOffset = 0x290;
 constexpr std::size_t kItemCanUseAsAttackVtableOffset = 0x298;
 constexpr std::size_t kItemUseOnVtableOffset = 0x418;
 constexpr std::size_t kItemStackStorageSize = 0x98;
+constexpr std::size_t kItemStackCountOffset = 0x22;
 
 constexpr std::array<std::uint8_t, 16> kUseItemOnBlockFingerprint{
     0xFD, 0x7B, 0xBA, 0xA9, 0xFC, 0x6F, 0x01, 0xA9,
@@ -92,6 +94,10 @@ constexpr std::array<std::uint8_t, 16> kSelectedItemFingerprint{
 constexpr std::array<std::uint8_t, 16> kOffhandSlotFingerprint{
     0xFD, 0x7B, 0xBF, 0xA9, 0xFD, 0x03, 0x00, 0x91,
     0x00, 0x20, 0x00, 0x91, 0x95, 0xF8, 0x10, 0x94,
+};
+constexpr std::array<std::uint8_t, 16> kSetItemInHandSlotFingerprint{
+    0x28, 0x1C, 0x00, 0x72, 0x00, 0x01, 0x00, 0x54,
+    0x1F, 0x05, 0x00, 0x71, 0x61, 0x01, 0x00, 0x54,
 };
 constexpr std::array<std::uint8_t, 16> kStackIsNullFingerprint{
     0x08, 0x8C, 0x40, 0x39, 0xE8, 0x04, 0x00, 0x34,
@@ -135,6 +141,7 @@ using UseItemOnBlockFn = std::uint32_t (*)(
 using ReleaseUsingItemFn = void (*)(void*);
 using SelectedItemFn = const void* (*)(const void*);
 using OffhandItemFn = const void* (*)(const void*);
+using SetItemInHandSlotFn = void (*)(void*, unsigned char, const void*);
 using StackIsNullFn = bool (*)(const void*);
 using PlayerIsUsingItemFn = bool (*)(const void*);
 using ItemInUseStackFn = const void* (*)(const void*);
@@ -146,6 +153,7 @@ using GetAttackDamageFn = int (*)(const void*);
 using ItemBoolFn = bool (*)(const void*);
 
 OffhandItemFn gGetOffhandSlot = nullptr;
+SetItemInHandSlotFn gSetItemInHandSlot = nullptr;
 StackIsNullFn gStackIsNull = nullptr;
 PlayerIsUsingItemFn gPlayerIsUsingItem = nullptr;
 ItemInUseStackFn gItemInUseStack = nullptr;
@@ -273,9 +281,9 @@ template <std::size_t N>
             *usedLiveFallback = true;
         }
         __android_log_print(
-            ANDROID_LOG_WARN,
+            ANDROID_LOG_INFO,
             kLogTag,
-            "[RightUseRouter] %s prologue already modified; chaining live 1.26.51.1 target RVA=0x%llX",
+            "[RightUseRouter] %s pre-hooked target detected; chaining live 1.26.51.1 target RVA=0x%llX",
             name,
             static_cast<unsigned long long>(rva)
         );
@@ -304,6 +312,19 @@ template <std::size_t N>
 
 [[nodiscard]] bool stackIsNull(const void* stack) noexcept {
     return stack == nullptr || gStackIsNull == nullptr || gStackIsNull(stack);
+}
+
+[[nodiscard]] std::uint8_t stackCount(const void* stack) noexcept {
+    if (stack == nullptr) {
+        return 0;
+    }
+    std::uint8_t count = 0;
+    std::memcpy(
+        &count,
+        static_cast<const std::byte*>(stack) + kItemStackCountOffset,
+        sizeof(count)
+    );
+    return count;
 }
 
 [[nodiscard]] bool stacksMatch(const void* lhs, const void* rhs) noexcept {
@@ -562,28 +583,45 @@ bool RightUseRouter::install(pl::mod::ModContext& context) noexcept {
     const auto dtorTarget = resolveExactTarget(
         kItemStackDtorRva, kItemStackDtorFingerprint
     );
+    const auto setHandExact = resolveExactTarget(
+        kSetItemInHandSlotRva, kSetItemInHandSlotFingerprint
+    );
+    const auto setHandTarget =
+        setHandExact != 0
+        ? setHandExact
+        : resolveKnownBuildTarget(kSetItemInHandSlotRva);
 
     if (
         offhandTarget == 0 || nullTarget == 0 ||
         usingTarget == 0 || inUseTarget == 0 || differsTarget == 0 ||
-        copyCtorTarget == 0 || dtorTarget == 0
+        copyCtorTarget == 0 || dtorTarget == 0 || setHandTarget == 0
     ) {
         __android_log_print(
             ANDROID_LOG_WARN,
             kLogTag,
-            "[RightUseRouter] stable guard failed offhand=%d null=%d using=%d inUse=%d differs=%d copy=%d dtor=%d",
+            "[RightUseRouter] stable guard failed offhand=%d null=%d using=%d inUse=%d differs=%d copy=%d dtor=%d setHand=%d",
             offhandTarget != 0 ? 1 : 0,
             nullTarget != 0 ? 1 : 0,
             usingTarget != 0 ? 1 : 0,
             inUseTarget != 0 ? 1 : 0,
             differsTarget != 0 ? 1 : 0,
             copyCtorTarget != 0 ? 1 : 0,
-            dtorTarget != 0 ? 1 : 0
+            dtorTarget != 0 ? 1 : 0,
+            setHandTarget != 0 ? 1 : 0
         );
         context.logger().warn(
             "[RightUseRouter] Minecraft 1.26.51.1 stable fingerprint validation failed; right-use disabled"
         );
         return false;
+    }
+
+    if (setHandExact == 0) {
+        __android_log_print(
+            ANDROID_LOG_INFO,
+            kLogTag,
+            "[RightUseRouter] Actor::setItemInHandSlot pre-hooked; using live 1.26.51.1 target RVA=0x%llX",
+            static_cast<unsigned long long>(kSetItemInHandSlotRva)
+        );
     }
 
     // Only after the exact stable guard passes do we resolve hookable entry
@@ -623,6 +661,7 @@ bool RightUseRouter::install(pl::mod::ModContext& context) noexcept {
     }
 
     gGetOffhandSlot = reinterpret_cast<OffhandItemFn>(offhandTarget);
+    gSetItemInHandSlot = reinterpret_cast<SetItemInHandSlotFn>(setHandTarget);
     gStackIsNull = reinterpret_cast<StackIsNullFn>(nullTarget);
     gPlayerIsUsingItem = reinterpret_cast<PlayerIsUsingItemFn>(usingTarget);
     gItemInUseStack = reinterpret_cast<ItemInUseStackFn>(inUseTarget);
@@ -693,6 +732,7 @@ bool RightUseRouter::install(pl::mod::ModContext& context) noexcept {
     mLoggedBlockUse.store(false, std::memory_order_relaxed);
     mLoggedAttackOnlyYield.store(false, std::memory_order_relaxed);
     mLoggedLongUse.store(false, std::memory_order_relaxed);
+    mLoggedOffhandWriteback.store(false, std::memory_order_relaxed);
     context.logger().info(
         "[RightUseRouter] Minecraft 1.26.51.1 right-use active: MAINHAND first, OFFHAND fallback; left-click remains vanilla mainhand"
     );
@@ -730,6 +770,7 @@ void RightUseRouter::uninstall(pl::mod::ModContext& context) noexcept {
     mReleaseUsingItemTarget = 0;
     mSelectedItemTarget = 0;
     gGetOffhandSlot = nullptr;
+    gSetItemInHandSlot = nullptr;
     gStackIsNull = nullptr;
     gPlayerIsUsingItem = nullptr;
     gItemInUseStack = nullptr;
@@ -1034,8 +1075,33 @@ std::uint32_t RightUseRouter::useItemOnBlockDetour(
     }
 
     if ((offResult & 1u) != 0u) {
-        // Visual-only: do not alter storage/routing here.  The renderer reads
-        // this short impulse and animates the currently rendered OFFHAND block.
+        const std::uint8_t liveCount = stackCount(offStack);
+        const std::uint8_t placedCount = stackCount(offSnapshot.get());
+        if (gSetItemInHandSlot != nullptr && liveCount != placedCount) {
+            gSetItemInHandSlot(
+                const_cast<void*>(player),
+                kOffHand,
+                offSnapshot.get()
+            );
+
+            bool writebackExpected = false;
+            if (instance->mLoggedOffhandWriteback.compare_exchange_strong(
+                    writebackExpected,
+                    true,
+                    std::memory_order_relaxed
+                )) {
+                __android_log_print(
+                    ANDROID_LOG_INFO,
+                    kLogTag,
+                    "[RightUseRouter] OFFHAND placement count reconciled %u -> %u via native hand setter",
+                    static_cast<unsigned int>(liveCount),
+                    static_cast<unsigned int>(placedCount)
+                );
+            }
+        }
+
+        // Visual-only: animate only after the accepted native placement and
+        // any required OFFHAND count reconciliation.
         OffhandPlacementAnimation::instance().trigger();
 
         bool expected = false;
