@@ -78,32 +78,26 @@ Banner FPP must follow the accepted build #470 **logic**, not its old binary add
 - Retain the accepted Banner matrix calibration: scale `1.56`, X `-0.78`, Y `-0.28`, yaw `180°`.
 - Do not port any 1.26.45.1 signatures/RVAs while applying this logic.
 
-## Placement animation phase 1: MAINHAND swing suppression
+## Placement animation phase 1: MAINHAND visual freeze
 
-This phase remains isolated from action/storage routing.
+This phase is renderer-only. Do not modify RightUseRouter, storage, block count reconciliation, Banner routing, or tool-family rendering.
 
-Freecam reference analysis confirms that its first-person-object predicate can suppress the whole FPP object pass. That mechanism is intentionally not reused because it would remove both hands/items instead of suppressing only the wrong MAINHAND swing.
-
-Verified Minecraft 1.26.51.1 path:
+Verified 1.26.51.1 FPP helper:
 
 ```text
-upper client-use dispatcher      0x97F85F8
-post-use swing BLR A             0x97F8C28
-post-use swing BLR B             0x97F8D04
-both pass W1                     4 = ActorSwingSource::Attack
-both pass W2                     0 = HandSlot::Mainhand
-
-LocalPlayer vtable address point 0x12D08C38
-virtual slot +0x370              0x12D08FA8
-RELATIVE relocation target       0xAACA73C
-LocalPlayer::swing prologue      unique 32-byte signature
-swing-state helper called by it  0xF288AF8
+per-hand FPP renderer 0xB2F7F18
+OFFHAND callsite       0xB2F6B48 -> hand=0
+MAINHAND callsite      0xB2FC2E8 -> hand=1
+equip height           ItemInHandRenderer +0x180
+old equip height       ItemInHandRenderer +0x184
+swing interpolator     0xF286ED8
+swing current          Player +0x3EC
+swing previous         Player +0x430
 ```
 
-The optional detour may suppress `LocalPlayer::swing` only when all are true: the OFFHAND placement animation window is active, caller is exactly `0x97F8C28` or `0x97F8D04`, `swingSource==4`, and `handSlot==0`. All other swing calls forward to vanilla. The exact callsite guard prevents a real MAINHAND left-click attack during the placement window from being swallowed.
+During `OffhandPlacementAnimation`, the optional renderer hook may affect only the `hand=1` MAINHAND draw. It pins the MAINHAND equip-height pair and temporarily writes zero to the two swing-progress fields so native `0xF286ED8` returns neutral swing progress. Swing and equip fields must all be restored immediately after the original draw. The OFFHAND `hand=0` invocation must not clear the freeze latch while the placement window is active. The optional hook must never become part of mandatory renderer readiness; if unavailable, all pre-existing visual paths continue unchanged.
 
-The old `0xB2F7F18` renderer-field spoof is retired. The new swing hook is optional and must never participate in mandatory renderer readiness.
-
+Do not tune the OFFHAND placement matrix until this freeze behavior is verified on-device.
 
 ## FPP placement-animation invariant
 

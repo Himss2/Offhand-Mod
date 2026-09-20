@@ -120,24 +120,18 @@ standing Block* store 0x1000B5F0 -> this+0x1D8
 Build #470 used `+0x1C0/+0x1C8`; those stale offsets caused the 1.26.51.1 crash and are forbidden. The custom pose remains the build-#470 calibration: scale `1.56`, X `-0.78`, Y `-0.28`, yaw `180°`. No Minecraft signatures/RVAs from build #470 were copied.
 
 
-### Block-placement animation phase 1 — suppress MAINHAND swing
+### Block-placement animation phase 1 — freeze MAINHAND
 
-The previous equip/swing-field spoof inside the FPP renderer was removed because device testing showed it did not affect the unwanted MAINHAND motion.
-
-The Freecam repository was reviewed as a reference. Its first-person hook works at a high-level **first-person object render predicate** and can hide the entire hand/held-item pass. That is useful evidence for the FPP boundary, but it is too broad here because it would also hide the OFFHAND block that needs its own placement animation.
-
-Static RE of Minecraft 1.26.51.1 instead located the actual source of the unwanted motion in the upper client-use dispatcher. The two relevant paths call the LocalPlayer virtual slot `+0x370` as:
+Before changing the OFFHAND placement motion, the renderer uses an **optional visual-only MAINHAND freeze layer**. Deeper static RE of Minecraft 1.26.51.1 corrected the hand mapping in the shared FPP helper `0xB2F7F18`:
 
 ```text
-0x97F8C28: LocalPlayer::swing(source=4, hand=0)
-0x97F8D04: LocalPlayer::swing(source=4, hand=0)
-
-ActorSwingSource::Attack = 4
-HandSlot::Mainhand       = 0
-LocalPlayer vtable slot +0x370 -> 0xAACA73C
+0xB2F6B48 -> W3=0 -> OFFHAND
+0xB2FC2E8 -> W3=1 -> MAINHAND
 ```
 
-The `0xAACA73C` prologue is unique in the supplied 1.26.51.1 binary. The visual layer now uses one **optional** hook on that swing method. While `OffhandPlacementAnimation` is active, only calls from those two exact upper-use callsites with `source=4` and `hand=0` are swallowed. Every other swing, including normal left-click attacks, is forwarded unchanged.
+The same MAINHAND branch also calls swing-progress interpolator `0xF286ED8`, which reads Player `+0x3EC/+0x430` before the native sqrt/sin swing matrix is composed. Therefore equip-height pinning alone cannot freeze the unwanted motion.
 
-No RightUseRouter, storage, Banner, Bow, Crossbow, Trident/Spear, or block-transform logic is changed by this phase. Failure of the optional swing hook leaves every existing visual path active.
+While `OffhandPlacementAnimation` is active, only the `hand=1` MAINHAND draw temporarily pins ItemInHandRenderer `+0x180/+0x184` and neutralizes Player swing `+0x3EC/+0x430`. All four live values are restored immediately after that draw. OFFHAND `hand=0` is untouched, and no action/storage state is persistently modified.
+
+The hook is intentionally optional: failure to resolve/install it must leave every existing Banner/Bow/Crossbow/Trident/block visual active. OFFHAND placement motion values are **not tuned in this phase**; first verify that MAINHAND no longer performs the unwanted placement/equip motion.
 

@@ -182,30 +182,22 @@ namespace levioffhand::render {
             "29 00 80 52 "
             "88 16 40 F9";
 
-        // Minecraft 1.26.51.1 LocalPlayer::swing.
-        //
-        // RE evidence:
-        //   LocalPlayer vtable address point: 0x12D08C38
-        //   virtual slot +0x370:          0x12D08FA8 -> 0xAACA73C
-        //   upper-use swing BLR sites:    0x97F8C28 / 0x97F8D04
-        //
-        // Both upper-use sites pass W1=4 (ActorSwingSource::Attack) and
-        // W2=0 (HandSlot::Mainhand). The 32-byte prologue below is unique in
-        // the supplied 1.26.51.1 libminecraftpe.so.
-        constexpr char kLocalPlayerSwingSignature[]=
-            "FF 83 02 D1 "
-            "FD 7B 07 A9 "
-            "F6 57 08 A9 "
-            "F4 4F 09 A9 "
-            "FD C3 01 91 "
-            "56 D0 3B D5 "
-            "F5 03 01 2A "
-            "F4 03 00 AA";
-
-        constexpr std::uintptr_t kUpperUsePlacementSwingCallsiteA=0x97F8C28;
-        constexpr std::uintptr_t kUpperUsePlacementSwingCallsiteB=0x97F8D04;
-        constexpr std::uint8_t kPlacementSwingSourceAttack=4;
-        constexpr std::uint8_t kMainhandHandSlot=0;
+        // ItemInHandRenderer per-hand FPP renderer, Minecraft 1.26.51.1.
+        // Static RE:
+        //   target 0xB2F7F18
+        //   hand=0 callsite 0xB2F6B48 (OFFHAND)
+        //   hand=1 callsite 0xB2FC2E8 (MAINHAND)
+        // Resolved by a unique signature and installed as an OPTIONAL visual
+        // hook so a mismatch can never take down the existing renderer.
+        constexpr char kFirstPersonHandRenderSignature[]=
+            "FF C3 05 D1 "
+            "EE 73 00 FD "
+            "ED B3 0E 6D "
+            "EB AB 0F 6D "
+            "E9 A3 10 6D "
+            "FD FB 11 A9 "
+            "FC 97 00 F9 "
+            "FA 67 13 A9";
 
         constexpr char kHandEquipPredicateSignature[]=
             "FD 7B BE A9 "
@@ -237,6 +229,24 @@ namespace levioffhand::render {
         // The older 0x1C0/0x1C8 offsets must never be reused on 1.26.51.1.
         constexpr std::size_t kBannerWallBlockOffset=0x1D0;
         constexpr std::size_t kBannerStandingBlockOffset=0x1D8;
+
+        // ItemInHandRenderer::renderHand @ 0xB2F7F18 reads these two fields
+        // before applying the per-hand FPP motion:
+        //   +0x180 current equip height
+        //   +0x184 previous equip height
+        // They are overridden only for the scoped MAINHAND draw and restored
+        // immediately afterwards.
+        constexpr std::size_t kMainhandHeightOffset=0x180;
+        constexpr std::size_t kMainhandOldHeightOffset=0x184;
+
+        // Player swing interpolation helper @ 0xF286ED8:
+        //   LDR S2,[X0,#0x3EC] current
+        //   LDR S1,[X0,#0x430] previous
+        //   previous + wrapped(current-previous)*partialTicks
+        // These are overridden only while drawing MAINHAND during an OFFHAND
+        // placement impulse, then restored immediately.
+        constexpr std::size_t kPlayerSwingCurrentOffset=0x3EC;
+        constexpr std::size_t kPlayerSwingPreviousOffset=0x430;
 
         constexpr std::uint32_t kFirstpersonRightHand=1;
         constexpr std::uint32_t kFirstpersonLeftHand=2;
@@ -335,10 +345,13 @@ namespace levioffhand::render {
         thread_local std::uint32_t gGenericLeftFppLoggedMask=0;
 
 
-        std::unique_ptr<pl::memory::HookHandle> gLocalPlayerSwingHook;
-        void* gLocalPlayerSwingOriginal=nullptr;
-        std::uintptr_t gLocalPlayerSwingTarget=0;
-        thread_local bool gPlacementMainhandSwingSuppressedLogged=false;
+        std::unique_ptr<pl::memory::HookHandle> gFirstPersonHandRenderHook;
+        void* gFirstPersonHandRenderOriginal=nullptr;
+        std::uintptr_t gFirstPersonHandRenderTarget=0;
+
+        thread_local bool gMainhandPlacementFreezeLatched=false;
+        thread_local float gMainhandPlacementFrozenHeight=1.0f;
+        thread_local bool gMainhandPlacementFreezeLogged=false;
 
         std::unique_ptr<pl::memory::HookHandle> gRenderItemRouteHook;
         void* gRenderItemRouteOriginal=nullptr;
@@ -1187,25 +1200,28 @@ namespace levioffhand::render {
             return true;
         }
 
-        using LocalPlayerSwingFn=
-            bool(*)(
-                void*,
-                std::uint8_t,
-                std::uint8_t
-            );
+        using FirstPersonHandRenderFn=void(*)(
+            void*,
+            void*,
+            void*,
+            std::uint32_t,
+            float
+        );
 
-        bool localPlayerSwingDetour(
+        void firstPersonHandRenderDetour(
             void* self,
-            std::uint8_t swingSource,
-            std::uint8_t handSlot
+            void* renderContext,
+            void* player,
+            std::uint32_t hand,
+            float partialTicks
         ) noexcept {
             const auto original=
-                reinterpret_cast<LocalPlayerSwingFn>(
-                    gLocalPlayerSwingOriginal
+                reinterpret_cast<FirstPersonHandRenderFn>(
+                    gFirstPersonHandRenderOriginal
                 );
 
             if(!original) {
-                return false;
+                return;
             }
 
             const float placementProgress=
@@ -1216,68 +1232,161 @@ namespace levioffhand::render {
                 &&
                 placementProgress<1.0f;
 
-            std::uintptr_t callsiteRva=0;
-            const auto returnAddress=
-                reinterpret_cast<std::uintptr_t>(
-                    __builtin_return_address(0)
-                );
-
-            if(
-                gMinecraftBase!=0
-                &&
-                returnAddress>=gMinecraftBase+4
-                &&
-                belongsToMinecraft(returnAddress)
-            ) {
-                callsiteRva=
-                    returnAddress
-                    -
-                    gMinecraftBase
-                    -
-                    4;
+            // RE correction for Minecraft 1.26.51.1:
+            //   0xB2F6B48 -> W3=0 -> OFFHAND
+            //   0xB2FC2E8 -> W3=1 -> MAINHAND
+            //
+            // Do not clear the latch merely because the OFFHAND draw also
+            // passes through this shared helper.  Clear it only after the
+            // placement window itself ends.
+            if(!placementActive) {
+                gMainhandPlacementFreezeLatched=false;
             }
 
-            const bool upperUsePlacementSwing=
-                callsiteRva==kUpperUsePlacementSwingCallsiteA
-                ||
-                callsiteRva==kUpperUsePlacementSwingCallsiteB;
-
-            const bool suppressMainhandPlacementSwing=
+            const bool freezeMainhand=
                 self
+                &&
+                player
+                &&
+                hand==1u
                 &&
                 OffhandBlockRenderPatch::instance().featureEnabled()
                 &&
-                placementActive
-                &&
-                upperUsePlacementSwing
-                &&
-                swingSource==kPlacementSwingSourceAttack
-                &&
-                handSlot==kMainhandHandSlot;
+                placementActive;
 
-            if(suppressMainhandPlacementSwing) {
-                if(!gPlacementMainhandSwingSuppressedLogged) {
-                    gPlacementMainhandSwingSuppressedLogged=true;
-                    __android_log_print(
-                        ANDROID_LOG_INFO,
-                        kLogTag,
-                        "[PlacementVisual] suppressed vanilla MAINHAND swing "
-                        "after OFFHAND block placement callsite=0x%llX",
-                        static_cast<unsigned long long>(
-                            callsiteRva
-                        )
-                    );
-                }
-
-                // The native use transaction has already completed. Suppress
-                // only the redundant MAINHAND visual swing request.
-                return true;
+            if(!freezeMainhand) {
+                original(
+                    self,
+                    renderContext,
+                    player,
+                    hand,
+                    partialTicks
+                );
+                return;
             }
 
-            return original(
+            const float height=
+                readValue<float>(
+                    self,
+                    kMainhandHeightOffset,
+                    1.0f
+                );
+
+            const float oldHeight=
+                readValue<float>(
+                    self,
+                    kMainhandOldHeightOffset,
+                    height
+                );
+
+            const float swingCurrent=
+                readValue<float>(
+                    player,
+                    kPlayerSwingCurrentOffset,
+                    0.0f
+                );
+
+            const float swingPrevious=
+                readValue<float>(
+                    player,
+                    kPlayerSwingPreviousOffset,
+                    swingCurrent
+                );
+
+            if(!gMainhandPlacementFreezeLatched) {
+                const float t=
+                    std::clamp(
+                        partialTicks,
+                        0.0f,
+                        1.0f
+                    );
+
+                const float interpolated=
+                    oldHeight
+                    +
+                    (height-oldHeight)*t;
+
+                gMainhandPlacementFrozenHeight=
+                    std::isfinite(interpolated)
+                    ? interpolated
+                    : height;
+
+                gMainhandPlacementFreezeLatched=true;
+            }
+
+            // Visual-only scoped freeze:
+            // 1) pin MAINHAND equip interpolation to one height;
+            // 2) neutralize the MAINHAND swing interpolation used by
+            //    0xF286ED8 -> sqrt/sin matrix motion.
+            //
+            // The live gameplay fields are restored immediately after the
+            // original render call, so attack/use/storage state is untouched.
+            writeValue<float>(
                 self,
-                swingSource,
-                handSlot
+                kMainhandHeightOffset,
+                gMainhandPlacementFrozenHeight
+            );
+
+            writeValue<float>(
+                self,
+                kMainhandOldHeightOffset,
+                gMainhandPlacementFrozenHeight
+            );
+
+            constexpr float kNeutralSwing=0.0f;
+
+            writeValue<float>(
+                player,
+                kPlayerSwingCurrentOffset,
+                kNeutralSwing
+            );
+
+            writeValue<float>(
+                player,
+                kPlayerSwingPreviousOffset,
+                kNeutralSwing
+            );
+
+            if(!gMainhandPlacementFreezeLogged) {
+                gMainhandPlacementFreezeLogged=true;
+                __android_log_print(
+                    ANDROID_LOG_INFO,
+                    kLogTag,
+                    "[PlacementVisual] MAINHAND FPP equip+swing motion "
+                    "frozen during OFFHAND placement"
+                );
+            }
+
+            original(
+                self,
+                renderContext,
+                player,
+                hand,
+                partialTicks
+            );
+
+            writeValue<float>(
+                player,
+                kPlayerSwingCurrentOffset,
+                swingCurrent
+            );
+
+            writeValue<float>(
+                player,
+                kPlayerSwingPreviousOffset,
+                swingPrevious
+            );
+
+            writeValue<float>(
+                self,
+                kMainhandHeightOffset,
+                height
+            );
+
+            writeValue<float>(
+                self,
+                kMainhandOldHeightOffset,
+                oldHeight
             );
         }
 
@@ -2776,8 +2885,8 @@ namespace levioffhand::render {
         gHandEquipPredicateTarget=pl::memory::resolveSignature(
             kHandEquipPredicateSignature,kMinecraftLibrary
         );
-        gLocalPlayerSwingTarget=pl::memory::resolveSignature(
-            kLocalPlayerSwingSignature,kMinecraftLibrary
+        gFirstPersonHandRenderTarget=pl::memory::resolveSignature(
+            kFirstPersonHandRenderSignature,kMinecraftLibrary
         );
 
         const std::uintptr_t base=moduleBaseOf(mRenderOffhandTarget);
@@ -2890,7 +2999,7 @@ namespace levioffhand::render {
         gLegacyAttachmentRouteOriginal=nullptr;
         gComposeAttachmentBoneMatrixOriginal=nullptr;
         gHandEquipPredicateOriginal=nullptr;
-        gLocalPlayerSwingOriginal=nullptr;
+        gFirstPersonHandRenderOriginal=nullptr;
         gFinalOffhandMatrixOriginal=nullptr;
         gPrepareAttachmentOriginalPublished.store(nullptr,std::memory_order_release);
         gResolveOwnerBoneByNameOriginalPublished.store(
@@ -2906,7 +3015,9 @@ namespace levioffhand::render {
         gNative3dFppFamily=ToolFamily::None;
         gNative3dOwnerVector={};
         gGenericLeftFppLoggedMask=0;
-        gPlacementMainhandSwingSuppressedLogged=false;
+        gMainhandPlacementFreezeLatched=false;
+        gMainhandPlacementFrozenHeight=1.0f;
+        gMainhandPlacementFreezeLogged=false;
         gBowTppFishingRodDepth=0;
         gBowNativeBindingLogged=false;
         gNative3dLeftCarrierLogged=false;
@@ -3123,41 +3234,39 @@ namespace levioffhand::render {
 
         if(
             belongsToMinecraft(
-                gLocalPlayerSwingTarget
+                gFirstPersonHandRenderTarget
             )
         ) {
-            gLocalPlayerSwingHook=
+            gFirstPersonHandRenderHook=
                 std::make_unique<pl::memory::HookHandle>(
                     reinterpret_cast<void*>(
-                        gLocalPlayerSwingTarget
+                        gFirstPersonHandRenderTarget
                     ),
                     reinterpret_cast<void*>(
-                        &localPlayerSwingDetour
+                        &firstPersonHandRenderDetour
                     ),
-                    &gLocalPlayerSwingOriginal,
+                    &gFirstPersonHandRenderOriginal,
                     pl::memory::HookPriority::Normal
                 );
 
             if(
-                !gLocalPlayerSwingHook
-                ||
-                !gLocalPlayerSwingHook->installed()
-                ||
-                !gLocalPlayerSwingOriginal
+                !gFirstPersonHandRenderHook
+                || !gFirstPersonHandRenderHook->installed()
+                || !gFirstPersonHandRenderOriginal
             ) {
-                if(gLocalPlayerSwingHook) {
-                    gLocalPlayerSwingHook->reset();
-                    gLocalPlayerSwingHook.reset();
+                if(gFirstPersonHandRenderHook) {
+                    gFirstPersonHandRenderHook->reset();
+                    gFirstPersonHandRenderHook.reset();
                 }
-                gLocalPlayerSwingOriginal=nullptr;
+                gFirstPersonHandRenderOriginal=nullptr;
                 context.logger().info(
-                    "Optional MAINHAND placement-swing suppressor unavailable; "
+                    "Optional MAINHAND placement-freeze hook unavailable; "
                     "existing visual paths retained"
                 );
             }
         } else {
             context.logger().info(
-                "Optional MAINHAND placement-swing target unavailable; "
+                "Optional MAINHAND placement-freeze target unavailable; "
                 "existing visual paths retained"
             );
         }
@@ -3182,10 +3291,10 @@ namespace levioffhand::render {
             "Banner/Pot/Copper/Skull and unrelated item paths retained"
         );
         logger.info(
-            gLocalPlayerSwingHook
-            && gLocalPlayerSwingHook->installed()
-                ? "Placement visual: MAINHAND swing suppressor active"
-                : "Placement visual: MAINHAND swing suppressor unavailable"
+            gFirstPersonHandRenderHook
+            && gFirstPersonHandRenderHook->installed()
+                ? "Placement visual: MAINHAND freeze layer active"
+                : "Placement visual: MAINHAND freeze layer unavailable"
         );
         return true;
     }
@@ -3276,13 +3385,15 @@ namespace levioffhand::render {
         gHandEquipPredicateOriginal=nullptr;
         gHandEquipPredicateTarget=0;
 
-        if(gLocalPlayerSwingHook) {
-            gLocalPlayerSwingHook->reset();
-            gLocalPlayerSwingHook.reset();
+        if(gFirstPersonHandRenderHook) {
+            gFirstPersonHandRenderHook->reset();
+            gFirstPersonHandRenderHook.reset();
         }
-        gLocalPlayerSwingOriginal=nullptr;
-        gLocalPlayerSwingTarget=0;
-        gPlacementMainhandSwingSuppressedLogged=false;
+        gFirstPersonHandRenderOriginal=nullptr;
+        gFirstPersonHandRenderTarget=0;
+        gMainhandPlacementFreezeLatched=false;
+        gMainhandPlacementFrozenHeight=1.0f;
+        gMainhandPlacementFreezeLogged=false;
 
         if(gFinalOffhandMatrixHook) {
             gFinalOffhandMatrixHook->reset();
