@@ -1,0 +1,14 @@
+#!/usr/bin/env bash
+set -euo pipefail
+cd "$(dirname "$0")/.."
+test_binary=$(mktemp)
+trap 'rm -f "$test_binary"' EXIT
+g++ -std=c++20 -Wall -Wextra -Wpedantic -Werror -pthread \
+    -fsanitize=undefined -fno-omit-frame-pointer \
+    -Itests/stubs -Isrc tests/right_use_runtime_test.cpp \
+    src/runtime/ActionHandContext.cpp -ldl -o "$test_binary"
+status=0
+for case_name in sword main_pass both_pass main_success main_terminal air_snapshot air_main_success bow_block_pass main_scope off_terminal air_main_pass missing_snapshot disabled; do
+    "$test_binary" "$case_name" || status=1
+done
+exit "$status"

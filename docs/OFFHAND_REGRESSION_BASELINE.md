@@ -1,67 +1,58 @@
 # Offhand Regression Baseline
 
-## Authoritative recovery point
+## Candidate status and provenance
 
-For Minecraft Bedrock 1.26.51.1, the current action/storage baseline is the exact pre-swap commit:
+Historical pre-swap recovery: `198787f5b0d750fd4c89ba00ac0aab5c72018331`.
+Current candidate starts from `7d0846d93bd04821e011ab8e3a62a62caacbc957` and corrects routing and build defects found in that source. No device-validated baseline is claimed here. Swap remains quarantined.
 
-`198787f5b0d750fd4c89ba00ac0aab5c72018331`
-`fix: route sword like axe when no native right-click exists`
+## Verified native evidence (1.26.51.1)
 
-This commit is the recovery authority for `RightUseRouter`, its header, the action-routing source contract, `LeviOffhandMod.cpp`, `CMakeLists.txt`, and the build workflow.
+Binary SHA-256: `b8a6351503d330628335a80e8131acd45291fa9a747465f0f34a31b2346847b4`.
+GNU Build ID: `712509dc14ccc233e91f267937dfb46ecdcc4b68`.
 
-Do not reconstruct these mechanisms from memory or from a later swap commit.
+| Evidence | Address / slot | Implication |
+|---|---|---|
+| WeaponItem primary vtable | `0x1306D7D8`, use `+0x290` | Target `0xFD66F30` is `mov x0,x1; ret`; this override does not own a click |
+| Item primary vtable | `0x1307B730` | use `+0x290` -> `0xFF8429C`, useOn `+0x418` -> `0xFF84B84` |
+| ComponentItem primary vtable | `0x1306EE98` | use `+0x290` -> `0xFDA8274`, useOn `+0x418` -> `0xFDA8A20` |
+| GameMode release transaction | `0xF8A3350` | Hardcodes hand zero before wrapper `0xF9E9DFC` |
+| Release callback carried setter | `0xF8A679C` | Calls virtual `+0x268` (MAIN setter); getter redirection is insufficient |
 
-## Runtime fingerprint / hook-chain invariant
+`tests/right_use_126511_binary_test.py` verifies the exact binary, all eleven production fingerprints, and use/no-op vtable identities. The release findings are investigation evidence, not a completed lifecycle fix.
 
-The supplied Minecraft 1.26.51.1 binary has been rechecked directly: the documented RVAs and fingerprints for RightUseRouter match the file on disk.
+## Routing invariants in this candidate
 
-At runtime, another already-installed hook may change the first instructions of a function before RightUseRouter installs. Therefore:
+1. Attack-only MAIN items with no concrete right-use implementation yield to OFF. WeaponItem's no-op override is explicitly excluded.
+2. MAIN owners get one native attempt. A nonzero native block result is returned without replay or OFF attempt. Native result values are preserved; this is not a complete translation of Java InteractionResult.
+3. MAIN block-only PASS can try OFF. MAIN self-use owners keep their opportunity in the upper native dispatcher before OFF block-use. Coordination after that self-use also passes remains unfinished.
+4. Both OFF block-use and air-use pass native `hand=1` with a detached `0x98` ItemStack copied/destroyed through native functions. Air-use acquires a fresh snapshot only when its OFF attempt begins.
+5. If OFF passes, MAIN fallback runs once, or reuses the previously obtained MAIN result. Never replay a completed MAIN call.
+6. An explicit MAIN scope overrides an existing OFF long-use session.
+7. A pre-hooked block-use chain alone gets a narrow OFF selected-item scope; the clean native block path uses the snapshot and native hand argument.
+8. No inventory swap, synthetic packets, or upper input dispatcher replay is introduced.
 
-- non-hook helper targets (offhand getter, stack-null check, active-use helpers, stack comparator, ItemStack copy constructor/destructor) must still pass exact fingerprint validation;
-- those stable helpers form the exact 1.26.51.1 build guard;
-- only after that guard passes may the four hookable entry points use their known RVA when their live prologue differs;
-- hookable targets are `Player::getSelectedItem`, `GameMode::useItemOnBlock`, `GameMode::baseUseItem`, and `GameMode::releaseUsingItem`;
-- a live-prologue mismatch must be logged explicitly;
-- this compatibility layer must not change the action-routing or block-placement algorithms below.
+Exact stable helper fingerprints still gate installation before chaining pre-hooked entry points. Helper mismatches disable routing. Hook prologue mismatches are logged.
 
-## Pre-swap action fixes under verification
+## Renderer build repair
 
-Before swap is reintroduced, the following two behaviors are mandatory:
+The animation commit restored a stale tracked renderer but left the newer overlay attachment header in place. CI run #549 failed with missing attachment symbols. This candidate uses the paired v0.2.67 materialized sources:
 
-1. **OFFHAND food/self-use:** when MAINHAND has no concrete native right-click owner (including ordinary Sword/Axe/Pickaxe paths), do not execute generic MAINHAND `baseUseItem` first. Attempt OFFHAND with native `hand=1`; if it enters active-use state, pin the OFFHAND long-use session through release. Only if OFFHAND passes may vanilla MAINHAND run once.
-2. **Pre-hooked block-use compatibility:** if `GameMode::useItemOnBlock` was already patched before RightUseRouter installs, keep the detached OFFHAND snapshot and `hand=1`, but scope nested `Player::getSelectedItem` lookups to OFFHAND only for that chained call. If the entry point was clean, do not spoof selectedItem; use the proven snapshot-only path.
+- renderer before animation: Git blob `3a3ea8cde3a0ae3df2376fff3c1bd0a9aa3c43be`;
+- attachment helper: Git blob `deb12b1f33aa36e91d143d996ea92c415604f128`.
 
-A visual-only FPP block-placement animation is allowed during this verification phase, but it must remain isolated from storage and action decisions. Eating/drinking animation remains out of scope. The placement animation may trigger only after an accepted native OFFHAND use-on result and must never be treated as proof that the underlying transaction succeeded.
+The placement lambda is declared only after the vanilla early-return guard. CI restores both renderer and matching headers together. Compatibility generation still translates RVAs into a build copy. Its test now reads working source, not unchanged `git show HEAD`, and checks generation leaves all three source files untouched.
 
-## Block placement / right-use invariants
+## Unresolved lifecycle requirements
 
-The known-good logic first decides whether MAINHAND genuinely owns right-click **before** invoking the generic MAINHAND use-on wrapper.
+The existing OFF long-use session is not a complete Java hand-ownership implementation. Native release still chooses a MAIN transaction and setter. Session-based getter redirection also extends beyond explicit action scopes. Do not claim food completion, bow/trident release, container replacement, durability, attack isolation or world-change cancellation are fixed by the initial-use snapshot.
 
-Required behavior:
+A follow-up must establish the native transaction envelope and hand-aware writeback for use tick, completion and release, then verify these paths on device. Re-enabling clear-both/refill swap setters is not a substitute.
 
-1. Specialized native right-click owners keep MAINHAND priority. This includes Bow/Trident/Fishing Rod/Shears and hold-use items such as food/shield where applicable.
-2. Attack-only Sword/Axe/Pickaxe-style items with no specialized native right-click action yield to OFFHAND.
-3. If MAINHAND does not own right-click and OFFHAND is non-empty, OFFHAND gets the first and only initial `GameMode::useItemOn` attempt.
-4. That OFFHAND attempt uses native `hand=1`.
-5. Never pass the live OFFHAND `ItemStack*` as the transaction before-state.
-6. Copy OFFHAND into a detached `0x98` ItemStack snapshot using the native copy constructor, pass the snapshot to the native use-on call, then destroy it with the native destructor.
-7. If OFFHAND handles the action, return that result.
-8. If OFFHAND passes, call the untouched vanilla MAINHAND wrapper once as fallback.
-9. Left-click remains vanilla MAINHAND.
-10. Do not replay the broad upper input dispatcher and do not synthesize inventory packets.
+## Automated checks versus device checks
 
-The critical order is:
+`tests/run_right_use_runtime_tests.sh` compiles the production router into a host executable with fake ABI objects and UndefinedBehaviorSanitizer. It covers sword no-op classification, MAIN block PASS/success/nonzero result, both hands passing, detached OFF air-use, MAIN success without touching OFF, bow self-use priority, explicit MAIN scope and disabled behavior. These checks protect call order and snapshot lifetime; they cannot prove native inventory transactions.
 
-```text
-classify MAINHAND ownership
-  MAIN owns right-click -> vanilla MAINHAND use-on once
-  MAIN does not own right-click ->
-    read OFFHAND
-    snapshot OFFHAND
-    native OFFHAND use-on(snapshot, hand=1)
-      handled -> return OFFHAND result
-      PASS    -> vanilla MAINHAND fallback once
-```
+The source contracts and existing host policy/context/router/auto-insert tests remain required. The Android CI build must also succeed. None replaces the gameplay matrix below.
 
 ## FPP placement-animation invariant
 
@@ -90,7 +81,7 @@ These numbers are visual calibration values and may be tuned after device testin
 
 ## Storage / slot-removal invariant
 
-The detached OFFHAND snapshot is not optional. It is part of the known-good solution for preventing the real OFFHAND slot from becoming transaction-locked/unremovable after block placement.
+The detached OFFHAND snapshot is mandatory to avoid aliasing the transaction before-state with the live slot. Actual slot removal and count reconciliation still require device verification.
 
 Manual offhand storage/removal must remain native. Do not reintroduce ContainerValidation transfer/swap hooks or synthetic inventory packets as a shortcut.
 
@@ -108,7 +99,7 @@ Until a new swap implementation passes the full runtime matrix below, it must re
 
 Experimental swap source may remain in the repository for reference, but it is non-runtime code in the recovery baseline.
 
-## Must-pass runtime matrix
+## Must-pass runtime matrix (not yet run on device)
 
 Start from a fresh Minecraft process for every candidate baseline:
 
@@ -123,7 +114,12 @@ Start from a fresh Minecraft process for every candidate baseline:
 9. Leave and re-enter the world: OFFHAND storage remains valid.
 10. Bow/Trident rendering remains independent from action/storage behavior.
 
-Only after all ten pass may swap be reintroduced. When that happens, add swap-specific tests **without replacing or weakening this baseline**.
+11. OFF food/drink: hold, finish, cancel, change slot, and receive the correct container item without modifying MAIN.
+12. OFF bow/trident: charge and release with the correct projectile, durability and slot transaction.
+13. While OFF is in use, attack/mining still reads MAIN; changing world or disabling the mod cannot retain a stale player/session.
+14. MAIN self-use PASS followed by OFF block/entity interaction follows the full ordered pipeline.
+
+Only after this matrix passes may swap be reintroduced. When that happens, add swap-specific tests **without replacing or weakening this baseline**.
 
 ## Documentation rule
 
@@ -138,3 +134,6 @@ Any change that touches:
 - Bow/Trident/offhand render ownership,
 
 must update both `README.md` and this file in the same change. Record the previous known-good commit and the new validated baseline commit after in-game verification.
+
+
+Renderer review also corrected six 1.26.51.1 callsite translations for spear admission and native owner-vector/matrix lookup. Their BL targets are verified by the binary test.

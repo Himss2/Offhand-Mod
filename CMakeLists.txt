@@ -33,10 +33,9 @@ set(
     "${CMAKE_BINARY_DIR}/out/${LEVI_OFFHAND_OUTPUT_ABI}"
 )
 
-# Keep the accepted renderer implementation in src/render frozen.  Minecraft
-# 1.26.51.1 compatibility is generated into the build tree by translating only
-# binary targets/signatures; the visual behavior/calibration source stays byte
-# identical to the pre-update renderer.
+# Keep renderer and attachment headers paired with the accepted overlay.
+# Generate 1.26.51.1 binary targets/signatures into the build tree without
+# modifying tracked calibration and placement-animation source.
 find_package(Python3 REQUIRED COMPONENTS Interpreter)
 set(LEVI_OFFHAND_GENERATED_ROOT "${CMAKE_BINARY_DIR}/generated")
 set(
@@ -131,3 +130,4 @@ target_link_options(
     -Wl,--gc-sections
     -Wl,-z,max-page-size=16384
 )
+
