@@ -37,6 +37,10 @@ Two interaction regressions are now explicitly protected:
 
 Swap remains quarantined. Eating/drinking animation is not being pursued because those OFFHAND actions are not currently usable. The current visual phase is limited to **first-person OFFHAND block-placement animation**: a 220 ms visual-only matrix impulse is triggered after an accepted native OFFHAND use-on result. It does not mutate inventory, selected-item ownership, hand routing, or transactions.
 
+### Visual workstream scope
+
+Current work in this branch/conversation is intentionally limited to **rendering, animation, offhand appearance, and UI/button presentation**. Java-like offhand action/storage logic is handled separately. Runtime action code should not be changed for visual calibration unless a very small integration fix is explicitly required.
+
 ### FPP OFFHAND placement animation
 
 The placement animation is deliberately isolated from action logic:
@@ -44,9 +48,10 @@ The placement animation is deliberately isolated from action logic:
 - trigger source: accepted OFFHAND `GameMode::useItemOnBlock` result;
 - duration: **220 ms**;
 - renderer scope: block item in `FIRSTPERSON_LEFT` only;
-- motion: short inward/down/forward impulse plus a small local X/Y/Z rotation;
+- motion: short inward/down/**forward** impulse plus a small local X/Y/Z rotation;
 - the transform returns exactly to Minecraft's normal offhand matrix at the end;
-- no animation hook changes storage or placement success/failure.
+- no animation hook changes storage or placement success/failure;
+- while this OFFHAND placement impulse is active, the renderer temporarily freezes the MAINHAND equip-height pair for that draw only, then restores Minecraft's real values immediately.
 
 This phase is visual-only. If placement itself fails, the animation is not considered a functional fix.
 

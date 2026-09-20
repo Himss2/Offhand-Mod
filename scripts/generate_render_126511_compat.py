@@ -10,6 +10,7 @@ from pathlib import Path
 RVA_REPLACEMENTS = {
     # Core held-item render pipeline.
     "0xADDEA08": "0xB2F0F60",
+    "0xADE96B0": "0xB2FB6C0",  # ItemInHandRenderer::renderFirstPerson
     "0xA1DEE04": "0xA619618",
     "0x94E96F4": "0x98B49A0",
     "0xF63BE90": "0xFF86E80",
@@ -70,6 +71,7 @@ NAMED_RVA_REPLACEMENTS = {
     # archived v0.2.67 renderer snapshots cannot retain a stale RVA merely
     # because their old literal differs from the current tracked source.
     "kRenderItemRva": "0xB2F0F60",
+    "kRenderFirstPersonRva": "0xB2FB6C0",
     "kDefaultTransformRva": "0xA619618",
     "kMatrixMultiplyRva": "0x98B49A0",
     "kItemStackMatchesRva": "0xFF86E80",

@@ -10,13 +10,14 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 
 FROZEN_HEAD_BLOBS = {
-    "src/render/OffhandBlockRenderPatch.cpp": "a5dadd550c37483449d7673fc1dca52dd7ff9d08",
+    "src/render/OffhandBlockRenderPatch.cpp": "150b41dbe07caaaf303ec96095e41aec3b73cf98",
     "src/render/NativeAttachmentFix.hpp": "a5cf88b8cde4bd602be038c657d4af19917b6c37",
     "src/render/OffhandBlockRenderPatch.hpp": "ea45606173d0eed19b3e86bc93b77e91abd8b2fc",
 }
 
 REQUIRED_NAMED_RVAS = {
     "kRenderItemRva": "0xB2F0F60",
+    "kRenderFirstPersonRva": "0xB2FB6C0",
     "kDefaultTransformRva": "0xA619618",
     "kMatrixMultiplyRva": "0x98B49A0",
     "kItemStackMatchesRva": "0xFF86E80",
@@ -45,6 +46,7 @@ REQUIRED_ARCHIVED_LITERAL_MAP = {
 
 REQUIRED_CPP_TARGETS = (
     "0xB2F0F60",   # RenderItem
+    "0xB2FB6C0",   # ItemInHandRenderer::renderFirstPerson
     "0xA619618",   # default item transform
     "0x98B49A0",   # matrix multiply
     "0xFF86E80",   # ItemStack match
@@ -137,7 +139,14 @@ def main() -> int:
             'instance().progress()',
             '0.08f*impulse',
             '0.18f*impulse',
+            'matrix.value[14]-=',
             '0.12f*impulse',
+            'kRenderFirstPersonRva',
+            'kMainhandHeightOffset=0x180',
+            'kMainhandOldHeightOffset=0x184',
+            'renderFirstPersonDetour',
+            'gMainhandVisualBaseline',
+            'MAINHAND equip motion frozen',
             '-20.0f*wave',
             '9.0f*wave',
             '7.0f*wave',

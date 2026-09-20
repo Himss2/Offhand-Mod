@@ -63,6 +63,10 @@ classify MAINHAND ownership
       PASS    -> vanilla MAINHAND fallback once
 ```
 
+## Visual-workstream scope
+
+For the current visual pass, changes should stay in `src/render`, renderer compatibility generation/tests, and UI/button presentation. Java-like action/storage semantics are maintained in a separate workstream. Do not use visual work as a reason to refactor RightUseRouter or storage policy.
+
 ## FPP placement-animation invariant
 
 The current animation layer is intentionally narrow:
@@ -71,6 +75,8 @@ The current animation layer is intentionally narrow:
 - `RightUseRouter` may only call `trigger()` after `(offResult & 1u) != 0`;
 - duration is 220 ms and timing uses `steady_clock`;
 - renderer applies motion only while an OFFHAND block is rendered in `FIRSTPERSON_LEFT`;
+- OFFHAND forward movement uses negative local Z on the verified device path;
+- during the same 220 ms window, `ItemInHandRenderer::renderFirstPerson` freezes only the MAINHAND visual equip-height pair (`+0x180/+0x184`) and restores it immediately after the draw;
 - animation changes the render matrix only; it must not write ItemStack/storage state;
 - repeated placement restarts the short visual impulse;
 - swap remains completely quarantined.
@@ -80,7 +86,7 @@ Current initial calibration at the animation midpoint:
 ```text
 translation X +0.08
 translation Y -0.18
-translation Z +0.12
+translation Z -0.12
 rotation X    -20 deg
 rotation Y     +9 deg
 rotation Z     +7 deg
