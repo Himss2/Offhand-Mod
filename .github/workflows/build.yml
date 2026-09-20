@@ -72,7 +72,7 @@ jobs:
           test "$(git hash-object src/render/OffhandBlockRenderPatch.cpp)" = "3a3ea8cde3a0ae3df2376fff3c1bd0a9aa3c43be"
           test "$(git hash-object src/render/NativeAttachmentFix.hpp)" = "deb12b1f33aa36e91d143d996ea92c415604f128"
 
-      - name: Restore v0.2.68 action subsystem from main
+      - name: Restore v0.2.68 action and matching renderer sources
         run: |
           git checkout HEAD -- \
             CMakeLists.txt \
@@ -80,6 +80,8 @@ jobs:
             scripts/build.sh \
             src/LeviOffhandMod.cpp \
             src/render/OffhandBlockRenderPatch.cpp \
+            src/render/NativeAttachmentFix.hpp \
+            src/render/OffhandBlockRenderPatch.hpp \
             src/runtime/OffhandPlacementAnimation.hpp \
             src/runtime/HandActionPolicy.hpp \
             src/runtime/HandActionRouterCore.hpp \
@@ -121,6 +123,7 @@ jobs:
 
       - name: Run v0.2.68 action routing tests
         run: |
+          bash tests/run_right_use_runtime_tests.sh
           python3 tests/v0262_native_routing_source_contract.py
           python3 tests/v0268_action_routing_source_contract.py
           python3 tests/v0268_semantic_bridge_source_contract.py
@@ -196,3 +199,4 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           files: dist/arm64-v8a/levi-offhand-v0.2.68.levipack
+

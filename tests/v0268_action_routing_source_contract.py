@@ -109,6 +109,7 @@ def main() -> int:
         "kItemUseOnVtableOffset = 0x418",
         "kBaseItemUseRva = 0xFF8429C",
         "kComponentItemUseRva = 0xFDA8274",
+        "kWeaponItemNoopUseRva = 0xFD66F30",
         "kBaseItemRequiresInteractRva = 0xFF87F28",
         "kComponentItemRequiresInteractRva = 0xFDAA1FC",
         "kBaseItemUseOnRva = 0xFF84B84",
@@ -137,11 +138,12 @@ def main() -> int:
         "stacksMatch(itemStack, mainStack)",
         "if (!stackClaimsMainhandRightClick(mainStack))",
         "ScopedActionHand offScope(ActionHand::OffHand, ActionKind::UseAir)",
-        "original(gameMode, offStack, kOffHand)",
+        "original(gameMode, offSnapshot.get(), kOffHand)",
+        "ScopedItemStackSnapshot offSnapshot(currentOff)",
         "OFFHAND long-use session pinned until release",
         "routeUseAction(",
         "activeUseMatches(player, mainStack)",
-        "activeUseMatches(player, offStack)",
+        "activeUseMatches(player, resultingOff)",
         "original(gameMode, itemStack, hand)",
     )
     if base_use.index("if (!stackClaimsMainhandRightClick(mainStack))") > base_use.index("routeUseAction("):
@@ -201,10 +203,8 @@ def main() -> int:
     )
     if "swap" in use_block.lower() or "Packet" in use_block:
         raise AssertionError("block-use must stay on Minecraft native hand routing")
-    if "mainResult" in use_block:
-        raise AssertionError(
-            "non-owner MAINHAND must not execute use-on before OFFHAND"
-        )
+    require(use_block, "mainAttempted", "mainResult != 0u", "mainFallback()",
+            "stackClaimsMainhandRightClick(mainStack, nullptr, false)")
 
     classifier_pos = use_block.index(
         "stackClaimsMainhandRightClick(mainStack, &yieldedAttackOnly)"
@@ -330,3 +330,4 @@ def main() -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
+

@@ -49,11 +49,14 @@ constexpr std::uintptr_t kItemStackDtorRva = 0x85ADF98;
 // 1.26.51.1 Item virtual defaults used only as capability identities.
 // MAINHAND ownership is based on concrete native action implementations, not
 // broad data-driven ComponentItem booleans.  Relocated 1.26.51.1 primary
-// vtables prove Item::use=+0x290, requiresInteract=+0x1A8 and _useOn=+0x410.
+// vtables prove Item::use=+0x290, requiresInteract=+0x1A8 and _useOn=+0x418.
 // Generic Item/ComponentItem entries do not claim the click; specialized
 // overrides (FishingRod, Shears, etc.) do.
 constexpr std::uintptr_t kBaseItemUseRva = 0xFF8429C;
 constexpr std::uintptr_t kComponentItemUseRva = 0xFDA8274;
+// WeaponItem overrides use but only returns its input: mov x0,x1; ret.
+// Treating every override as a real action prevents Sword -> OFFHAND routing.
+constexpr std::uintptr_t kWeaponItemNoopUseRva = 0xFD66F30;
 constexpr std::uintptr_t kBaseItemRequiresInteractRva = 0xFF87F28;
 constexpr std::uintptr_t kComponentItemRequiresInteractRva = 0xFDAA1FC;
 constexpr std::uintptr_t kBaseItemUseOnRva = 0xFF84B84;
@@ -362,7 +365,8 @@ template <typename Fn>
 
 [[nodiscard]] bool stackClaimsMainhandRightClick(
     const void* stack,
-    bool* yieldedAttackOnly = nullptr
+    bool* yieldedAttackOnly = nullptr,
+    bool includeBlockUse = true
 ) noexcept {
     if (yieldedAttackOnly != nullptr) {
         *yieldedAttackOnly = false;
@@ -395,7 +399,8 @@ template <typename Fn>
     const bool specializedUse =
         use != nullptr &&
         useAddress != moduleBase + kBaseItemUseRva &&
-        useAddress != moduleBase + kComponentItemUseRva;
+        useAddress != moduleBase + kComponentItemUseRva &&
+        useAddress != moduleBase + kWeaponItemNoopUseRva;
 
     const bool specializedRequiresInteract =
         requiresInteract != nullptr &&
@@ -410,7 +415,7 @@ template <typename Fn>
     if (
         specializedUse ||
         specializedRequiresInteract ||
-        specializedUseOn
+        (includeBlockUse && specializedUseOn)
     ) {
         return true;
     }
@@ -816,7 +821,7 @@ bool RightUseRouter::baseUseItemDetour(
             );
         }
 
-        if (activeUseMatches(player, offStack)) {
+        if (activeUseMatches(player, gGetOffhandSlot(player))) {
             gSessionPlayer = player;
             gSessionGameMode = gameMode;
             expected = false;
@@ -833,6 +838,22 @@ bool RightUseRouter::baseUseItemDetour(
         return true;
     };
 
+    const auto attemptOffhandUse = [&]() noexcept {
+        // Resolve AFTER MAIN's attempt: a native callback may have changed OFF.
+        const void* currentOff = gGetOffhandSlot(player);
+        if (stackIsNull(currentOff)) {
+            return false;
+        }
+        ScopedItemStackSnapshot offSnapshot(currentOff);
+        if (offSnapshot.get() == nullptr) {
+            return false;
+        }
+        ScopedActionHand offScope(ActionHand::OffHand, ActionKind::UseAir);
+        const bool nativeHandled = original(gameMode, offSnapshot.get(), kOffHand);
+        const void* resultingOff = gGetOffhandSlot(player);
+        return finishOffhandUse(nativeHandled || activeUseMatches(player, resultingOff));
+    };
+
     // Critical Java-style rule for Sword/Axe/Pickaxe/empty-like MAINHAND:
     // do not call the generic MAINHAND baseUseItem first.  ComponentItem can
     // return a success-like result even when it has no real right-click
@@ -840,18 +861,12 @@ bool RightUseRouter::baseUseItemDetour(
     // OFFHAND.  The same capability classifier used by block placement is
     // authoritative here.
     if (!stackClaimsMainhandRightClick(mainStack)) {
-        bool offHandled = false;
-        {
-            ScopedActionHand offScope(ActionHand::OffHand, ActionKind::UseAir);
-            const bool nativeHandled = original(gameMode, offStack, kOffHand);
-            offHandled = nativeHandled || activeUseMatches(player, offStack);
-        }
-
-        if (finishOffhandUse(offHandled)) {
+        if (attemptOffhandUse()) {
             return true;
         }
 
         // OFFHAND passed: preserve untouched vanilla MAINHAND fallback once.
+        ScopedActionHand mainScope(ActionHand::MainHand, ActionKind::UseAir);
         return original(gameMode, itemStack, hand);
     }
 
@@ -862,10 +877,7 @@ bool RightUseRouter::baseUseItemDetour(
             const bool nativeHandled = original(gameMode, itemStack, hand);
             return nativeHandled || activeUseMatches(player, mainStack);
         },
-        [&]() noexcept {
-            const bool nativeHandled = original(gameMode, offStack, kOffHand);
-            return nativeHandled || activeUseMatches(player, offStack);
-        },
+        attemptOffhandUse,
         []() noexcept {},
         ActionKind::UseAir
     );
@@ -878,7 +890,7 @@ bool RightUseRouter::baseUseItemDetour(
     }
 
     if (result.handled && result.hand == ActionHand::OffHand) {
-        return finishOffhandUse(true);
+        return true;
     }
 
     return false;
@@ -931,18 +943,32 @@ std::uint32_t RightUseRouter::useItemOnBlockDetour(
     // locally but fail to commit.  Items with a real native right-click
     // capability keep strict MAINHAND priority.
     bool yieldedAttackOnly = false;
+    bool mainAttempted = false;
+    std::uint32_t mainResult = 0;
     if (stackClaimsMainhandRightClick(mainStack, &yieldedAttackOnly)) {
-        return original(
-            gameMode,
-            interaction,
-            blockPos,
-            face,
-            hitPos,
-            hand,
-            extra,
-            flag
+        mainAttempted = true;
+        ScopedActionHand mainScope(ActionHand::MainHand, ActionKind::UseBlock);
+        mainResult = original(
+            gameMode, interaction, blockPos, face, hitPos, hand, extra, flag
         );
+        // Only a neutral native result may fall through. Preserve all bits.
+        // Bow/food/etc. still need the upper dispatcher to attempt MAIN air-use
+        // before OFF block-use: do not steal their click at this lower boundary.
+        if (mainResult != 0u ||
+            stackClaimsMainhandRightClick(mainStack, nullptr, false)) {
+            return mainResult;
+        }
     }
+
+    const auto mainFallback = [&]() noexcept -> std::uint32_t {
+        if (mainAttempted) {
+            return mainResult;
+        }
+        ScopedActionHand mainScope(ActionHand::MainHand, ActionKind::UseBlock);
+        return original(
+            gameMode, interaction, blockPos, face, hitPos, hand, extra, flag
+        );
+    };
 
     if (yieldedAttackOnly) {
         bool expected = false;
@@ -960,9 +986,7 @@ std::uint32_t RightUseRouter::useItemOnBlockDetour(
     const void* offStack =
         gGetOffhandSlot != nullptr ? gGetOffhandSlot(player) : nullptr;
     if (stackIsNull(offStack)) {
-        return original(
-            gameMode, interaction, blockPos, face, hitPos, hand, extra, flag
-        );
+        return mainFallback();
     }
 
     // Preserve the transaction-safe detached before-state that fixed the
@@ -970,9 +994,7 @@ std::uint32_t RightUseRouter::useItemOnBlockDetour(
     // the real offhand slot internally.
     ScopedItemStackSnapshot offSnapshot(offStack);
     if (offSnapshot.get() == nullptr) {
-        return original(
-            gameMode, interaction, blockPos, face, hitPos, hand, extra, flag
-        );
+        return mainFallback();
     }
 
     // MAINHAND has no native right-click ownership, so OFFHAND gets the first
@@ -1029,16 +1051,8 @@ std::uint32_t RightUseRouter::useItemOnBlockDetour(
         return offResult;
     }
 
-    return original(
-        gameMode,
-        interaction,
-        blockPos,
-        face,
-        hitPos,
-        hand,
-        extra,
-        flag
-    );
+    // A nonzero OFF result is definitive even when it does not swing.
+    return offResult != 0u ? offResult : mainFallback();
 }
 
 const void* RightUseRouter::selectedItemDetour(const void* player) noexcept {
@@ -1054,6 +1068,10 @@ const void* RightUseRouter::selectedItemDetour(const void* player) noexcept {
     }
 
     const auto scoped = currentScopedAction();
+    // An active OFF session must not override an explicit MAIN attempt.
+    if (scoped.has_value() && scoped->hand == ActionHand::MainHand) {
+        return original(player);
+    }
     const bool scopedOffhand =
         scoped.has_value() && scoped->hand == ActionHand::OffHand &&
         player == gScopedPlayer;

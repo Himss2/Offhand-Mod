@@ -9,11 +9,11 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 
-FROZEN_HEAD_BLOBS = {
-    "src/render/OffhandBlockRenderPatch.cpp": "a5dadd550c37483449d7673fc1dca52dd7ff9d08",
-    "src/render/NativeAttachmentFix.hpp": "a5cf88b8cde4bd602be038c657d4af19917b6c37",
-    "src/render/OffhandBlockRenderPatch.hpp": "ea45606173d0eed19b3e86bc93b77e91abd8b2fc",
-}
+SOURCE_FILES = (
+    "src/render/OffhandBlockRenderPatch.cpp",
+    "src/render/NativeAttachmentFix.hpp",
+    "src/render/OffhandBlockRenderPatch.hpp",
+)
 
 REQUIRED_NAMED_RVAS = {
     "kRenderItemRva": "0xB2F0F60",
@@ -33,6 +33,13 @@ REQUIRED_NAMED_RVAS = {
 
 
 REQUIRED_ARCHIVED_LITERAL_MAP = {
+    "0x9B369C8": "0x9F01338",
+    "0x9B377FC": "0x9F0216C",
+    "0x9B3783C": "0x9F021AC",
+    "0x9B378B8": "0x9F02228",
+    "0x9B37870": "0x9F021E0",
+    "0x9B37CB0": "0x9F02614",
+
     "0xF14355C": "0xFA6F684",
     "0xF147CC0": "0xFA51F78",
     "0x9B368D4": "0x9F01244",
@@ -80,17 +87,16 @@ def git_blob_sha(data: bytes) -> str:
     return hashlib.sha1(prefix + data).hexdigest()
 
 
-def head_file(path: str) -> bytes:
-    return subprocess.check_output(["git", "show", f"HEAD:{path}"], cwd=ROOT)
-
-
 def main() -> int:
-    for path, expected in FROZEN_HEAD_BLOBS.items():
-        actual = git_blob_sha(head_file(path))
-        if actual != expected:
-            raise AssertionError(
-                f"renderer source changed: {path}: expected {expected}, got {actual}"
-            )
+    before = {path: (ROOT / path).read_bytes() for path in SOURCE_FILES}
+    cpp = before[SOURCE_FILES[0]].decode()
+    header = before[SOURCE_FILES[1]]
+    # The renderer and attachment helper must come from the same accepted overlay.
+    assert git_blob_sha(header) == "deb12b1f33aa36e91d143d996ea92c415604f128"
+    fn = cpp[cpp.index("    itemTransformDetour("):]
+    guard_end = fn.index("        const void* item=")
+    assert "placementAnimated" not in fn[:guard_end], "early vanilla guard must not use an undeclared lambda"
+    assert fn.index("const auto placementAnimated=") < fn.index("return placementAnimated(")
 
     generator = ROOT / "scripts" / "generate_render_126511_compat.py"
     if not generator.exists():
@@ -126,6 +132,11 @@ def main() -> int:
             cwd=ROOT,
         )
         generated_cpp = (out / "render" / "OffhandBlockRenderPatch.cpp").read_text()
+        generated_header = (out / "render" / "NativeAttachmentFix.hpp").read_text()
+        combined = re.sub(r"//[^\n]*|/\*.*?\*/", "", generated_cpp + generated_header, flags=re.S)
+        for old, new in REQUIRED_ARCHIVED_LITERAL_MAP.items():
+            assert old not in combined, f"stale archived RVA {old}"
+            assert new in combined, f"missing translated RVA {new}"
         for token in REQUIRED_CPP_TARGETS:
             if token not in generated_cpp:
                 raise AssertionError(f"generated 1.26.51.1 renderer missing {token}")
@@ -172,9 +183,8 @@ def main() -> int:
             raise AssertionError("generated renderer must identify 1.26.51.1 target")
 
     # The generator must never modify the tracked renderer sources in place.
-    for path, expected in FROZEN_HEAD_BLOBS.items():
-        actual = git_blob_sha(head_file(path))
-        assert actual == expected
+    for path, expected in before.items():
+        assert (ROOT / path).read_bytes() == expected, f"generator modified {path}"
 
     print("v0.2.68 1.26.51.1 build-only renderer compatibility contract: PASS")
     return 0
@@ -182,3 +192,4 @@ def main() -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
+
