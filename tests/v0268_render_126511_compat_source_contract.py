@@ -106,41 +106,60 @@ def main() -> int:
     off_start = cpp.index("renderOffhandDetour(")
     off_end = cpp.index("blockRenderPredicateDetour(", off_start)
     render_offhand = cpp[off_start:off_end]
-    for forbidden in (
+
+    # Build #470 Banner routing is intentionally restored, but ONLY with the
+    # 1.26.51.1 member layout recovered from the new BannerItem constructor.
+    for token in (
         "StackBlockOverride",
         "kBannerWallBlockOffset",
         "kBannerStandingBlockOffset",
+        "build470 block bridge restored for 1.26.51.1",
     ):
-        if forbidden in render_offhand:
+        if token not in render_offhand and token not in cpp:
             raise AssertionError(
-                f"Banner render must not synthesize stale Block* state: {forbidden}"
+                f"Banner build470 block-path routing missing {token!r}"
             )
-    if "safe native item route active; stale Block* bridge disabled" not in render_offhand:
-        raise AssertionError("Banner safe native route marker missing")
+
+    compact_cpp = re.sub(r"\\s+", "", cpp)
+    for token in (
+        "kBannerWallBlockOffset=0x1D0",
+        "kBannerStandingBlockOffset=0x1D8",
+    ):
+        if token not in compact_cpp:
+            raise AssertionError(
+                f"Banner 1.26.51.1 layout missing {token!r}"
+            )
+
+    for stale in (
+        "kBannerWallBlockOffset=0x1C0",
+        "kBannerStandingBlockOffset=0x1C8",
+    ):
+        if stale in compact_cpp:
+            raise AssertionError(
+                f"stale build-470 Banner layout returned: {stale}"
+            )
 
     item_start = cpp.index("itemTransformDetour(")
     item_end = cpp.index("renderObjectDetour(", item_start)
     item_transform = cpp[item_start:item_end]
     for token in (
-        "bannerBridgeTransform",
         "gBridgeDepth!=0",
-        "!bannerBridgeTransform",
         "kBannerScale",
         "kBannerShiftX",
         "kBannerShiftY",
         "kBannerYawDegrees",
-        "[TransformFix] Banner safe bridge custom",
+        "[TransformFix] Banner build470 pose active",
     ):
         if token not in item_transform:
             raise AssertionError(
-                f"Banner safe custom FPP transform missing {token!r}"
+                f"Banner build470 FPP transform missing {token!r}"
             )
-    bridge_guard_pos = item_transform.index("!bannerBridgeTransform")
-    banner_transform_pos = item_transform.index("if(banner)")
-    if bridge_guard_pos > banner_transform_pos:
+
+    if "bannerBridgeTransform" in item_transform:
         raise AssertionError(
-            "Banner bridge exception must be decided before custom Banner transform"
+            "Banner must use build470 block-path routing, not the later bridge-depth exception"
         )
+
     # The renderer and attachment helper must come from the same accepted overlay.
     assert git_blob_sha(header) == "deb12b1f33aa36e91d143d996ea92c415604f128"
     fn = cpp[cpp.index("    itemTransformDetour("):]
