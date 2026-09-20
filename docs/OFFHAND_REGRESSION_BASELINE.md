@@ -77,6 +77,21 @@ Renderer compatibility source-set rule:
 - Minecraft 1.26.51.1 callsite relocations recovered for that helper are `0x9B36370 -> 0x9F00C90` and `0xA2C87BC -> 0xA650958`;
 - the renderer source contract must validate the generated helper header, not only the generated CPP.
 
+## Visual recovery baseline
+
+Authoritative visual recovery point: `7d0846d93bd04821e011ab8e3a62a62caacbc957`.
+
+The renderer CPP, NativeAttachmentFix helper, public renderer header, compatibility generator, renderer source contract, and CI restore behavior are returned to that device-tested state. The failed `renderFirstPerson` mainhand-freeze experiment is removed completely from the visual install path.
+
+Allowed delta from that baseline for the current build:
+
+- OFFHAND placement animation local Z: `+0.12 -> -0.12` so the item moves forward;
+- no new mandatory render target;
+- no runtime/action change;
+- previously calibrated FPP block positions/orientations must remain untouched.
+
+Mainhand visual freezing is postponed until it can be added without risking renderer installation.
+
 ## FPP placement-animation invariant
 
 The current animation layer is intentionally narrow:

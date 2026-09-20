@@ -68,18 +68,6 @@ public:
         ToolCalibrationFamily family
     ) const noexcept;
 
-    // Renderer-only visual calibration API. The implementations still exist in
-    // OffhandBlockRenderPatch.cpp and must stay declared even when the controls
-    // are not exposed in the current UI.
-    void setBowTppTiltDegrees(float value) noexcept;
-    [[nodiscard]] float bowTppTiltDegrees() const noexcept;
-
-    void setTridentFppHorizontalOffset(float value) noexcept;
-    [[nodiscard]] float tridentFppHorizontalOffset() const noexcept;
-
-    void setBowTppHorizontalOffset(float value) noexcept;
-    [[nodiscard]] float bowTppHorizontalOffset() const noexcept;
-
 private:
     OffhandBlockRenderPatch() = default;
 

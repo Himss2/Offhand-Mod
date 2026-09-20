@@ -10,7 +10,6 @@ from pathlib import Path
 RVA_REPLACEMENTS = {
     # Core held-item render pipeline.
     "0xADDEA08": "0xB2F0F60",
-    "0xADE96B0": "0xB2FB6C0",  # ItemInHandRenderer::renderFirstPerson
     "0xA1DEE04": "0xA619618",
     "0x94E96F4": "0x98B49A0",
     "0xF63BE90": "0xFF86E80",
@@ -24,8 +23,6 @@ RVA_REPLACEMENTS = {
     "0xA32F0F4": "0xA6FFBA4",
 
     # Native attachment pipeline.
-    "0x9B36370": "0x9F00C90",  # effective OFFHAND attachment draw callsite
-    "0xA2C87BC": "0xA650958",  # v2 attachment draw callsite
     "0x9B36A80": "0x9F013F0",
     "0xF147CB0": "0xFA51F60",
     "0x9B37780": "0x9F020F0",
@@ -73,7 +70,6 @@ NAMED_RVA_REPLACEMENTS = {
     # archived v0.2.67 renderer snapshots cannot retain a stale RVA merely
     # because their old literal differs from the current tracked source.
     "kRenderItemRva": "0xB2F0F60",
-    "kRenderFirstPersonRva": "0xB2FB6C0",
     "kDefaultTransformRva": "0xA619618",
     "kMatrixMultiplyRva": "0x98B49A0",
     "kItemStackMatchesRva": "0xFF86E80",

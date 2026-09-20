@@ -80,8 +80,6 @@ jobs:
             scripts/build.sh \
             src/LeviOffhandMod.cpp \
             src/render/OffhandBlockRenderPatch.cpp \
-            src/render/NativeAttachmentFix.hpp \
-            src/render/OffhandBlockRenderPatch.hpp \
             src/runtime/OffhandPlacementAnimation.hpp \
             src/runtime/HandActionPolicy.hpp \
             src/runtime/HandActionRouterCore.hpp \
@@ -120,8 +118,6 @@ jobs:
           grep -q 'RightUseRouter.cpp' CMakeLists.txt
           grep -q 'OffhandPlacementAnimation' src/runtime/RightUseRouter.cpp
           grep -q 'placementAnimated' src/render/OffhandBlockRenderPatch.cpp
-          grep -q 'ResolvedBindingCache' src/render/NativeAttachmentFix.hpp
-          grep -q 'kBowTppTiltDefault' src/render/NativeAttachmentFix.hpp
 
       - name: Run v0.2.68 action routing tests
         run: |

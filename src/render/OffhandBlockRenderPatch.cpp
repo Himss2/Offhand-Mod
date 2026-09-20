@@ -20,11 +20,6 @@ namespace levioffhand::render {
         constexpr char kLogTag[]="Levi Offhand";
 
         constexpr std::uintptr_t kRenderItemRva=0xADDEA08;
-        // ItemInHandRenderer::renderFirstPerson.  Visual-only hook used to
-        // freeze the MAINHAND equip-height pair while an OFFHAND placement
-        // impulse is active.  1.26.45.1 -> 1.26.51.1 is translated by the
-        // build-only compatibility generator.
-        constexpr std::uintptr_t kRenderFirstPersonRva=0xADE96B0;
         constexpr std::uintptr_t kDefaultTransformRva=0xA1DEE04;
         constexpr std::uintptr_t kMatrixMultiplyRva=0x94E96F4;
         constexpr std::uintptr_t kItemStackMatchesRva=0xF63BE90;
@@ -74,13 +69,6 @@ namespace levioffhand::render {
         // EEAB3AC HashedString accessor used by that query.
         constexpr std::uint64_t kNativeOffHandSlotHash=0x5D4C22812BA3AF8CULL;
         constexpr std::uint64_t kNativeLeftItemResultHash=0x1CF3FDCBB0AB92F7ULL;
-
-        constexpr std::array<std::uint8_t,32> kRenderFirstPersonFingerprint{
-            0xFF,0x03,0x07,0xD1,0xEF,0x3B,0x12,0x6D,
-            0xED,0x33,0x13,0x6D,0xEB,0x2B,0x14,0x6D,
-            0xE9,0x23,0x15,0x6D,0xFD,0x7B,0x16,0xA9,
-            0xFC,0x6F,0x17,0xA9,0xFA,0x67,0x18,0xA9
-        };
 
         constexpr std::array<std::uint8_t,16> kPrepareAttachmentFingerprint{
             0xFD,0x7B,0xBA,0xA9,0xFC,0x6F,0x01,0xA9,
@@ -210,13 +198,6 @@ namespace levioffhand::render {
             "20 01 3F D6";
 
         constexpr std::size_t kOffhandItemStackOffset=0xD0;
-
-        // ItemInHandRenderer layout verified from renderFirstPerson:
-        //   +0x180 mHeight
-        //   +0x184 mOldHeight
-        // OFFHAND has its own independent pair at +0x188/+0x18C.
-        constexpr std::size_t kMainhandHeightOffset=0x180;
-        constexpr std::size_t kMainhandOldHeightOffset=0x184;
         constexpr std::size_t kItemWeakPtrOffset=0x08;
         constexpr std::size_t kItemStackBlockOffset=0x18;
         constexpr std::size_t kBlockTypeOffset=0x68;
@@ -330,17 +311,6 @@ namespace levioffhand::render {
 
         void* gFirstPersonDataDrivenOriginal=nullptr;
         std::uintptr_t gFirstPersonDataDrivenTarget=0;
-
-        std::unique_ptr<pl::memory::HookHandle> gRenderFirstPersonHook;
-        void* gRenderFirstPersonOriginal=nullptr;
-        std::uintptr_t gRenderFirstPersonTarget=0;
-
-        // Renderer-thread cache of the last settled MAINHAND equip height.
-        // This is visual state only and is never written back outside the
-        // scoped renderFirstPerson call.
-        thread_local float gMainhandVisualBaseline=1.0f;
-        thread_local bool gMainhandVisualBaselineValid=false;
-        thread_local bool gMainhandFreezeLogged=false;
 
         std::uintptr_t gGetOffhandStackTarget=0;
 
@@ -2170,120 +2140,6 @@ namespace levioffhand::render {
                 bool
             );
 
-        using RenderFirstPersonFn=
-            void(*)(
-                void*,
-                void*,
-                const void*,
-                std::uint32_t
-            );
-
-        void renderFirstPersonDetour(
-            void* self,
-            void* renderContext,
-            const void* prevProj,
-            std::uint32_t itemFlags
-        ) noexcept {
-            const auto original=
-                reinterpret_cast<RenderFirstPersonFn>(
-                    gRenderFirstPersonOriginal
-                );
-
-            if(!original) {
-                return;
-            }
-
-            if(
-                !self
-                ||
-                !OffhandBlockRenderPatch::instance().featureEnabled()
-            ) {
-                original(self,renderContext,prevProj,itemFlags);
-                return;
-            }
-
-            float height=1.0f;
-            float oldHeight=1.0f;
-            std::memcpy(
-                &height,
-                static_cast<const std::byte*>(self)+kMainhandHeightOffset,
-                sizeof(height)
-            );
-            std::memcpy(
-                &oldHeight,
-                static_cast<const std::byte*>(self)+kMainhandOldHeightOffset,
-                sizeof(oldHeight)
-            );
-
-            const float placementProgress=
-                runtime::OffhandPlacementAnimation::instance().progress();
-
-            if(
-                placementProgress<=0.0f
-                ||
-                placementProgress>=1.0f
-            ) {
-                // Only learn a baseline when the equip pair is settled. This
-                // avoids freezing an unrelated item-switch transition.
-                if(
-                    std::isfinite(height)
-                    &&
-                    std::isfinite(oldHeight)
-                    &&
-                    std::fabs(height-oldHeight)<=0.001f
-                ) {
-                    gMainhandVisualBaseline=height;
-                    gMainhandVisualBaselineValid=true;
-                }
-
-                original(self,renderContext,prevProj,itemFlags);
-                return;
-            }
-
-            const float frozenHeight=
-                gMainhandVisualBaselineValid
-                ? gMainhandVisualBaseline
-                : height;
-
-            // Scope the override strictly to first-person rendering.  The
-            // engine's real mHeight/mOldHeight values are restored immediately
-            // afterwards, so gameplay/equip state continues untouched.
-            std::memcpy(
-                static_cast<std::byte*>(self)+kMainhandHeightOffset,
-                &frozenHeight,
-                sizeof(frozenHeight)
-            );
-            std::memcpy(
-                static_cast<std::byte*>(self)+kMainhandOldHeightOffset,
-                &frozenHeight,
-                sizeof(frozenHeight)
-            );
-
-            if(!gMainhandFreezeLogged) {
-                gMainhandFreezeLogged=true;
-                __android_log_print(
-                    ANDROID_LOG_INFO,
-                    kLogTag,
-                    "[PlacementVisual] MAINHAND equip motion frozen while "
-                    "OFFHAND placement impulse is active"
-                );
-            }
-
-            original(self,renderContext,prevProj,itemFlags);
-
-            std::memcpy(
-                static_cast<std::byte*>(self)+kMainhandHeightOffset,
-                &height,
-                sizeof(height)
-            );
-            std::memcpy(
-                static_cast<std::byte*>(self)+kMainhandOldHeightOffset,
-                &oldHeight,
-                sizeof(oldHeight)
-            );
-        }
-
-
         void firstPersonDataDrivenDetour(
             void* self,
             void* renderContext,
@@ -3664,11 +3520,6 @@ namespace levioffhand::render {
                 +
                 kFirstPersonDataDrivenRenderRva;
 
-            gRenderFirstPersonTarget=
-                base
-                +
-                kRenderFirstPersonRva;
-
             gGetOffhandStackTarget=
                 base
                 +
@@ -3760,15 +3611,6 @@ namespace levioffhand::render {
             )
             ||
             !belongsToMinecraft(
-                gRenderFirstPersonTarget
-            )
-            ||
-            !matchesFingerprint(
-                gRenderFirstPersonTarget,
-                kRenderFirstPersonFingerprint
-            )
-            ||
-            !belongsToMinecraft(
                 gGetOffhandStackTarget
             )
             ||
@@ -3835,7 +3677,6 @@ namespace levioffhand::render {
 
         gHandEquipPredicateOriginal=nullptr;
         gFirstPersonDataDrivenOriginal=nullptr;
-        gRenderFirstPersonOriginal=nullptr;
         gRenderItemRouteOriginal=nullptr;
         gAttachableStateRouteOriginal=nullptr;
         gPrepareAttachmentOriginal=nullptr;
@@ -3862,9 +3703,6 @@ namespace levioffhand::render {
         gBowTppBindingDepth=0;
         gTridentFppBindingDepth=0;
         gFirstPersonDataDrivenDepth=0;
-        gMainhandVisualBaseline=1.0f;
-        gMainhandVisualBaselineValid=false;
-        gMainhandFreezeLogged=false;
         gBowTppAttachmentDepth=0;
         gTridentFppAttachmentDepth=0;
         gResolvedTridentFppBindingBones.clear();
@@ -4243,24 +4081,6 @@ namespace levioffhand::render {
             return false;
         }
 
-        gRenderFirstPersonHook=
-            std::make_unique<pl::memory::HookHandle>(
-                reinterpret_cast<void*>(gRenderFirstPersonTarget),
-                reinterpret_cast<void*>(&renderFirstPersonDetour),
-                &gRenderFirstPersonOriginal,
-                pl::memory::HookPriority::Normal
-            );
-
-        if(
-            !gRenderFirstPersonHook
-            || !gRenderFirstPersonHook->installed()
-            || !gRenderFirstPersonOriginal
-        ) {
-            logger.error("first-person mainhand visual-freeze hook failed");
-            uninstall(context);
-            return false;
-        }
-
         gFirstPersonDataDrivenHook=
             std::make_unique<
                 pl::memory::HookHandle
@@ -4531,16 +4351,6 @@ namespace levioffhand::render {
         gFirstPersonDataDrivenTarget=0;
         gGetOffhandStackTarget=0;
 
-        if(gRenderFirstPersonHook) {
-            gRenderFirstPersonHook->reset();
-            gRenderFirstPersonHook.reset();
-        }
-        gRenderFirstPersonOriginal=nullptr;
-        gRenderFirstPersonTarget=0;
-        gMainhandVisualBaseline=1.0f;
-        gMainhandVisualBaselineValid=false;
-        gMainhandFreezeLogged=false;
-
         if(gAttachableStateRouteHook) {
             gAttachableStateRouteHook->reset();
             gAttachableStateRouteHook.reset();
@@ -4666,9 +4476,6 @@ namespace levioffhand::render {
         gBowTppBindingDepth=0;
         gTridentFppBindingDepth=0;
         gFirstPersonDataDrivenDepth=0;
-        gMainhandVisualBaseline=1.0f;
-        gMainhandVisualBaselineValid=false;
-        gMainhandFreezeLogged=false;
         gBowTppAttachmentDepth=0;
         gTridentFppAttachmentDepth=0;
         gResolvedTridentFppBindingBones.clear();
@@ -4999,9 +4806,6 @@ namespace levioffhand::render {
         gBowTppBindingDepth=0;
         gTridentFppBindingDepth=0;
         gFirstPersonDataDrivenDepth=0;
-        gMainhandVisualBaseline=1.0f;
-        gMainhandVisualBaselineValid=false;
-        gMainhandFreezeLogged=false;
         gBowTppAttachmentDepth=0;
         gTridentFppAttachmentDepth=0;
         gResolvedTridentFppBindingBones.clear();
@@ -5478,9 +5282,11 @@ namespace levioffhand::render {
         ) {
 
             return
-                original(
-                    transforms,
-                    type
+                placementAnimated(
+                    original(
+                        transforms,
+                        type
+                    )
                 );
         }
 
@@ -5541,9 +5347,8 @@ namespace levioffhand::render {
                 matrix.value[13]-=
                     0.18f*impulse;
 
-                // In the held-item matrix, +Z pulled the item back toward the
-                // camera on-device.  Forward placement is the negative local-Z
-                // direction for this path.
+                // On the tested FPP path, negative local Z moves the
+                // OFFHAND block forward (away from the camera).
                 matrix.value[14]-=
                     0.12f*impulse;
 

@@ -10,14 +10,13 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 
 FROZEN_HEAD_BLOBS = {
-    "src/render/OffhandBlockRenderPatch.cpp": "0a577697ebf9259f358670bb89b3fb09d7d78b5f",
-    "src/render/NativeAttachmentFix.hpp": "2187ec21af29f75ecaf7fbb73412758ace9a65a1",
-    "src/render/OffhandBlockRenderPatch.hpp": "7b56b1d47610f55a4701b0fa5af049fe9dcbc7c1",
+    "src/render/OffhandBlockRenderPatch.cpp": "1d60dcb8a7e0b0e78fe943eb4bf0476f814801f8",
+    "src/render/NativeAttachmentFix.hpp": "a5cf88b8cde4bd602be038c657d4af19917b6c37",
+    "src/render/OffhandBlockRenderPatch.hpp": "ea45606173d0eed19b3e86bc93b77e91abd8b2fc",
 }
 
 REQUIRED_NAMED_RVAS = {
     "kRenderItemRva": "0xB2F0F60",
-    "kRenderFirstPersonRva": "0xB2FB6C0",
     "kDefaultTransformRva": "0xA619618",
     "kMatrixMultiplyRva": "0x98B49A0",
     "kItemStackMatchesRva": "0xFF86E80",
@@ -34,8 +33,6 @@ REQUIRED_NAMED_RVAS = {
 
 
 REQUIRED_ARCHIVED_LITERAL_MAP = {
-    "0x9B36370": "0x9F00C90",
-    "0xA2C87BC": "0xA650958",
     "0xF14355C": "0xFA6F684",
     "0xF147CC0": "0xFA51F78",
     "0x9B368D4": "0x9F01244",
@@ -48,7 +45,6 @@ REQUIRED_ARCHIVED_LITERAL_MAP = {
 
 REQUIRED_CPP_TARGETS = (
     "0xB2F0F60",   # RenderItem
-    "0xB2FB6C0",   # ItemInHandRenderer::renderFirstPerson
     "0xA619618",   # default item transform
     "0x98B49A0",   # matrix multiply
     "0xFF86E80",   # ItemStack match
@@ -96,29 +92,6 @@ def main() -> int:
                 f"renderer source changed: {path}: expected {expected}, got {actual}"
             )
 
-    public_header = (ROOT / "src" / "render" / "OffhandBlockRenderPatch.hpp").read_text()
-    for token in (
-        "setBowTppTiltDegrees(float value) noexcept",
-        "bowTppTiltDegrees() const noexcept",
-        "setTridentFppHorizontalOffset(float value) noexcept",
-        "tridentFppHorizontalOffset() const noexcept",
-        "setBowTppHorizontalOffset(float value) noexcept",
-        "bowTppHorizontalOffset() const noexcept",
-    ):
-        if token not in public_header:
-            raise AssertionError(
-                f"renderer public header missing declaration {token!r}"
-            )
-
-    tracked_cpp = (ROOT / "src" / "render" / "OffhandBlockRenderPatch.cpp").read_text()
-    item_fn = tracked_cpp.split("OffhandBlockRenderPatch::\n    itemTransformDetour(", 1)[1]
-    lambda_pos = item_fn.index("const auto placementAnimated=")
-    prefix = item_fn[:lambda_pos]
-    if "placementAnimated(" in prefix:
-        raise AssertionError(
-            "placementAnimated must not be referenced before its local lambda declaration"
-        )
-
     generator = ROOT / "scripts" / "generate_render_126511_compat.py"
     if not generator.exists():
         raise AssertionError("missing build-only 1.26.51.1 renderer compatibility generator")
@@ -153,7 +126,6 @@ def main() -> int:
             cwd=ROOT,
         )
         generated_cpp = (out / "render" / "OffhandBlockRenderPatch.cpp").read_text()
-        generated_fix = (out / "render" / "NativeAttachmentFix.hpp").read_text()
         for token in REQUIRED_CPP_TARGETS:
             if token not in generated_cpp:
                 raise AssertionError(f"generated 1.26.51.1 renderer missing {token}")
@@ -167,12 +139,6 @@ def main() -> int:
             '0.18f*impulse',
             'matrix.value[14]-=',
             '0.12f*impulse',
-            'kRenderFirstPersonRva',
-            'kMainhandHeightOffset=0x180',
-            'kMainhandOldHeightOffset=0x184',
-            'renderFirstPersonDetour',
-            'gMainhandVisualBaseline',
-            'MAINHAND equip motion frozen',
             '-20.0f*wave',
             '9.0f*wave',
             '7.0f*wave',
@@ -180,25 +146,6 @@ def main() -> int:
             if token not in generated_cpp:
                 raise AssertionError(
                     f"generated renderer missing placement-animation marker {token!r}"
-                )
-
-        for token in (
-            "ResolvedBindingCache",
-            "OwnerBoneHashKind",
-            "kBindingModeFirstReadCallsiteRva",
-            "kBindingModeSecondReadCallsiteRva",
-            "kBowTppTiltDefault",
-            "kTridentFppHorizontalDefault",
-            "kBowTppHorizontalDefault",
-            "mirrorAndOffsetBowLocalPose",
-            "kEffectiveOffhandDrawCallsiteRva",
-            "kV2AttachmentDrawCallsiteRva",
-            "0x9F00C90",
-            "0xA650958",
-        ):
-            if token not in generated_fix:
-                raise AssertionError(
-                    f"generated NativeAttachmentFix missing renderer dependency {token!r}"
                 )
 
         # Do not accept the audit comment as proof that runtime constants were
