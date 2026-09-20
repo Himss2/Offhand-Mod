@@ -91,6 +91,32 @@ def main() -> int:
     before = {path: (ROOT / path).read_bytes() for path in SOURCE_FILES}
     cpp = before[SOURCE_FILES[0]].decode()
     header = before[SOURCE_FILES[1]]
+
+    hand_start = cpp.index("handEquipPredicateDetour(")
+    hand_end = cpp.index("using RenderItemRouteFn", hand_start)
+    hand_equip = cpp[hand_start:hand_end]
+    for token in (
+        "family==ToolFamily::Bow",
+        "family==ToolFamily::Crossbow",
+        "[GenericLeftFppRoute] %s genericDispatch=1",
+    ):
+        if token not in hand_equip:
+            raise AssertionError(f"Crossbow/Bow FPP admission missing {token!r}")
+
+    off_start = cpp.index("renderOffhandDetour(")
+    off_end = cpp.index("blockRenderPredicateDetour(", off_start)
+    render_offhand = cpp[off_start:off_end]
+    for forbidden in (
+        "StackBlockOverride",
+        "kBannerWallBlockOffset",
+        "kBannerStandingBlockOffset",
+    ):
+        if forbidden in render_offhand:
+            raise AssertionError(
+                f"Banner render must not synthesize stale Block* state: {forbidden}"
+            )
+    if "safe native item route active; stale Block* bridge disabled" not in render_offhand:
+        raise AssertionError("Banner safe native route marker missing")
     # The renderer and attachment helper must come from the same accepted overlay.
     assert git_blob_sha(header) == "deb12b1f33aa36e91d143d996ea92c415604f128"
     fn = cpp[cpp.index("    itemTransformDetour("):]
