@@ -24,6 +24,8 @@ RVA_REPLACEMENTS = {
     "0xA32F0F4": "0xA6FFBA4",
 
     # Native attachment pipeline.
+    "0x9B36370": "0x9F00C90",  # effective OFFHAND attachment draw callsite
+    "0xA2C87BC": "0xA650958",  # v2 attachment draw callsite
     "0x9B36A80": "0x9F013F0",
     "0xF147CB0": "0xFA51F60",
     "0x9B37780": "0x9F020F0",

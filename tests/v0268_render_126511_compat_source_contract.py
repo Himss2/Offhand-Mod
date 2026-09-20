@@ -11,7 +11,7 @@ ROOT = Path(__file__).resolve().parents[1]
 
 FROZEN_HEAD_BLOBS = {
     "src/render/OffhandBlockRenderPatch.cpp": "150b41dbe07caaaf303ec96095e41aec3b73cf98",
-    "src/render/NativeAttachmentFix.hpp": "a5cf88b8cde4bd602be038c657d4af19917b6c37",
+    "src/render/NativeAttachmentFix.hpp": "2187ec21af29f75ecaf7fbb73412758ace9a65a1",
     "src/render/OffhandBlockRenderPatch.hpp": "ea45606173d0eed19b3e86bc93b77e91abd8b2fc",
 }
 
@@ -34,6 +34,8 @@ REQUIRED_NAMED_RVAS = {
 
 
 REQUIRED_ARCHIVED_LITERAL_MAP = {
+    "0x9B36370": "0x9F00C90",
+    "0xA2C87BC": "0xA650958",
     "0xF14355C": "0xFA6F684",
     "0xF147CC0": "0xFA51F78",
     "0x9B368D4": "0x9F01244",
@@ -128,6 +130,7 @@ def main() -> int:
             cwd=ROOT,
         )
         generated_cpp = (out / "render" / "OffhandBlockRenderPatch.cpp").read_text()
+        generated_fix = (out / "render" / "NativeAttachmentFix.hpp").read_text()
         for token in REQUIRED_CPP_TARGETS:
             if token not in generated_cpp:
                 raise AssertionError(f"generated 1.26.51.1 renderer missing {token}")
@@ -154,6 +157,25 @@ def main() -> int:
             if token not in generated_cpp:
                 raise AssertionError(
                     f"generated renderer missing placement-animation marker {token!r}"
+                )
+
+        for token in (
+            "ResolvedBindingCache",
+            "OwnerBoneHashKind",
+            "kBindingModeFirstReadCallsiteRva",
+            "kBindingModeSecondReadCallsiteRva",
+            "kBowTppTiltDefault",
+            "kTridentFppHorizontalDefault",
+            "kBowTppHorizontalDefault",
+            "mirrorAndOffsetBowLocalPose",
+            "kEffectiveOffhandDrawCallsiteRva",
+            "kV2AttachmentDrawCallsiteRva",
+            "0x9F00C90",
+            "0xA650958",
+        ):
+            if token not in generated_fix:
+                raise AssertionError(
+                    f"generated NativeAttachmentFix missing renderer dependency {token!r}"
                 )
 
         # Do not accept the audit comment as proof that runtime constants were

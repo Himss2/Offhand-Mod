@@ -41,6 +41,9 @@ Swap remains quarantined. Eating/drinking animation is not being pursued because
 
 Current work in this branch/conversation is intentionally limited to **rendering, animation, offhand appearance, and UI/button presentation**. Java-like offhand action/storage logic is handled separately. Runtime action code should not be changed for visual calibration unless a very small integration fix is explicitly required.
 
+
+**Renderer build invariant:** `OffhandBlockRenderPatch.cpp`, `NativeAttachmentFix.hpp`, and `OffhandBlockRenderPatch.hpp` are a matched source set. CI must restore all three from current `main` after the archived v0.2.67 overlay. Mixing the current renderer CPP with the archived helper header causes compile-time missing-symbol failures.
+
 ### FPP OFFHAND placement animation
 
 The placement animation is deliberately isolated from action logic:

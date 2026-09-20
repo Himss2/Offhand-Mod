@@ -67,6 +67,14 @@ classify MAINHAND ownership
 
 For the current visual pass, changes should stay in `src/render`, renderer compatibility generation/tests, and UI/button presentation. Java-like action/storage semantics are maintained in a separate workstream. Do not use visual work as a reason to refactor RightUseRouter or storage policy.
 
+
+Renderer compatibility source-set rule:
+
+- restore `OffhandBlockRenderPatch.cpp`, `NativeAttachmentFix.hpp`, and `OffhandBlockRenderPatch.hpp` together after archived overlays;
+- the complete helper header is required by Bow/Trident attachment code (`ResolvedBindingCache`, owner-bone classification, binding-mode callsites, and calibration defaults);
+- Minecraft 1.26.51.1 callsite relocations recovered for that helper are `0x9B36370 -> 0x9F00C90` and `0xA2C87BC -> 0xA650958`;
+- the renderer source contract must validate the generated helper header, not only the generated CPP.
+
 ## FPP placement-animation invariant
 
 The current animation layer is intentionally narrow:
