@@ -185,7 +185,7 @@ bool SwapRuntime::drain(void* player,const void* selected) noexcept {
 
     __android_log_print(
         ANDROID_LOG_INFO,kLogTag,
-        "[SwapRuntime] swapped selected hotbar <-> OFFHAND via isolated engine"
+        "[SwapRuntime] local hotbar <-> OFFHAND exchange verified; native inventory sync"
     );
     return true;
 }
@@ -299,3 +299,4 @@ bool SwapRuntime::hasPendingSwap() const noexcept {
 }
 
 } // namespace levioffhand::swap
+

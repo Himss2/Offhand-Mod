@@ -31,7 +31,10 @@ public:
     using ItemStackCopyCtorFn = void (*)(void*, const void*);
     using ItemStackDtorFn = void (*)(void*);
     using SetItemInHandSlotFn = void (*)(void*, unsigned char, const void*);
-    using SetSelectedItemFn = void (*)(void*, const void*);
+    using SetInventorySlotFn = void (*)(void*, int, const void*);
+    using StacksEqualFn = bool (*)(const void*, const void*);
+    using IsUsingItemFn = bool (*)(const void*);
+    using StopUsingItemFn = void (*)(void*);
 
 private:
     SwapEngine() = default;
@@ -41,8 +44,12 @@ private:
     ItemStackCopyCtorFn mItemStackCopyCtor{nullptr};
     ItemStackDtorFn mItemStackDtor{nullptr};
     SetItemInHandSlotFn mSetItemInHandSlot{nullptr};
-    SetSelectedItemFn mSetSelectedItem{nullptr};
+    SetInventorySlotFn mSetInventorySlot{nullptr};
+    StacksEqualFn mStacksEqual{nullptr};
+    IsUsingItemFn mIsUsingItem{nullptr};
+    StopUsingItemFn mStopUsingItem{nullptr};
     const void* mEmptyItem{nullptr};
 };
 
 } // namespace levioffhand::swap
+

@@ -39,7 +39,7 @@ for token in (
     "kItemStackCopyCtorRva=0xFF9D748",
     "kItemStackDtorRva=0x85ADF98",
     "kSetItemInHandSlotRva=0xF579C50",
-    "kSetSelectedItemRva=0xF9F7850",
+    "kSetInventorySlotRva=0xF9DA128",
     "kEmptyItemRva=0x134C6780",
     "kPlayerSelectedStateOffset=0x570",
     "kSelectedStateFlagOffset=0xB0",
@@ -47,9 +47,8 @@ for token in (
     "kSelectedStateIndexOffset=0x10",
     "kContainerGetItemVtableOffset=0x40",
     "selectedStack(",
-    "mSetSelectedItem(player,mEmptyItem)",
     "mSetItemInHandSlot(player,kOffHand,main.get())",
-    "mSetSelectedItem(player,offSnap.get())",
+    "mSetInventorySlot(container,index,offSnap.get())",
 ):
     if token not in engine.replace(" ", "") and token not in engine:
         raise AssertionError(f"SwapEngine missing {token}")
@@ -66,7 +65,7 @@ for forbidden in (
             f"isolated swap must not depend on hooked selected-item entry: {forbidden}"
         )
 
-# Keep exact user-tested 44a occupied exchange; no clear-both derivative.
+# No temporary OFFHAND clear; exchange tests verify one write per changed slot.
 if "mSetItemInHandSlot(player,kOffHand,mEmptyItem)" in engine.replace(" ", ""):
     raise AssertionError("do not reintroduce OFFHAND clear-both derivative")
 
