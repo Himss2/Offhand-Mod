@@ -95,9 +95,64 @@ for forbidden in (
             f"isolated swap must not depend on hooked selected-item entry: {forbidden}"
         )
 
-# Keep exact user-tested 44a occupied exchange; no clear-both derivative.
-if "mSetItemInHandSlot(player,kOffHand,mEmptyItem)" in engine.replace(" ", ""):
-    raise AssertionError("do not reintroduce OFFHAND clear-both derivative")
+# One-empty swap synchronization:
+# each native setter must receive Minecraft's canonical EMPTY_ITEM when
+# clearing its own storage. Never borrow the null-like ItemStack object from
+# the opposite live slot/container.
+compact_engine = engine.replace(" ", "")
+
+off_empty_start = compact_engine.index("if(offEmpty){")
+main_empty_start = compact_engine.index("if(mainEmpty){", off_empty_start)
+off_empty_body = compact_engine[off_empty_start:main_empty_start]
+
+for token in (
+    "mSetSelectedItem(player,mEmptyItem)",
+    "mSetItemInHandSlot(player,kOffHand,main.get())",
+):
+    if token not in off_empty_body:
+        raise AssertionError(
+            f"MAIN->OFF one-empty synchronization missing {token}"
+        )
+if "mSetSelectedItem(player,off)" in off_empty_body:
+    raise AssertionError(
+        "MAIN->OFF must not clear selected storage with OFFHAND's live empty stack object"
+    )
+
+occupied_marker = "Snapshotmain(mItemStackCopyCtor,mItemStackDtor,selected);\nSnapshot"
+occupied_start = compact_engine.index(occupied_marker, main_empty_start)
+main_empty_body = compact_engine[main_empty_start:occupied_start]
+
+for token in (
+    "mSetItemInHandSlot(player,kOffHand,mEmptyItem)",
+    "mSetSelectedItem(player,offSnap.get())",
+):
+    if token not in main_empty_body:
+        raise AssertionError(
+            f"OFF->MAIN one-empty synchronization missing {token}"
+        )
+if "mSetItemInHandSlot(player,kOffHand,selected)" in main_empty_body:
+    raise AssertionError(
+        "OFF->MAIN must not clear OFFHAND with selected-slot live empty stack object"
+    )
+
+# Preserve the exact user-tested occupied 44a exchange. The canonical OFFHAND
+# clear above is valid only in the MAIN-empty branch; occupied A/B must not
+# reintroduce the rejected clear-both intermediate state.
+occupied_body = compact_engine[occupied_start:]
+occupied_sequence = (
+    "mSetSelectedItem(player,mEmptyItem)",
+    "mSetItemInHandSlot(player,kOffHand,main.get())",
+    "mSetSelectedItem(player,offSnap.get())",
+)
+positions = [occupied_body.index(token) for token in occupied_sequence]
+if positions != sorted(positions):
+    raise AssertionError(
+        "occupied 44a order changed: MAIN empty -> OFF gets old MAIN -> MAIN gets old OFF"
+    )
+if "mSetItemInHandSlot(player,kOffHand,mEmptyItem)" in occupied_body:
+    raise AssertionError(
+        "occupied A/B swap must not use the rejected clear-both derivative"
+    )
 
 for forbidden in (
     "InventoryTransactionPacket",
