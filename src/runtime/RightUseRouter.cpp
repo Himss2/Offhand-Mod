@@ -81,6 +81,9 @@ constexpr std::size_t kItemCanUseAsAttackVtableOffset = 0x298;
 constexpr std::size_t kItemUseOnVtableOffset = 0x418;
 constexpr std::size_t kItemStackStorageSize = 0x98;
 constexpr std::size_t kItemStackCountOffset = 0x22;
+constexpr std::size_t kItemMaxStackSizeOffset = 0xA8;
+constexpr std::size_t kItemIdOffset = 0xAA;
+constexpr std::int16_t kShearsItemId = 424;
 
 constexpr std::array<std::uint8_t, 16> kUseItemOnBlockFingerprint{
     0xFD, 0x7B, 0xBA, 0xA9, 0xFC, 0x6F, 0x01, 0xA9,
@@ -383,49 +386,25 @@ template <std::size_t N>
     return validObject(item) ? item : nullptr;
 }
 
-[[nodiscard]] const char* itemRttiName(const void* item) noexcept {
-    if (!validObject(item)) {
-        return nullptr;
-    }
-
-    const void* vtable = nullptr;
-    std::memcpy(&vtable, item, sizeof(vtable));
-    if (vtable == nullptr) {
-        return nullptr;
-    }
-
-    const void* typeInfo = nullptr;
-    std::memcpy(
-        &typeInfo,
-        static_cast<const std::byte*>(vtable) - sizeof(void*),
-        sizeof(typeInfo)
-    );
-    if (
-        typeInfo == nullptr ||
-        !belongsToMinecraft(reinterpret_cast<std::uintptr_t>(typeInfo))
-    ) {
-        return nullptr;
-    }
-
-    const char* name = nullptr;
-    std::memcpy(
-        &name,
-        static_cast<const std::byte*>(typeInfo) + sizeof(void*),
-        sizeof(name)
-    );
-    if (
-        name == nullptr ||
-        !belongsToMinecraft(reinterpret_cast<std::uintptr_t>(name))
-    ) {
-        return nullptr;
-    }
-
-    return name;
-}
-
 [[nodiscard]] bool itemIsShears(const void* item) noexcept {
-    const char* name = itemRttiName(item);
-    return name != nullptr && std::strstr(name, "ShearsItem") != nullptr;
+    if (!validObject(item)) {
+        return false;
+    }
+
+    std::uint8_t maxStackSize = 0;
+    std::int16_t itemId = 0;
+    std::memcpy(
+        &maxStackSize,
+        static_cast<const std::byte*>(item) + kItemMaxStackSizeOffset,
+        sizeof(maxStackSize)
+    );
+    std::memcpy(
+        &itemId,
+        static_cast<const std::byte*>(item) + kItemIdOffset,
+        sizeof(itemId)
+    );
+
+    return itemId == kShearsItemId && maxStackSize == 1;
 }
 
 template <typename Fn>
