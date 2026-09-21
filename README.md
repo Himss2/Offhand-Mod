@@ -51,7 +51,7 @@ Full Java behavior requires one ordered interaction pipeline, including block/en
 
 - **Consumption/release is not verified:** binary inspection shows native release starts a MAIN-hand transaction and calls the MAIN setter. Redirecting `getSelectedItem` alone does not fix transaction/writeback ownership.
 - **Active-use isolation is incomplete:** the existing session-based selected getter can affect unrelated native reads outside an explicit MAIN scope. In-game attack, slot-change, cancellation, world-exit and food/drink completion require validation.
-- **Swap remains disabled:** the prior clear/refill setter experiment does not provide a verified atomic native transaction. It is not compiled or installed.
+- **Swap restored as an isolated candidate:** the core is restored byte-for-byte from the user-tested commit `44a7277ec9f9419e3f6bfb81392c1c951b4f1b00`. The HUD F button only queues; `ClientInstance::preFrameTick` performs the exchange. MAIN selected storage is written only through `Player::setSelectedItem`, OFFHAND only through `setItemInHandSlot(hand=1)`, and occupied↔occupied uses the successful native-EMPTY sequence `MAIN=EMPTY -> OFF=old MAIN -> MAIN=old OFF`. The later clear-both derivative is not used. `RightUseRouter.cpp` and the renderer remain untouched by the swap integration.
 - **Mixed block/self-use fallback remains incomplete:** for example MAIN bow self-use PASS followed by OFF block placement requires coordination at an upper dispatcher boundary.
 
 Do not treat a green build or host test as proof that items cannot be lost, duplicated or locked. The exact evidence and outstanding gameplay matrix are in [the regression document](docs/OFFHAND_REGRESSION_BASELINE.md).
@@ -62,6 +62,7 @@ Do not treat a green build or host test as proof that items cannot be lost, dupl
 bash tests/run_right_use_runtime_tests.sh
 python3 tests/right_use_126511_binary_test.py /path/to/libminecraftpe.so
 python3 tests/v0268_render_126511_compat_source_contract.py
+python3 tests/v0268_swap_button_source_contract.py
 ```
 
 The binary test requires the exact 1.26.51.1 file with SHA-256 `b8a6351503d330628335a80e8131acd45291fa9a747465f0f34a31b2346847b4`. It checks all eleven router fingerprints, the WeaponItem no-op, and relocated Item/ComponentItem use slots. Host tests execute production C++ detours with fake native objects; they do not emulate Bedrock transactions.

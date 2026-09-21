@@ -152,7 +152,7 @@ The current animation layer is intentionally narrow:
 - renderer applies motion only while an OFFHAND block is rendered in `FIRSTPERSON_LEFT`;
 - animation changes the render matrix only; it must not write ItemStack/storage state;
 - repeated placement restarts the short visual impulse;
-- swap remains completely quarantined.
+- F-swap is isolated in its own preFrame runtime and must not alter this animation/render path.
 
 Current initial calibration at the animation midpoint:
 
@@ -173,19 +173,24 @@ The detached OFFHAND snapshot is mandatory to avoid aliasing the transaction bef
 
 Manual offhand storage/removal must remain native. Do not reintroduce ContainerValidation transfer/swap hooks or synthetic inventory packets as a shortcut.
 
-## Swap quarantine
+## Isolated F-swap candidate
 
-The F-style swap experiment was introduced **after** the authoritative baseline and caused regressions in action/storage behavior.
+The swap core is restored from commit `44a7277ec9f9419e3f6bfb81392c1c951b4f1b00`, the historical build where the user reported the swap itself was correct. The right-use regression seen around that historical test is deliberately excluded: this candidate does not modify `RightUseRouter.cpp`, does not drain from `getSelectedItem`, and does not change block-use or hand-ownership logic.
 
-Until a new swap implementation passes the full runtime matrix below, it must remain isolated:
+Required architecture:
 
-- not listed in `CMakeLists.txt`;
-- not included or installed from `LeviOffhandMod.cpp`;
-- no swap button registered;
-- no swap hook attached to `Player::getSelectedItem`, `ClientInstance::preFrameTick`, right-use, block placement, or storage validation;
-- no mutation of OFFHAND/selected storage from swap code during normal gameplay.
+- `RightUseRouter` installs first; `OffhandSwapRuntime` installs afterward as an optional extension.
+- The HUD F callback only sets `mSwapRequested`.
+- Only `ClientInstance::preFrameTick` may drain the queued request.
+- MAIN selected storage is written only through `Player::setSelectedItem`.
+- OFFHAND storage is written only through `setItemInHandSlot(hand=1)`.
+- `setItemInHandSlot(hand=0)` is forbidden in the swap path.
+- Every non-empty source is copied to a detached native `ItemStack` snapshot before mutation.
+- Occupied MAIN=A / OFF=B keeps the successful 44a order: `MAIN=EMPTY` -> `OFF=A` -> `MAIN=B`.
+- The later unverified clear-both step `OFF=EMPTY` is intentionally not used.
+- No ContainerValidation hook, synthetic packet, selected-item hook, right-use hook, block-use hook, or renderer hook may be added for swap.
 
-Experimental swap source may remain in the repository for reference, but it is non-runtime code in the recovery baseline.
+This remains a current-build candidate until the device matrix is rerun. Sword/Shears ownership, block-count reconciliation, Banner/Crossbow rendering, and the current MAINHAND render-freeze path are regression-locked outside the swap module.
 
 ## Must-pass runtime matrix (not yet run on device)
 
@@ -208,6 +213,10 @@ Start from a fresh Minecraft process for every candidate baseline:
 14. MAIN self-use PASS followed by OFF block/entity interaction follows the full ordered pipeline.
 
 Only after this matrix passes may swap be reintroduced. When that happens, add swap-specific tests **without replacing or weakening this baseline**.
+
+15. Repeated F swap with one hand empty returns the same item back and forth without ghost/duplicate/loss.
+16. Occupied MAIN=A / OFF=B repeated F swaps alternate A/B correctly.
+17. Immediately after occupied swap, the new OFFHAND item can be moved/removed normally and right-click behavior still follows the existing MAINHAND ownership rules.
 
 ## Documentation rule
 
