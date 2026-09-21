@@ -79,6 +79,10 @@ jobs:
             manifest.json \
             scripts/build.sh \
             src/LeviOffhandMod.cpp \
+            src/ui/SwapButton.hpp \
+            src/ui/SwapButton.cpp \
+            src/runtime/OffhandSwapRuntime.hpp \
+            src/runtime/OffhandSwapRuntime.cpp \
             src/render/OffhandBlockRenderPatch.cpp \
             src/render/NativeAttachmentFix.hpp \
             src/render/OffhandBlockRenderPatch.hpp \
@@ -109,7 +113,8 @@ jobs:
             tests/v0268_hand_action_router_core_test.cpp \
             tests/v0268_semantic_bridge_source_contract.py \
             tests/v0268_semantic_bridge_binary_contract.py \
-            tests/v0268_render_126511_compat_source_contract.py
+            tests/v0268_render_126511_compat_source_contract.py \
+            tests/v0268_swap_button_source_contract.py
           grep -q '"version": "0.2.68"' manifest.json
           grep -q 'NativeCapabilityProbe.cpp' CMakeLists.txt
           grep -q 'NativeOffhandPolicy.cpp' CMakeLists.txt
@@ -118,6 +123,8 @@ jobs:
           grep -q 'HandActionRouter.cpp' CMakeLists.txt
           grep -q 'NativeSemanticBridge.cpp' CMakeLists.txt
           grep -q 'RightUseRouter.cpp' CMakeLists.txt
+          grep -q 'OffhandSwapRuntime.cpp' CMakeLists.txt
+          grep -q 'SwapButton.cpp' CMakeLists.txt
           grep -q 'OffhandPlacementAnimation' src/runtime/RightUseRouter.cpp
           grep -q 'placementAnimated' src/render/OffhandBlockRenderPatch.cpp
 
@@ -128,6 +135,7 @@ jobs:
           python3 tests/v0268_action_routing_source_contract.py
           python3 tests/v0268_semantic_bridge_source_contract.py
           python3 tests/v0268_render_126511_compat_source_contract.py
+          python3 tests/v0268_swap_button_source_contract.py
 
           g++ -std=c++20 -Wall -Wextra -Wpedantic -Werror \
             -fsanitize=address,undefined -fno-omit-frame-pointer \

@@ -42,7 +42,7 @@ for token in (
     "processPendingSwap(",
     "mSwapRequested.store(true",
     "[SwapRuntime] F swap queued for MINECRAFT MAIN",
-    "[SwapRuntime] swapped selected hotbar <-> OFFHAND via clear-both snapshot exchange",
+    "[SwapRuntime] swapped selected hotbar <-> OFFHAND without transient duplicates",
 ):
     if token not in runtime:
         raise AssertionError(f"OffhandSwapRuntime missing {token}")
@@ -100,9 +100,21 @@ if "mSetSelectedItem(player, gEmptyItem)" not in process_body:
 if "gEmptyItem == nullptr || !mStackIsNull(gEmptyItem)" not in process_body:
     raise AssertionError("occupied swap must validate native EMPTY_ITEM before mutation")
 
-if "mSetItemInHandSlot(player, kOffHand, gEmptyItem)" not in process_body:
+if "mSetItemInHandSlot(player, kOffHand, gEmptyItem)" in process_body:
     raise AssertionError(
-        "occupied swap must clear OFFHAND before installing the replacement stack"
+        "candidate must keep the user-tested 44a sequence; "
+        "do not reintroduce the later clear-both derivative"
+    )
+
+occupied_sequence = (
+    "mSetSelectedItem(player, gEmptyItem)",
+    "mSetItemInHandSlot(player, kOffHand, mainSnapshot.get())",
+    "mSetSelectedItem(player, offSnapshot.get())",
+)
+occupied_positions = [process_body.index(token) for token in occupied_sequence]
+if occupied_positions != sorted(occupied_positions):
+    raise AssertionError(
+        "occupied swap order changed from 44a: MAIN empty -> OFF gets MAIN -> MAIN gets old OFF"
     )
 
 for forbidden in (
@@ -131,6 +143,24 @@ for token in (
 
 if "observePlayer(player)" in router:
     raise AssertionError("swap must not cache a LocalPlayer pointer across threads")
+
+right_use_install = mod.index("RightUseRouter::instance().install(context)")
+swap_install = mod.index("OffhandSwapRuntime::instance().install(context)")
+if right_use_install > swap_install:
+    raise AssertionError(
+        "RightUseRouter must install before the optional swap extension"
+    )
+
+for forbidden in (
+    '#include "runtime/OffhandSwapRuntime.hpp"',
+    "OffhandSwapRuntime::instance()",
+    "processPendingSwap(",
+    "hasPendingSwap()",
+):
+    if forbidden in router:
+        raise AssertionError(
+            f"RightUseRouter must remain independent from swap: {forbidden}"
+        )
 
 if "OffhandSwapRuntime::instance().requestSwap()" not in mod:
     raise AssertionError("SwapButton callback must only queue the swap request")
