@@ -21,7 +21,6 @@ RVA_REPLACEMENTS = {
     "0x94E96F4": "0x98B49A0",
     "0xF63BE90": "0xFF86E80",
     "0xF644970": "0xFFA6140",
-    "0xADE96B0": "0xB2FB6C0",  # ItemInHandRenderer::renderFirstPerson
     "0xADEA0BC": "0xB2FC0BC",
     "0xA31662C": "0xA79F2C0",
     "0xADE9E9C": "0xB2FBE9C",
@@ -42,9 +41,7 @@ RVA_REPLACEMENTS = {
     "0xF147ED0": "0xFA528A4",
     "0x9B254C8": "0x9F5A6D0",
     "0x107CC804": "0x110AFF88",
-    "0xEA8DEFC": "0xF286ED8",  # FPP swing-progress getter
-    "0xADEA398": "0xB2FC398",  # exact renderFirstPerson caller return
-    "0xADE56D8": "0xB2F7ADC",  # OFFHAND final MatrixStack::top return
+    "0xADE56D8": "0xB2F7ADC",
 
     # v0.2.67 reference-carrier internals.  These are not present in the
     # tracked HEAD renderer anymore, but the CI reconstructs the proven
@@ -84,7 +81,6 @@ NAMED_RVA_REPLACEMENTS = {
     "kMatrixMultiplyRva": "0x98B49A0",
     "kItemStackMatchesRva": "0xFF86E80",
     "kHandEquipPredicateRva": "0xFFA6140",
-    "kRenderFirstPersonRva": "0xB2FB6C0",
     "kOffDispatchCallsiteRva": "0xB2FC0BC",
     "kFirstPersonDataDrivenRenderRva": "0xA79F2C0",
     "kFirstPersonDataDrivenCallsiteRva": "0xB2FBE9C",
@@ -105,8 +101,6 @@ NAMED_RVA_REPLACEMENTS = {
     "kComposeAttachmentBoneMatrixRva": "0xFA528A4",
     "kComposeAttachmentBoneMatrixCallsiteRva": "0x9F5A6D0",
     "kFinalOffhandMatrixTopRva": "0x110AFF88",
-    "kFppSwingProgressRva": "0xF286ED8",
-    "kFppSwingProgressReturnRva": "0xB2FC398",
     "kFinalOffhandMatrixReturnRva": "0xB2F7ADC",
 
     # Item singleton globals.
