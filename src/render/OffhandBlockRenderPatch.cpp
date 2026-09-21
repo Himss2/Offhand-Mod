@@ -2685,10 +2685,7 @@ namespace levioffhand::render {
             }
 
             if(!placementActive) {
-                gMainhandStableHeight=1.0f;
-        gMainhandStableHeightValid=false;
-        gMainhandEquipFreezeLogged=false;
-        gFppSwingNeutralizedLogged=false;
+                gFppSwingNeutralizedLogged=false;
             }
 
             return original(

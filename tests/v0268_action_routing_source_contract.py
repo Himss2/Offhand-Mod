@@ -117,7 +117,7 @@ def main() -> int:
         "kBaseItemUseOnRva = 0xFF84B84",
         "kComponentItemUseOnRva = 0xFDA8A20",
         "itemIsShears(",
-        ""ShearsItem"",
+        "\"ShearsItem\"",
         "kMainHand = 0",
         "kOffHand = 1",
         "resolveExactTarget(",

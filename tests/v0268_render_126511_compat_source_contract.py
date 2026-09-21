@@ -223,6 +223,16 @@ def main() -> int:
     swing_detour = cpp[swing_start:swing_end]
     compact_swing = re.sub(r"\s+", "", swing_detour)
 
+    for forbidden in (
+        "gMainhandStableHeight=",
+        "gMainhandStableHeightValid=",
+        "gMainhandEquipFreezeLogged=",
+    ):
+        if forbidden in swing_detour:
+            raise AssertionError(
+                "swing-progress detour must not clear top-level equip freeze state"
+            )
+
     for token in (
         "returnAddress==gMinecraftBase+kFppSwingProgressReturnRva",
         "placementProgress>0.0f",
