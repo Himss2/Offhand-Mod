@@ -55,8 +55,8 @@ for token in (
         raise AssertionError(f"SwapEngine missing {token}")
 
 # RightUseRouter installs before swap and hooks Player::setSelectedItem.
-// Swap must exact-validate the rest of the ABI, then accept only the known
-// executable 1.26.51.1 setter RVA when its prologue is already chained.
+# Swap must exact-validate the rest of the ABI, then accept only the known
+# executable 1.26.51.1 setter RVA when its prologue is already chained.
 for token in (
     "resolveSetSelectedTarget(",
     "stableBuild",
