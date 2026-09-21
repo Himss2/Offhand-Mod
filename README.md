@@ -2,6 +2,19 @@
 
 Native Levi Launcher Android mod for Minecraft Bedrock **1.26.45.1** and **1.26.51.1**.
 
+## OFFHAND consumption and release candidate
+
+This change starts from main `2638d88fedcffa0314aa4df51e4ee0273b5c4aa7` and changes only the use lifecycle, its tests and documentation. Renderer, sword/shears classification and block-count reconciliation are retained.
+
+- Completion runs the original native consumption function and its callback/transaction envelope. Its final carried-item write is scoped to native OFFHAND, preserving the native remaining stack, empty slot or returned bottle/bowl.
+- The existing session identifies local OFF use. A native active stack matching only OFF can also identify ownership for another Player instance; ambiguous equal stacks retain MAIN unless an explicit OFF session exists.
+- If the OFF slot no longer matches active use, cancel use without consuming the replacement or MAIN. Writes outside the active completion/release scope remain native MAIN writes.
+- Release now scopes writeback to OFF and passes hand=1 to the original native transaction wrapper only for the verified release callback. Callback/envelope ownership remains native.
+- Empty OFF results remain OFF during subsequent callback reads instead of switching to MAIN.
+
+Host tests cover these decisions, while the binary contract verifies the completion/callback chain, virtual setters and native OFF InventoryAction recording. **Device validation is still required** for hunger/status effects, stacked food, potion/milk/stew containers, projectile release, durability, reconnect and server acceptance. Keeping native packet construction does not establish that an unmodified remote server accepts arbitrary OFF consumption; no multiplayer parity is claimed.
+
+
 ## v0.2.68 — targeted 1.26.51.1 fixes on build #550 baseline
 
 This candidate preserves the sword/offhand routing and renderer structure from the successful **build #550** (`2a3a9a7e1a11ab53899e46923aee62e6cc208acc`). The current changes are intentionally isolated to four reported regressions:
@@ -140,4 +153,5 @@ The same MAINHAND branch also calls swing-progress interpolator `0xF286ED8`, whi
 While `OffhandPlacementAnimation` is active, only the `hand=1` MAINHAND draw temporarily pins ItemInHandRenderer `+0x180/+0x184` and neutralizes Player swing `+0x3EC/+0x430`. All four live values are restored immediately after that draw. OFFHAND `hand=0` is untouched, and no action/storage state is persistently modified.
 
 The hook is intentionally optional: failure to resolve/install it must leave every existing Banner/Bow/Crossbow/Trident/block visual active. OFFHAND placement motion values are **not tuned in this phase**; first verify that MAINHAND no longer performs the unwanted placement/equip motion.
+
 

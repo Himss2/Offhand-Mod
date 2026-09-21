@@ -1,5 +1,36 @@
 # Offhand Regression Baseline
 
+## Consumption/release implementation candidate
+
+Parent: `2638d88fedcffa0314aa4df51e4ee0273b5c4aa7`. This candidate preserves current renderer, classification and placement-count code.
+
+The old statement that only the getter is redirected is superseded for completion/release by scoped native setter routing. The session getter outside these scopes remains a separate isolation concern.
+
+| Boundary | Verified 1.26.51.1 RVA | Use |
+|---|---|---|
+| Player completion | `0xF9E8094` | Original effect, callback envelope and clear-use retained |
+| Completion callback | `0xFA05E30` | Calls ItemStack useTimeDepleted, then virtual MAIN setter |
+| ItemStack useTimeDepleted | `0xFF9F520`, Item virtual `+0x2B8` | Native consumption/container conversion |
+| MAIN setter | `0xF9F7850`, Player virtual `+0x268` | Redirect only while matching player is completing/releasing OFF |
+| Native hand setter | `0xF579C50` | Hand 1 invokes virtual OFF setter `+0x278` |
+| LocalPlayer OFF setter | `0xAAD0360` | Calls `0xF9FC7C8`, which records container-119 InventoryAction |
+| Stop using | `0xF9E86C0` | Cancel stale item use without consuming/releasing |
+| Hand transaction wrapper | `0xF9E9DFC` | Preserve original envelope/callback/context with hand 1 for OFF release |
+| Release callback | `0xF8A65FC` | Only this callback qualifies for release-hand correction |
+
+Completion previously called `Player::getSelectedItem`, consumed a detached stack, then wrote through MAIN virtual `+0x268`. The new completion scope keeps native behavior but directs that final write through the native OFF setter. Empty stacks and native replacement items are forwarded intact. The mod does not subtract counts or construct replacement items itself.
+
+The scope keeps a native snapshot of the original OFF stack; writeback is rejected if a nested callback changed slot identity/count. It never falls back to writing the consumed stack into MAIN. A session by itself cannot redirect setters or hand transactions. Stale active use cancels. Other-player sessions are not cleared by an inferred native OFF completion.
+
+GameMode release hardcodes `w1=0` at `0xF8A3350`. The new transaction hook changes this only inside the matching OFF release scope and only when callback equals `0xF8A65FC`. All callback objects are moved/destructed by the original native wrapper.
+
+`tests/use_lifecycle_126511_binary_test.py` checks the exact supplied ELF, four new function prologues, native BL boundaries, LocalPlayer/ServerPlayer setter vtables, the hardcoded release hand and OFF container recording. It requires no third-party Python packages.
+
+The host suite executes production detours with fake native callbacks. It does **not** verify hunger, status effects, actual bowl/bottle semantics, projectile behavior, packet acceptance or persistence. Native completion is conditional on game-side state, so both client and integrated-server behavior require device testing. Remote-server support remains unproven; no new packet schema or artificial transaction is introduced.
+
+Must verify on device before treating this as a gameplay baseline: survival food count/hunger; final food; potion/milk/stew replacement; full inventory; creative consumption; MAIN priority; changing OFF mid-use; bow/trident charge/release and durability; reconnect/slot removal. Existing sword, shears and placement-count tests remain mandatory.
+
+
 ## Build #550 preservation rule for targeted fixes
 
 The preservation baseline is successful GitHub Actions **build #550**, commit `2a3a9a7e1a11ab53899e46923aee62e6cc208acc`. Its Sword -> OFFHAND placement ordering must not be rewritten while repairing the isolated regressions below.
@@ -188,3 +219,4 @@ must update both `README.md` and this file in the same change. Record the previo
 
 
 Renderer review also corrected six 1.26.51.1 callsite translations for spear admission and native owner-vector/matrix lookup. Their BL targets are verified by the binary test.
+
