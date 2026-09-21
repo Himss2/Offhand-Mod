@@ -116,6 +116,8 @@ def main() -> int:
         "kComponentItemRequiresInteractRva = 0xFDAA1FC",
         "kBaseItemUseOnRva = 0xFF84B84",
         "kComponentItemUseOnRva = 0xFDA8A20",
+        "itemIsShears(",
+        ""ShearsItem"",
         "kMainHand = 0",
         "kOffHand = 1",
         "resolveExactTarget(",
@@ -180,7 +182,12 @@ def main() -> int:
         "kItemCanUseAsAttackVtableOffset",
         "maxUseDuration",
         "attackOnly",
+        "itemIsShears(item)",
     )
+    if classifier.index("itemIsShears(item)") > classifier.index("attackDamage"):
+        raise AssertionError(
+            "Shears MAINHAND ownership must be decided before attack-only fallback"
+        )
     if classifier.index("specializedUse") > classifier.index("attackDamage"):
         raise AssertionError(
             "specialized native actions must be classified before axe-like attack fallback"

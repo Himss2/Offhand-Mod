@@ -383,6 +383,51 @@ template <std::size_t N>
     return validObject(item) ? item : nullptr;
 }
 
+[[nodiscard]] const char* itemRttiName(const void* item) noexcept {
+    if (!validObject(item)) {
+        return nullptr;
+    }
+
+    const void* vtable = nullptr;
+    std::memcpy(&vtable, item, sizeof(vtable));
+    if (vtable == nullptr) {
+        return nullptr;
+    }
+
+    const void* typeInfo = nullptr;
+    std::memcpy(
+        &typeInfo,
+        static_cast<const std::byte*>(vtable) - sizeof(void*),
+        sizeof(typeInfo)
+    );
+    if (
+        typeInfo == nullptr ||
+        !belongsToMinecraft(reinterpret_cast<std::uintptr_t>(typeInfo))
+    ) {
+        return nullptr;
+    }
+
+    const char* name = nullptr;
+    std::memcpy(
+        &name,
+        static_cast<const std::byte*>(typeInfo) + sizeof(void*),
+        sizeof(name)
+    );
+    if (
+        name == nullptr ||
+        !belongsToMinecraft(reinterpret_cast<std::uintptr_t>(name))
+    ) {
+        return nullptr;
+    }
+
+    return name;
+}
+
+[[nodiscard]] bool itemIsShears(const void* item) noexcept {
+    const char* name = itemRttiName(item);
+    return name != nullptr && std::strstr(name, "ShearsItem") != nullptr;
+}
+
 template <typename Fn>
 [[nodiscard]] Fn itemVirtual(
     const void* item,
@@ -425,6 +470,13 @@ template <typename Fn>
     const void* item = itemFromStack(stack);
     if (item == nullptr) {
         return false;
+    }
+
+    // Shears keeps MAINHAND right-click ownership. On-device logs showed
+    // that the generic attack-damage fallback could classify it as
+    // attack-only and incorrectly invoke OFFHAND block placement.
+    if (itemIsShears(item)) {
+        return true;
     }
 
     const auto moduleBase = minecraftModuleBase();

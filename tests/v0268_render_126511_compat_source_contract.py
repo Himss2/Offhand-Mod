@@ -21,6 +21,7 @@ REQUIRED_NAMED_RVAS = {
     "kMatrixMultiplyRva": "0x98B49A0",
     "kItemStackMatchesRva": "0xFF86E80",
     "kHandEquipPredicateRva": "0xFFA6140",
+    "kRenderFirstPersonRva": "0xB2FB6C0",
     "kFirstPersonDataDrivenRenderRva": "0xA79F2C0",
     "kGetOffhandStackRva": "0xF579CA4",
     "kPrepareAttachmentRva": "0x9F013F0",
@@ -49,6 +50,7 @@ REQUIRED_ARCHIVED_LITERAL_MAP = {
     "0xEE63508": "0xF7AA2DC",
     "0xEEA721C": "0xF7728A8",
     "0x2652B1D": "0x272F25E",
+    "0xADE96B0": "0xB2FB6C0",
     "0xEA8DEFC": "0xF286ED8",
     "0xADEA398": "0xB2FC398",
 }
@@ -61,6 +63,7 @@ REQUIRED_CPP_TARGETS = (
     "0xFF86E80",   # ItemStack match
     "0xFFA6140",   # hand-equip predicate
     "0xB2FC0BC",   # offhand dispatch callsite
+    "0xB2FB6C0",   # ItemInHandRenderer::renderFirstPerson
     "0xA79F2C0",   # first-person data-driven renderer
     "0xB2FBE9C",   # first-person data-driven callsite
     "0xF579CA4",   # Actor offhand ItemStack getter
@@ -165,6 +168,38 @@ def main() -> int:
         raise AssertionError(
             "Banner must use build470 block-path routing, not the later bridge-depth exception"
         )
+
+    # The visible placement dip is driven by MAINHAND equip-height
+    # interpolation at the top of renderFirstPerson.
+    for token in (
+        "kRenderFirstPersonRva=0xADE96B0",
+        "kMainhandHeightOffset=0x180",
+        "kMainhandOldHeightOffset=0x184",
+        "kRenderFirstPersonFingerprint",
+        "renderFirstPersonDetour(",
+        "gMainhandStableHeight",
+        "[PlacementVisual] MAINHAND FPP equip height frozen",
+        "Placement visual: MAINHAND FPP equip freeze armed",
+    ):
+        if token not in compact_cpp and token not in cpp:
+            raise AssertionError(
+                f"MAINHAND FPP equip freeze missing {token!r}"
+            )
+
+    equip_start = cpp.index("renderFirstPersonDetour(")
+    equip_end = cpp.index("using FppSwingProgressFn", equip_start)
+    compact_equip = re.sub(r"\s+", "", cpp[equip_start:equip_end])
+    for token in (
+        "writeValue<float>(self,kMainhandHeightOffset,frozenHeight)",
+        "writeValue<float>(self,kMainhandOldHeightOffset,frozenHeight)",
+        "writeValue<float>(self,kMainhandHeightOffset,liveHeight)",
+        "writeValue<float>(self,kMainhandOldHeightOffset,liveOldHeight)",
+        "original(self,renderContext,prevProjection,itemFlags)",
+    ):
+        if token not in compact_equip:
+            raise AssertionError(
+                f"MAINHAND FPP equip-freeze scope missing {token!r}"
+            )
 
     # Pure-render MAINHAND placement freeze: neutralize only the
     # swing-progress getter call made by ItemInHandRenderer::renderFirstPerson.
