@@ -99,8 +99,26 @@ namespace levioffhand::render {
             };
 
         constexpr std::uintptr_t kFinalOffhandMatrixTopRva=0x107CC804;
-        constexpr std::uintptr_t kFinalMainhandMatrixReturnRva=0xADE42D0;
         constexpr std::uintptr_t kFinalOffhandMatrixReturnRva=0xADE56D8;
+
+        // Pure render-time MAINHAND swing source.
+        //
+        // 1.26.45.1 renderFirstPerson:
+        //   BL 0xEA8DEFC @ 0xADEA394, return 0xADEA398.
+        //
+        // 1.26.51.1:
+        //   BL 0xF286ED8 @ 0xB2FC394, return 0xB2FC398.
+        //
+        // The returned float is immediately consumed by sqrt/sin MAINHAND
+        // matrix composition.  The target itself only reads/interpolates
+        // swing state, so neutralizing its return is render-only.
+        constexpr std::uintptr_t kFppSwingProgressRva=0xEA8DEFC;
+        constexpr std::uintptr_t kFppSwingProgressReturnRva=0xADEA398;
+
+        constexpr std::array<std::uint8_t,16> kFppSwingProgressFingerprint{
+            0x02,0xEC,0x43,0xBD,0x01,0x30,0x44,0xBD,
+            0xE3,0x03,0x22,0x1E,0x42,0x38,0x21,0x1E
+        };
 
         constexpr std::uintptr_t kBowIdRva=0x126F0FB8;
         constexpr std::uintptr_t kCrossbowIdRva=0x126F0FE0;
@@ -399,14 +417,12 @@ namespace levioffhand::render {
         std::uintptr_t gFinalOffhandMatrixTarget=0;
         std::uintptr_t gToolMatrixMultiplyTarget=0;
 
-        // Pure-render MAINHAND freeze cache. The matrix is captured only at
-        // the verified MAINHAND MatrixStack::top return callsite while no
-        // OFFHAND placement impulse is active. During the impulse, the same
-        // callsite receives the cached matrix. No gameplay/player fields are
-        // read or modified.
-        thread_local OffhandBlockRenderPatch::Matrix64 gMainhandStableMatrix{};
-        thread_local bool gMainhandStableMatrixValid=false;
-        thread_local bool gMainhandFinalMatrixFreezeLogged=false;
+        // Optional render-only hook for the read-only swing interpolation
+        // getter used by ItemInHandRenderer::renderFirstPerson.
+        std::unique_ptr<pl::memory::HookHandle> gFppSwingProgressHook;
+        void* gFppSwingProgressOriginal=nullptr;
+        std::uintptr_t gFppSwingProgressTarget=0;
+        thread_local bool gFppSwingNeutralizedLogged=false;
 
         template<typename T>
         T readValue(
@@ -2453,6 +2469,82 @@ namespace levioffhand::render {
             }
         }
 
+        using FppSwingProgressFn=float(*)(void*,float);
+
+        float
+        fppSwingProgressDetour(
+            void* player,
+            float partialTicks
+        ) noexcept {
+            const auto original=
+                reinterpret_cast<FppSwingProgressFn>(
+                    gFppSwingProgressOriginal
+                );
+
+            if(!original) {
+                return 0.0f;
+            }
+
+            const auto returnAddress=
+                reinterpret_cast<std::uintptr_t>(
+                    __builtin_return_address(0)
+                );
+
+            const bool exactFppCaller=
+                gMinecraftBase!=0
+                &&
+                returnAddress
+                ==
+                gMinecraftBase
+                +
+                kFppSwingProgressReturnRva;
+
+            const float placementProgress=
+                runtime::OffhandPlacementAnimation::
+                    instance().
+                    progress();
+
+            const bool placementActive=
+                placementProgress>0.0f
+                &&
+                placementProgress<1.0f;
+
+            if(
+                exactFppCaller
+                &&
+                placementActive
+                &&
+                OffhandBlockRenderPatch::
+                    instance().
+                    featureEnabled()
+            ) {
+                if(!gFppSwingNeutralizedLogged) {
+                    gFppSwingNeutralizedLogged=true;
+                    __android_log_print(
+                        ANDROID_LOG_INFO,
+                        kLogTag,
+                        "[PlacementVisual] MAINHAND FPP swing progress "
+                        "neutralized at renderFirstPerson caller=0x%llX",
+                        static_cast<unsigned long long>(
+                            returnAddress-gMinecraftBase
+                        )
+                    );
+                }
+
+                return 0.0f;
+            }
+
+            if(!placementActive) {
+                gFppSwingNeutralizedLogged=false;
+            }
+
+            return original(
+                player,
+                partialTicks
+            );
+        }
+
+
         using FinalMatrixTopFn=
             void* (*)(
                 void*
@@ -2483,93 +2575,6 @@ namespace levioffhand::render {
                 reinterpret_cast<std::uintptr_t>(
                     __builtin_return_address(0)
                 );
-
-            // Pure-render MAINHAND placement freeze.
-            //
-            // 1.26.51.1 RE:
-            //   MAINHAND MatrixStack::top BL   0xB2F66D4
-            //   MAINHAND return/caller        0xB2F66D8
-            //   OFFHAND return/caller         0xB2F7ADC
-            //
-            // The tracked source keeps the 1.26.45.1 callsite literal and the
-            // build-only generator translates it. This branch uses the same
-            // already-installed MatrixStack::top hook as OFFHAND calibration;
-            // it adds no signature/hook and cannot change action ownership.
-            if(
-                result
-                &&
-                gMinecraftBase!=0
-                &&
-                caller
-                ==
-                gMinecraftBase
-                +
-                kFinalMainhandMatrixReturnRva
-            ) {
-                auto* matrix=
-                    static_cast<
-                        OffhandBlockRenderPatch::Matrix64*
-                    >(
-                        result
-                    );
-
-                const float placementProgress=
-                    runtime::OffhandPlacementAnimation::
-                        instance().
-                        progress();
-
-                const bool placementActive=
-                    placementProgress>0.0f
-                    &&
-                    placementProgress<1.0f;
-
-                if(
-                    !OffhandBlockRenderPatch::
-                        instance().
-                        featureEnabled()
-                ) {
-                    gMainhandStableMatrixValid=false;
-                    gMainhandFinalMatrixFreezeLogged=false;
-                    return result;
-                }
-
-                if(!placementActive) {
-                    bool finite=true;
-                    for(float value:matrix->value) {
-                        if(!std::isfinite(value)) {
-                            finite=false;
-                            break;
-                        }
-                    }
-
-                    if(finite) {
-                        gMainhandStableMatrix=*matrix;
-                        gMainhandStableMatrixValid=true;
-                    }
-
-                    gMainhandFinalMatrixFreezeLogged=false;
-                    return result;
-                }
-
-                if(gMainhandStableMatrixValid) {
-                    *matrix=gMainhandStableMatrix;
-
-                    if(!gMainhandFinalMatrixFreezeLogged) {
-                        gMainhandFinalMatrixFreezeLogged=true;
-                        __android_log_print(
-                            ANDROID_LOG_INFO,
-                            kLogTag,
-                            "[PlacementVisual] MAINHAND final matrix frozen "
-                            "during OFFHAND placement caller=0x%llX",
-                            static_cast<unsigned long long>(
-                                caller-gMinecraftBase
-                            )
-                        );
-                    }
-                }
-
-                return result;
-            }
 
             /*
              * v0.2.24:
@@ -2759,6 +2764,7 @@ namespace levioffhand::render {
             gMinecraftBase=base;
             gItemStackMatchesTarget=base+kItemStackMatchesRva;
             gFinalOffhandMatrixTarget=base+kFinalOffhandMatrixTopRva;
+            gFppSwingProgressTarget=base+kFppSwingProgressRva;
 
             gPrepareAttachmentTarget=base+kPrepareAttachmentRva;
             gFindOwnerBoneVectorTarget=base+kFindOwnerBoneVectorRva;
@@ -2860,6 +2866,7 @@ namespace levioffhand::render {
         gComposeAttachmentBoneMatrixOriginal=nullptr;
         gHandEquipPredicateOriginal=nullptr;
         gFinalOffhandMatrixOriginal=nullptr;
+        gFppSwingProgressOriginal=nullptr;
         gPrepareAttachmentOriginalPublished.store(nullptr,std::memory_order_release);
         gResolveOwnerBoneByNameOriginalPublished.store(
             nullptr,std::memory_order_release
@@ -2883,9 +2890,7 @@ namespace levioffhand::render {
         gCurrentToolFamily=ToolFamily::None;
         gToolFinalMatrixApplied=false;
         gLastCalibratedToolItem=nullptr;
-        gMainhandStableMatrix={};
-        gMainhandStableMatrixValid=false;
-        gMainhandFinalMatrixFreezeLogged=false;
+        gFppSwingNeutralizedLogged=false;
         gOffhandDepth=0;
         gRenderer=nullptr;
         gPlayer=nullptr;
@@ -3091,6 +3096,52 @@ namespace levioffhand::render {
             return fail("tool orientation final-matrix hook failed");
         }
 
+        // Optional and render-only. A mismatch must never disable the proven
+        // Banner/Bow/Crossbow/Trident/block visual stack.
+        if(
+            belongsToMinecraft(gFppSwingProgressTarget)
+            &&
+            matchesFingerprint(
+                gFppSwingProgressTarget,
+                kFppSwingProgressFingerprint
+            )
+        ) {
+            gFppSwingProgressHook=
+                std::make_unique<pl::memory::HookHandle>(
+                    reinterpret_cast<void*>(
+                        gFppSwingProgressTarget
+                    ),
+                    reinterpret_cast<void*>(
+                        &fppSwingProgressDetour
+                    ),
+                    &gFppSwingProgressOriginal,
+                    pl::memory::HookPriority::Normal
+                );
+
+            if(
+                !gFppSwingProgressHook
+                ||
+                !gFppSwingProgressHook->installed()
+                ||
+                !gFppSwingProgressOriginal
+            ) {
+                if(gFppSwingProgressHook) {
+                    gFppSwingProgressHook->reset();
+                    gFppSwingProgressHook.reset();
+                }
+                gFppSwingProgressOriginal=nullptr;
+                logger.info(
+                    "Placement visual: FPP swing-progress hook unavailable; "
+                    "existing visuals retained"
+                );
+            }
+        } else {
+            logger.info(
+                "Placement visual: FPP swing-progress target unavailable; "
+                "existing visuals retained"
+            );
+        }
+
         mFeatureEnabled.store(true,std::memory_order_release);
         gNativeAttachmentHooksReady.store(true,std::memory_order_seq_cst);
 
@@ -3111,7 +3162,10 @@ namespace levioffhand::render {
             "Banner/Pot/Copper/Skull and unrelated item paths retained"
         );
         logger.info(
-            "Placement visual: MAINHAND final-matrix freeze armed"
+            gFppSwingProgressHook
+            && gFppSwingProgressHook->installed()
+                ? "Placement visual: MAINHAND FPP swing freeze armed"
+                : "Placement visual: MAINHAND FPP swing freeze unavailable"
         );
         return true;
     }
@@ -3202,6 +3256,14 @@ namespace levioffhand::render {
         gHandEquipPredicateOriginal=nullptr;
         gHandEquipPredicateTarget=0;
 
+        if(gFppSwingProgressHook) {
+            gFppSwingProgressHook->reset();
+            gFppSwingProgressHook.reset();
+        }
+        gFppSwingProgressOriginal=nullptr;
+        gFppSwingProgressTarget=0;
+        gFppSwingNeutralizedLogged=false;
+
         if(gFinalOffhandMatrixHook) {
             gFinalOffhandMatrixHook->reset();
             gFinalOffhandMatrixHook.reset();
@@ -3244,9 +3306,7 @@ namespace levioffhand::render {
         gCurrentToolFamily=ToolFamily::None;
         gToolFinalMatrixApplied=false;
         gLastCalibratedToolItem=nullptr;
-        gMainhandStableMatrix={};
-        gMainhandStableMatrixValid=false;
-        gMainhandFinalMatrixFreezeLogged=false;
+        gFppSwingNeutralizedLogged=false;
         gBowOffhandBindingDepth=0;
         gNative3dWeaponFppDepth=0;
         gNative3dFppFamily=ToolFamily::None;
@@ -3472,9 +3532,7 @@ namespace levioffhand::render {
         gCurrentToolFamily=ToolFamily::None;
         gToolFinalMatrixApplied=false;
         gLastCalibratedToolItem=nullptr;
-        gMainhandStableMatrix={};
-        gMainhandStableMatrixValid=false;
-        gMainhandFinalMatrixFreezeLogged=false;
+        gFppSwingNeutralizedLogged=false;
         gBowOffhandBindingDepth=0;
         gNative3dWeaponFppDepth=0;
         gNative3dFppFamily=ToolFamily::None;

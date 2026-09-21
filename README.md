@@ -139,27 +139,25 @@ Animation work under `src/render` must not hook or override `LocalPlayer::swing`
 
 For Shears/Fishing Rod/Bow/Trident/food/shield and other items with a native right-click action, MAINHAND ownership remains authoritative. Future placement-animation work must operate only on render transforms/predicates/state that cannot change action dispatch, inventory, stack counts, or hand ownership.
 
-### Block-placement animation phase 1 — freeze MAINHAND final matrix
+### Block-placement animation phase 1 — freeze MAINHAND FPP swing
 
-The earlier per-hand field spoof at `0xB2F7F18` was removed because device testing showed no visible freeze. The rejected `LocalPlayer::swing` experiment is also permanently quarantined because it changed gameplay/use control flow and regressed Shears.
+The build-#576 `0xB2F66D8` final-matrix experiment is retired. Deeper RE shows that callsite belongs to helper `0xB2F6374`, not to the active `ItemInHandRenderer::renderFirstPerson` MAINHAND path. That explains why the hook could be armed while the visible hand still moved.
 
-Freecam remains useful only as an RE reference: its first-person predicate identifies the high-level first-person-object boundary, but suppressing that whole pass would hide OFFHAND too.
-
-The current implementation stays entirely inside the already-proven `MatrixStack::top` renderer hook. Static RE found two distinct late held-item matrix callsites:
+The actual first-person swing source is:
 
 ```text
-tracked 1.26.45.1 source:
-MAINHAND return  0xADE42D0
-OFFHAND return   0xADE56D8
+Minecraft 1.26.45.1
+renderFirstPerson        0xADE96B0
+swing-progress BL        0xADEA394 -> 0xEA8DEFC
+return/caller            0xADEA398
 
-Minecraft 1.26.51.1:
-MAINHAND BL      0xB2F66D4
-MAINHAND return  0xB2F66D8
-OFFHAND return   0xB2F7ADC
-MatrixStack::top 0x110AFF88
+Minecraft 1.26.51.1
+renderFirstPerson        0xB2FB6C0
+swing-progress BL        0xB2FC394 -> 0xF286ED8
+return/caller            0xB2FC398
 ```
 
-When no placement impulse is active, the renderer caches the complete 4x4 MAINHAND matrix only at the exact MAINHAND return callsite. During `OffhandPlacementAnimation`, that callsite receives the cached matrix for the 220 ms visual window. OFFHAND uses its normal matrix path and existing tool/Banner calibration remains untouched.
+Immediately after this call Minecraft performs `sqrt`/`sin` math and applies the MAINHAND swing transform to the local FPP matrix. The new optional hook therefore returns neutral progress `0.0f` only when the caller is exactly the verified `renderFirstPerson` return address and `OffhandPlacementAnimation` is active. Every other interpolation call forwards to vanilla.
 
-This adds no new hook target and reads/writes no Player, ItemStack, inventory, swing, use, or hand-ownership state. If no stable MAINHAND matrix has been observed yet, rendering falls back to vanilla rather than fabricating one.
+This remains render-only: it does not hook `LocalPlayer::swing`, upper-use, `RightUseRouter`, inventory, hand ownership, Banner, Crossbow, Bow, Trident/Spear, or block-count handling. If the optional render getter hook is unavailable, the accepted visual baseline remains active.
 

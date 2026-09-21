@@ -29,7 +29,8 @@ REQUIRED_NAMED_RVAS = {
     "kDrawAttachmentRva": "0x9F03EAC",
     "kComposeAttachmentBoneMatrixRva": "0xFA528A4",
     "kFinalOffhandMatrixTopRva": "0x110AFF88",
-    "kFinalMainhandMatrixReturnRva": "0xB2F66D8",
+    "kFppSwingProgressRva": "0xF286ED8",
+    "kFppSwingProgressReturnRva": "0xB2FC398",
 }
 
 
@@ -48,7 +49,8 @@ REQUIRED_ARCHIVED_LITERAL_MAP = {
     "0xEE63508": "0xF7AA2DC",
     "0xEEA721C": "0xF7728A8",
     "0x2652B1D": "0x272F25E",
-    "0xADE42D0": "0xB2F66D8",
+    "0xEA8DEFC": "0xF286ED8",
+    "0xADEA398": "0xB2FC398",
 }
 
 
@@ -76,7 +78,8 @@ REQUIRED_CPP_TARGETS = (
     "0xFA528A4",   # compose attachment matrix
     "0x9F5A6D0",   # compose callsite
     "0x110AFF88",  # final matrix top
-    "0xB2F66D8",   # MAINHAND final matrix return
+    "0xF286ED8",   # FPP swing-progress getter
+    "0xB2FC398",   # exact renderFirstPerson caller return
     "0xB2F7ADC",   # OFFHAND final matrix return
     "0x134BEF38",  # bow id
     "0x134BEF60",  # crossbow id
@@ -163,58 +166,56 @@ def main() -> int:
             "Banner must use build470 block-path routing, not the later bridge-depth exception"
         )
 
-    # Pure-render MAINHAND placement freeze: reuse the already-proven
-    # MatrixStack::top hook and exact render callsite. No gameplay hook/state.
+    # Pure-render MAINHAND placement freeze: neutralize only the
+    # swing-progress getter call made by ItemInHandRenderer::renderFirstPerson.
     for token in (
-        "kFinalMainhandMatrixReturnRva=0xADE42D0",
-        "gMainhandStableMatrix",
-        "gMainhandStableMatrixValid",
-        "gMainhandFinalMatrixFreezeLogged",
+        "kFppSwingProgressRva=0xEA8DEFC",
+        "kFppSwingProgressReturnRva=0xADEA398",
+        "kFppSwingProgressFingerprint",
+        "fppSwingProgressDetour(",
         "OffhandPlacementAnimation::",
-        "instance().progress()",
-        "[PlacementVisual] MAINHAND final matrix frozen",
+        "return 0.0f;",
+        "[PlacementVisual] MAINHAND FPP swing progress",
+        "Placement visual: MAINHAND FPP swing freeze armed",
     ):
         if token not in compact_cpp and token not in cpp:
             raise AssertionError(
-                f"MAINHAND final-matrix freeze missing {token!r}"
+                f"MAINHAND FPP swing freeze missing {token!r}"
             )
 
-    final_start = cpp.index("finalOffhandMatrixTopDetour(")
-    final_end = cpp.index("} // namespace", final_start)
-    final_matrix = cpp[final_start:final_end]
+    swing_start = cpp.index("fppSwingProgressDetour(")
+    swing_end = cpp.index("using FinalMatrixTopFn", swing_start)
+    swing_detour = cpp[swing_start:swing_end]
+    compact_swing = re.sub(r"\s+", "", swing_detour)
 
     for token in (
-        "kFinalMainhandMatrixReturnRva",
-        "gMinecraftBase",
-        "gMainhandStableMatrix=*matrix",
-        "*matrix=gMainhandStableMatrix",
-        "OffhandPlacementAnimation::",
+        "returnAddress==gMinecraftBase+kFppSwingProgressReturnRva",
+        "placementProgress>0.0f",
+        "placementProgress<1.0f",
+        "return0.0f;",
+        "returnoriginal(player,partialTicks);",
     ):
-        if token not in re.sub(r"\\s+", "", final_matrix):
+        if token not in compact_swing:
             raise AssertionError(
-                f"MAINHAND final-matrix freeze path missing {token!r}"
+                f"FPP swing detour missing exact render-only guard {token!r}"
             )
 
-    mainhand_guard_pos = final_matrix.index("kFinalMainhandMatrixReturnRva")
-    offhand_guard_pos = final_matrix.index("kFinalOffhandMatrixReturnRva")
-    if mainhand_guard_pos > offhand_guard_pos:
+    install_pos = cpp.index("gFppSwingProgressHook=")
+    feature_pos = cpp.index("mFeatureEnabled.store(true", install_pos)
+    optional_install = cpp[install_pos:feature_pos]
+    if "return fail(" in optional_install or "uninstall(context)" in optional_install:
         raise AssertionError(
-            "MAINHAND final-matrix branch must run before OFFHAND tool calibration"
+            "optional FPP swing-progress hook must not disable visual baseline"
         )
 
-    # Retire the ineffective per-hand field spoof. The freeze must add no new
-    # HookHandle/signature target beyond the existing MatrixStack::top hook.
     for stale in (
-        "kFirstPersonHandRenderSignature",
-        "firstPersonHandRenderDetour(",
-        "gFirstPersonHandRenderHook",
-        "kMainhandHeightOffset",
-        "kPlayerSwingCurrentOffset",
-        "kPlayerSwingPreviousOffset",
+        "kFinalMainhandMatrixReturnRva",
+        "gMainhandStableMatrix",
+        "MAINHAND final matrix frozen",
     ):
         if stale in cpp:
             raise AssertionError(
-                f"old per-hand renderer-field freeze must not return: {stale!r}"
+                f"ineffective MAINHAND matrix freeze returned: {stale!r}"
             )
 
     # Renderer-only invariant: never hook/override gameplay swing or upper-use
