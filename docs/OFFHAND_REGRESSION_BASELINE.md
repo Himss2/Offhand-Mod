@@ -115,26 +115,33 @@ Do not hook `LocalPlayer::swing`, upper-use, block-use, selected-item access, or
 
 This is now a source-contract rule. Placement-animation work may inspect Freecam's first-person render predicates as RE references, but implementation must stay on a render-only boundary that cannot affect hand ownership or action routing.
 
-## Placement animation phase 1: MAINHAND visual freeze
+## Placement animation phase 1: MAINHAND final-matrix freeze
 
-This phase is renderer-only. Do not modify RightUseRouter, storage, block count reconciliation, Banner routing, or tool-family rendering.
+This phase is pure renderer work. It must not modify `RightUseRouter`, `LocalPlayer::swing`, upper-use, block-use, storage, selected-item access, or hand ownership.
 
-Verified 1.26.51.1 FPP helper:
+The ineffective per-hand field spoof is retired. The freeze now reuses the renderer's existing `MatrixStack::top` hook and distinguishes MAINHAND/OFFHAND by exact return callsite:
 
 ```text
-per-hand FPP renderer 0xB2F7F18
-OFFHAND callsite       0xB2F6B48 -> hand=0
-MAINHAND callsite      0xB2FC2E8 -> hand=1
-equip height           ItemInHandRenderer +0x180
-old equip height       ItemInHandRenderer +0x184
-swing interpolator     0xF286ED8
-swing current          Player +0x3EC
-swing previous         Player +0x430
+source MAINHAND return  0xADE42D0
+source OFFHAND return   0xADE56D8
+
+1.26.51.1 MAINHAND BL  0xB2F66D4
+1.26.51.1 MAINHAND ret 0xB2F66D8
+1.26.51.1 OFFHAND ret  0xB2F7ADC
+MatrixStack::top target 0x110AFF88
 ```
 
-During `OffhandPlacementAnimation`, the optional renderer hook may affect only the `hand=1` MAINHAND draw. It pins the MAINHAND equip-height pair and temporarily writes zero to the two swing-progress fields so native `0xF286ED8` returns neutral swing progress. Swing and equip fields must all be restored immediately after the original draw. The OFFHAND `hand=0` invocation must not clear the freeze latch while the placement window is active. The optional hook must never become part of mandatory renderer readiness; if unavailable, all pre-existing visual paths continue unchanged.
+Invariant:
 
-Do not tune the OFFHAND placement matrix until this freeze behavior is verified on-device.
+1. outside the placement window, cache a finite 16-float MAINHAND matrix only at the MAINHAND callsite;
+2. during `OffhandPlacementAnimation`, replace only that MAINHAND returned matrix with the cached copy;
+3. never alter the OFFHAND matrix in this freeze branch;
+4. if the cache is not valid, leave vanilla rendering unchanged;
+5. add no new hook/signature target—the existing final-matrix hook is the only interception point;
+6. keep the gameplay-swing/use quarantine source contract active.
+
+After device verification that MAINHAND visually stops moving, OFFHAND placement-motion tuning may continue separately.
+
 
 ## FPP placement-animation invariant
 

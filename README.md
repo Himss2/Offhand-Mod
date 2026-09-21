@@ -139,19 +139,27 @@ Animation work under `src/render` must not hook or override `LocalPlayer::swing`
 
 For Shears/Fishing Rod/Bow/Trident/food/shield and other items with a native right-click action, MAINHAND ownership remains authoritative. Future placement-animation work must operate only on render transforms/predicates/state that cannot change action dispatch, inventory, stack counts, or hand ownership.
 
-### Block-placement animation phase 1 — freeze MAINHAND
+### Block-placement animation phase 1 — freeze MAINHAND final matrix
 
-Before changing the OFFHAND placement motion, the renderer uses an **optional visual-only MAINHAND freeze layer**. Deeper static RE of Minecraft 1.26.51.1 corrected the hand mapping in the shared FPP helper `0xB2F7F18`:
+The earlier per-hand field spoof at `0xB2F7F18` was removed because device testing showed no visible freeze. The rejected `LocalPlayer::swing` experiment is also permanently quarantined because it changed gameplay/use control flow and regressed Shears.
+
+Freecam remains useful only as an RE reference: its first-person predicate identifies the high-level first-person-object boundary, but suppressing that whole pass would hide OFFHAND too.
+
+The current implementation stays entirely inside the already-proven `MatrixStack::top` renderer hook. Static RE found two distinct late held-item matrix callsites:
 
 ```text
-0xB2F6B48 -> W3=0 -> OFFHAND
-0xB2FC2E8 -> W3=1 -> MAINHAND
+tracked 1.26.45.1 source:
+MAINHAND return  0xADE42D0
+OFFHAND return   0xADE56D8
+
+Minecraft 1.26.51.1:
+MAINHAND BL      0xB2F66D4
+MAINHAND return  0xB2F66D8
+OFFHAND return   0xB2F7ADC
+MatrixStack::top 0x110AFF88
 ```
 
-The same MAINHAND branch also calls swing-progress interpolator `0xF286ED8`, which reads Player `+0x3EC/+0x430` before the native sqrt/sin swing matrix is composed. Therefore equip-height pinning alone cannot freeze the unwanted motion.
+When no placement impulse is active, the renderer caches the complete 4x4 MAINHAND matrix only at the exact MAINHAND return callsite. During `OffhandPlacementAnimation`, that callsite receives the cached matrix for the 220 ms visual window. OFFHAND uses its normal matrix path and existing tool/Banner calibration remains untouched.
 
-While `OffhandPlacementAnimation` is active, only the `hand=1` MAINHAND draw temporarily pins ItemInHandRenderer `+0x180/+0x184` and neutralizes Player swing `+0x3EC/+0x430`. All four live values are restored immediately after that draw. OFFHAND `hand=0` is untouched, and no action/storage state is persistently modified.
-
-The hook is intentionally optional: failure to resolve/install it must leave every existing Banner/Bow/Crossbow/Trident/block visual active. OFFHAND placement motion values are **not tuned in this phase**; first verify that MAINHAND no longer performs the unwanted placement/equip motion.
-
+This adds no new hook target and reads/writes no Player, ItemStack, inventory, swing, use, or hand-ownership state. If no stable MAINHAND matrix has been observed yet, rendering falls back to vanilla rather than fabricating one.
 

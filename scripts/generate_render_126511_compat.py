@@ -41,7 +41,8 @@ RVA_REPLACEMENTS = {
     "0xF147ED0": "0xFA528A4",
     "0x9B254C8": "0x9F5A6D0",
     "0x107CC804": "0x110AFF88",
-    "0xADE56D8": "0xB2F7ADC",
+    "0xADE42D0": "0xB2F66D8",  # MAINHAND final MatrixStack::top return
+    "0xADE56D8": "0xB2F7ADC",  # OFFHAND final MatrixStack::top return
 
     # v0.2.67 reference-carrier internals.  These are not present in the
     # tracked HEAD renderer anymore, but the CI reconstructs the proven
@@ -101,6 +102,7 @@ NAMED_RVA_REPLACEMENTS = {
     "kComposeAttachmentBoneMatrixRva": "0xFA528A4",
     "kComposeAttachmentBoneMatrixCallsiteRva": "0x9F5A6D0",
     "kFinalOffhandMatrixTopRva": "0x110AFF88",
+    "kFinalMainhandMatrixReturnRva": "0xB2F66D8",
     "kFinalOffhandMatrixReturnRva": "0xB2F7ADC",
 
     # Item singleton globals.

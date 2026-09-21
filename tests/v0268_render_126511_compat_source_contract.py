@@ -29,6 +29,7 @@ REQUIRED_NAMED_RVAS = {
     "kDrawAttachmentRva": "0x9F03EAC",
     "kComposeAttachmentBoneMatrixRva": "0xFA528A4",
     "kFinalOffhandMatrixTopRva": "0x110AFF88",
+    "kFinalMainhandMatrixReturnRva": "0xB2F66D8",
 }
 
 
@@ -47,6 +48,7 @@ REQUIRED_ARCHIVED_LITERAL_MAP = {
     "0xEE63508": "0xF7AA2DC",
     "0xEEA721C": "0xF7728A8",
     "0x2652B1D": "0x272F25E",
+    "0xADE42D0": "0xB2F66D8",
 }
 
 
@@ -74,7 +76,8 @@ REQUIRED_CPP_TARGETS = (
     "0xFA528A4",   # compose attachment matrix
     "0x9F5A6D0",   # compose callsite
     "0x110AFF88",  # final matrix top
-    "0xB2F7ADC",   # final matrix return
+    "0xB2F66D8",   # MAINHAND final matrix return
+    "0xB2F7ADC",   # OFFHAND final matrix return
     "0x134BEF38",  # bow id
     "0x134BEF60",  # crossbow id
     "0x134BF140",  # trident id
@@ -160,64 +163,59 @@ def main() -> int:
             "Banner must use build470 block-path routing, not the later bridge-depth exception"
         )
 
+    # Pure-render MAINHAND placement freeze: reuse the already-proven
+    # MatrixStack::top hook and exact render callsite. No gameplay hook/state.
     for token in (
+        "kFinalMainhandMatrixReturnRva=0xADE42D0",
+        "gMainhandStableMatrix",
+        "gMainhandStableMatrixValid",
+        "gMainhandFinalMatrixFreezeLogged",
+        "OffhandPlacementAnimation::",
+        "instance().progress()",
+        "[PlacementVisual] MAINHAND final matrix frozen",
+    ):
+        if token not in compact_cpp and token not in cpp:
+            raise AssertionError(
+                f"MAINHAND final-matrix freeze missing {token!r}"
+            )
+
+    final_start = cpp.index("finalOffhandMatrixTopDetour(")
+    final_end = cpp.index("} // namespace", final_start)
+    final_matrix = cpp[final_start:final_end]
+
+    for token in (
+        "kFinalMainhandMatrixReturnRva",
+        "gMinecraftBase",
+        "gMainhandStableMatrix=*matrix",
+        "*matrix=gMainhandStableMatrix",
+        "OffhandPlacementAnimation::",
+    ):
+        if token not in re.sub(r"\\s+", "", final_matrix):
+            raise AssertionError(
+                f"MAINHAND final-matrix freeze path missing {token!r}"
+            )
+
+    mainhand_guard_pos = final_matrix.index("kFinalMainhandMatrixReturnRva")
+    offhand_guard_pos = final_matrix.index("kFinalOffhandMatrixReturnRva")
+    if mainhand_guard_pos > offhand_guard_pos:
+        raise AssertionError(
+            "MAINHAND final-matrix branch must run before OFFHAND tool calibration"
+        )
+
+    # Retire the ineffective per-hand field spoof. The freeze must add no new
+    # HookHandle/signature target beyond the existing MatrixStack::top hook.
+    for stale in (
         "kFirstPersonHandRenderSignature",
         "firstPersonHandRenderDetour(",
-        "hand==1u",
-        "kMainhandHeightOffset=0x180",
-        "kMainhandOldHeightOffset=0x184",
-        "kPlayerSwingCurrentOffset=0x3EC",
-        "kPlayerSwingPreviousOffset=0x430",
-        "OffhandPlacementAnimation::instance().progress()",
-        "gMainhandPlacementFreezeLatched",
-        "MAINHAND FPP equip+swing motion",
-        "Optional MAINHAND placement-freeze hook unavailable",
-        "Placement visual: MAINHAND freeze layer active",
-    ):
-        if token not in cpp:
-            raise AssertionError(
-                f"MAINHAND placement-freeze visual layer missing {token!r}"
-            )
-
-    freeze_start = cpp.index("firstPersonHandRenderDetour(")
-    freeze_end = cpp.index("using RenderItemRouteFn", freeze_start)
-    freeze_body = cpp[freeze_start:freeze_end]
-    if "runtime::OffhandPlacementAnimation::instance().progress()" not in freeze_body:
-        raise AssertionError(
-            "MAINHAND freeze must be driven only by OFFHAND placement visual state"
-        )
-    if "hand==1u" not in freeze_body:
-        raise AssertionError(
-            "Minecraft 1.26.51.1 MAINHAND selector must be hand=1"
-        )
-    if "hand==0u" in freeze_body:
-        raise AssertionError(
-            "OFFHAND selector hand=0 must never activate MAINHAND freeze"
-        )
-    if "if(!placementActive)" not in freeze_body:
-        raise AssertionError(
-            "freeze latch must clear only when placement window ends"
-        )
-    for token in (
+        "gFirstPersonHandRenderHook",
         "kMainhandHeightOffset",
-        "kMainhandOldHeightOffset",
         "kPlayerSwingCurrentOffset",
         "kPlayerSwingPreviousOffset",
-        "constexpr float kNeutralSwing=0.0f",
-        "writeValue<float>",
     ):
-        if token not in freeze_body:
+        if stale in cpp:
             raise AssertionError(
-                f"MAINHAND freeze must stay scoped to renderer equip fields: {token!r}"
+                f"old per-hand renderer-field freeze must not return: {stale!r}"
             )
-
-    install_pos = cpp.index("gFirstPersonHandRenderHook=")
-    feature_pos = cpp.index("mFeatureEnabled.store(true", install_pos)
-    optional_install = cpp[install_pos:feature_pos]
-    if "return fail(" in optional_install or "uninstall(context)" in optional_install:
-        raise AssertionError(
-            "optional MAINHAND freeze hook must never disable proven visual paths"
-        )
 
     # Renderer-only invariant: never hook/override gameplay swing or upper-use
     # control flow from src/render.  A previous experiment returned a synthetic
