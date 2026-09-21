@@ -146,6 +146,33 @@ template<std::size_t N>
         ? target : 0;
 }
 
+[[nodiscard]] std::uintptr_t resolveKnownBuildTarget(
+    std::uintptr_t rva
+) noexcept {
+    const auto base=moduleBase();
+    if(base==0) return 0;
+    const auto target=base+rva;
+    return mapped(target,PF_X) ? target : 0;
+}
+
+template<std::size_t N>
+[[nodiscard]] std::uintptr_t resolveHookableTarget(
+    std::uintptr_t rva,
+    const std::array<std::uint8_t,N>& fp,
+    bool* usedLiveFallback=nullptr
+) noexcept {
+    if(usedLiveFallback) *usedLiveFallback=false;
+
+    const auto exact=resolve(rva,fp);
+    if(exact) return exact;
+
+    const auto live=resolveKnownBuildTarget(rva);
+    if(live && usedLiveFallback) {
+        *usedLiveFallback=true;
+    }
+    return live;
+}
+
 template<typename T>
 [[nodiscard]] T read(const void* base,std::size_t off,T fallback={}) noexcept {
     if(!base) return fallback;
@@ -198,23 +225,47 @@ bool SwapEngine::install(pl::mod::ModContext& context) noexcept {
     const auto copy=resolve(kItemStackCopyCtorRva,kItemStackCopyCtorFingerprint);
     const auto dtor=resolve(kItemStackDtorRva,kItemStackDtorFingerprint);
     const auto setOff=resolve(kSetItemInHandSlotRva,kSetItemInHandSlotFingerprint);
-    const auto setSel=resolve(kSetSelectedItemRva,kSetSelectedItemFingerprint);
 
     const auto base=moduleBase();
     const auto empty=base?base+kEmptyItemRva:0;
     const bool emptyMapped=mapped(empty,0);
 
+    // These unhooked helpers are the exact-build guard. Do not accept a live
+    // fallback for them. Only after they prove the 1.26.51.1 layout do we
+    // tolerate setSelectedItem having a modified prologue from RightUseRouter,
+    // which installs earlier by design.
+    const bool stableTargets=
+        off && nul && copy && dtor && setOff && emptyMapped;
+
+    bool setSelectedPreHooked=false;
+    const auto setSel=stableTargets
+        ? resolveHookableTarget(
+            kSetSelectedItemRva,
+            kSetSelectedItemFingerprint,
+            &setSelectedPreHooked
+        )
+        : 0;
+
     __android_log_print(
         ANDROID_LOG_INFO,kLogTag,
-        "[SwapEngine] targets off=%d null=%d copy=%d dtor=%d setOff=%d setSelected=%d emptyMapped=%d",
-        off!=0,nul!=0,copy!=0,dtor!=0,setOff!=0,setSel!=0,emptyMapped
+        "[SwapEngine] targets off=%d null=%d copy=%d dtor=%d setOff=%d setSelected=%d setSelectedPreHooked=%d emptyMapped=%d",
+        off!=0,nul!=0,copy!=0,dtor!=0,setOff!=0,setSel!=0,
+        setSelectedPreHooked?1:0,emptyMapped
     );
 
-    if(!off||!nul||!copy||!dtor||!setOff||!setSel||!emptyMapped) {
+    if(!stableTargets||!setSel) {
         context.logger().error(
             "Swap engine: native storage target validation failed"
         );
         return false;
+    }
+
+    if(setSelectedPreHooked) {
+        __android_log_print(
+            ANDROID_LOG_INFO,kLogTag,
+            "[SwapEngine] setSelected live pre-hook target accepted RVA=0x%llX",
+            static_cast<unsigned long long>(kSetSelectedItemRva)
+        );
     }
 
     mGetOffhandSlot=reinterpret_cast<GetOffhandSlotFn>(off);
