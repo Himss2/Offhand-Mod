@@ -341,16 +341,25 @@ bool SwapEngine::swap(void* player,const void* selected) noexcept {
 
     if(offEmpty) {
         Snapshot main(mItemStackCopyCtor,mItemStackDtor,selected);
-        if(!main.get()) return false;
-        mSetSelectedItem(player,off);
+        if(!main.get() || !mStackIsNull(mEmptyItem)) return false;
+
+        // Clear the selected slot with Minecraft's canonical EMPTY_ITEM.
+        // Do not reuse OFFHAND's live null-like stack object across container
+        // ownership boundaries; the selected setter records its own native
+        // inventory transition before OFFHAND receives the detached snapshot.
+        mSetSelectedItem(player,mEmptyItem);
         mSetItemInHandSlot(player,kOffHand,main.get());
         return true;
     }
 
     if(mainEmpty) {
         Snapshot offSnap(mItemStackCopyCtor,mItemStackDtor,off);
-        if(!offSnap.get()) return false;
-        mSetItemInHandSlot(player,kOffHand,selected);
+        if(!offSnap.get() || !mStackIsNull(mEmptyItem)) return false;
+
+        // LocalPlayer::setOffhandSlot records container 119 (0x77) before the
+        // low-level hand write. Give that transition canonical EMPTY_ITEM,
+        // not the selected hotbar slot's live null-like object.
+        mSetItemInHandSlot(player,kOffHand,mEmptyItem);
         mSetSelectedItem(player,offSnap.get());
         return true;
     }

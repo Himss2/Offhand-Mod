@@ -185,3 +185,17 @@ Swap now keeps exact fingerprint validation for every other native ABI target. O
 
 This commit restores the pre-regression swap mutation sequence unchanged. It does **not** attempt to solve the remaining one-empty synchronization bugs yet; those will be isolated after the F runtime is confirmed active again.
 
+
+### Build #610 swap synchronization follow-up
+
+Build #610 (`0a9a75ceadcc523832035100ebbcd9cbcfd02849`) remains the behavior baseline: the F button/runtime, hook-aware `Player::setSelectedItem` resolver, MAIN->OFF swap, occupied A/B swap ordering, Sword/Shears routing, renderer and block placement are preserved.
+
+The two remaining defects both occur at a **one-empty cross-container transition**:
+
+- an item moved into OFFHAND by F can become locked against normal inventory removal;
+- an item inserted manually into OFFHAND can fail the F swap back to an empty MAINHAND.
+
+Static 1.26.51.1 RE shows LocalPlayer OFFHAND write `0xAAD0360` calls `0xF9FC7C8`, which records container `119 (0x77)` before the low-level OFF slot write. `Player::setSelectedItem @ 0xF9F7850` owns the selected-container transition separately. Build #610 supplied the *opposite live slot's null-like ItemStack object* when clearing one side. That crosses container ownership even though both objects report `isNull()==true`.
+
+Only those two clear values are changed: MAIN->OFF clears MAIN with canonical `ItemStack::EMPTY_ITEM @ 0x134C6780`; OFF->MAIN clears OFF with the same canonical empty. Detached source snapshots and the already-working occupied 44a sequence remain unchanged. No packet, ContainerValidation hook, ItemStackRequest action, right-use hook or renderer change is introduced.
+

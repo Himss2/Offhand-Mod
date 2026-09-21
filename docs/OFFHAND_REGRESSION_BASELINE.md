@@ -202,6 +202,23 @@ Fix boundary: keep exact fingerprints for offhand getter, null test, ItemStack c
 
 The previous canonical-empty experiment is rolled back for this diagnostic candidate so device testing changes only one variable: whether the isolated swap runtime becomes available again.
 
+## Build #610 one-empty swap synchronization
+
+Known-good base: GitHub Actions build #610, commit `0a9a75ceadcc523832035100ebbcd9cbcfd02849`.
+
+Systematic-debugging trace:
+
+1. #610 validates and activates the isolated F runtime; the previous `setSelectedItem` install failure is resolved.
+2. MAIN->OFF and occupied A/B swaps execute, so button/preFrame/resolver/action ownership are not the failing boundary.
+3. The remaining failures are symmetric around one-empty OFFHAND transitions: F-created OFFHAND state is not normally removable, while manually-created OFFHAND state does not swap cleanly back to empty MAIN.
+4. In #610 the MAIN->OFF branch clears selected storage with the *OFFHAND slot's live empty stack object*; the OFF->MAIN branch clears OFFHAND with the *selected slot's live empty stack object*.
+5. Native RE confirms these setters own different inventory transitions. LocalPlayer OFFHAND setter `0xAAD0360` records container 119 through `0xF9FC7C8`; selected storage is handled by `Player::setSelectedItem @ 0xF9F7850`.
+6. Hypothesis under test: crossing those null-like live ItemStack objects between containers desynchronizes predictive/native transaction identity even though `ItemStack::isNull` is true.
+
+Candidate change is intentionally one variable: canonical `ItemStack::EMPTY_ITEM @ 0x134C6780` is used only for the two one-empty clear operations. The occupied 44a path remains `MAIN=EMPTY -> OFF=old MAIN -> MAIN=old OFF` with no OFFHAND clear-both intermediate.
+
+Required device checks after CI: (a) MAIN item -> empty OFF, then manually drag the resulting OFF item out; (b) manually insert an item into OFF with MAIN empty, press F repeatedly and confirm OFF->MAIN; (c) repeat occupied A/B swaps to prove the accepted path is unchanged.
+
 ## Must-pass runtime matrix (not yet run on device)
 
 Start from a fresh Minecraft process for every candidate baseline:
