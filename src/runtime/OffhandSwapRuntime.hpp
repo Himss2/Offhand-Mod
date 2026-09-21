@@ -27,8 +27,8 @@ public:
     // on the real MINECRAFT MAIN thread.
     [[nodiscard]] bool hasPendingSwap() const noexcept;
 
-    // May be reached from the selected-item hook or pre-frame pump. The
-    // implementation owns the final MINECRAFT MAIN thread gate.
+    // Executed only by OffhandSwapRuntime's ClientInstance::preFrameTick
+    // pump. Never drain this request from RightUseRouter/getSelectedItem.
     [[nodiscard]] bool processPendingSwap(
         void* player,
         const void* selectedStack

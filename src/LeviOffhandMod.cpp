@@ -2,6 +2,8 @@
 #include "runtime/NativeOffhandPolicy.hpp"
 #include "runtime/AutoInsertRouting.hpp"
 #include "runtime/RightUseRouter.hpp"
+#include "runtime/OffhandSwapRuntime.hpp"
+#include "ui/SwapButton.hpp"
 
 #include <android/log.h>
 #include <string_view>
@@ -25,6 +27,11 @@ void onModuleToggle(std::string_view moduleId, bool enabled) {
     auto& rightUse=runtime::RightUseRouter::instance();
     if(rightUse.installed()) {
         rightUse.setFeatureEnabled(enabled);
+    }
+
+    auto& swapRuntime=runtime::OffhandSwapRuntime::instance();
+    if(swapRuntime.installed()) {
+        swapRuntime.setFeatureEnabled(enabled);
     }
 
     auto& policy=runtime::NativeOffhandPolicy::instance();
@@ -93,6 +100,16 @@ public:
             );
         }
 
+        // Swap remains an optional extension. RightUseRouter is installed
+        // first and is never patched/consulted by the swap runtime.
+        const bool swapRuntimeInstalled=
+            runtime::OffhandSwapRuntime::instance().install(context);
+        if(!swapRuntimeInstalled) {
+            context.logger().warn(
+                "Levi Offhand: isolated F-style swap runtime unavailable"
+            );
+        }
+
         auto& patch=Patch::instance();
         const bool visualInstalled=patch.install(context);
         if(!visualInstalled) {
@@ -116,6 +133,9 @@ public:
         if(!registered) {
             context.logger().error("Levi Offhand: Mod Menu registration failed");
             patch.uninstall(context);
+            if(swapRuntimeInstalled) {
+                runtime::OffhandSwapRuntime::instance().uninstall(context);
+            }
             if(rightUseInstalled) {
                 runtime::RightUseRouter::instance().uninstall(context);
             }
@@ -130,6 +150,27 @@ public:
 
         mModMenuRegistered=true;
         context.logger().info("Levi Offhand registered in Mod Menu");
+
+        if(swapRuntimeInstalled) {
+            const bool swapButtonRegistered=
+                ui::SwapButton::instance().registerButton(
+                    context.id(),
+                    kModuleId,
+                    []() {
+                        runtime::OffhandSwapRuntime::instance().requestSwap();
+                    }
+                );
+
+            if(swapButtonRegistered) {
+                context.logger().info(
+                    "Swap Item HUD button registered (44a isolated preFrame path)"
+                );
+            } else {
+                context.logger().warn(
+                    "Swap Item HUD button registration failed"
+                );
+            }
+        }
         if(policyInstalled) {
             context.logger().info(
                 "Minecraft 1.26.51.1 offhand storage policy active"
@@ -152,6 +193,11 @@ public:
             rightUse.setFeatureEnabled(false);
         }
 
+        auto& swapRuntime=runtime::OffhandSwapRuntime::instance();
+        if(swapRuntime.installed()) {
+            swapRuntime.setFeatureEnabled(false);
+        }
+
         Patch::instance().uninstall(context);
 
         auto& policy=runtime::NativeOffhandPolicy::instance();
@@ -168,6 +214,7 @@ public:
 
     bool unload(pl::mod::ModContext& context) {
         unregisterModMenu();
+        runtime::OffhandSwapRuntime::instance().uninstall(context);
         runtime::RightUseRouter::instance().uninstall(context);
         Patch::instance().uninstall(context);
         runtime::AutoInsertRouting::instance().uninstall(context);
@@ -179,6 +226,8 @@ private:
     LeviOffhandMod()=default;
 
     void unregisterModMenu() noexcept {
+        ui::SwapButton::instance().unregisterButton();
+
         if(!mModMenuRegistered) {
             return;
         }
