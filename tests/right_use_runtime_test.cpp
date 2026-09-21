@@ -38,7 +38,17 @@ static int testIterate(int (*callback)(dl_phdr_info*, std::size_t, void*), void*
 #undef dl_iterate_phdr
 
 using namespace levioffhand::runtime;
-struct Item { void** table; int damage = 0; int duration = 0; };
+struct Item {
+    void** table{};
+    int damage = 0;
+    int duration = 0;
+    std::array<std::byte, 0x98> pad{};
+    std::uint8_t maxStackSize = 64;
+    std::byte padA9{};
+    std::int16_t itemId = 0;
+};
+static_assert(offsetof(Item, maxStackSize) == 0xA8);
+static_assert(offsetof(Item, itemId) == 0xAA);
 struct Stack {
     void* table{};
     const Item** weak{};
@@ -211,6 +221,21 @@ int main(int argc, char** argv) {
         gSessionPlayer = &player; usingItem = true; activeStack = offStack;
         RightUseRouter::setSelectedItemDetour(&player, &mainStack);
         ok &= check(mainWrites == 1 && offhandSetterCalls == 0, "session alone cannot redirect inventory writes");
+    } else if (test == "shears") {
+        mainItem.damage = 3;
+        mainItem.maxStackSize = 1;
+        mainItem.itemId = kShearsItemId;
+        ok &= check(
+            stackClaimsMainhandRightClick(&mainStack),
+            "Shears must retain MAINHAND right-click ownership"
+        );
+        RightUseRouter::useItemOnBlockDetour(
+            &gameMode, &mainStack, nullptr, 0, nullptr, 0, 0, false
+        );
+        ok &= check(
+            calls == std::vector<unsigned char>{0},
+            "Shears must never invoke OFFHAND block placement"
+        );
     } else if (test == "sword") {
         mainItem.damage = 7;
         // Exact native WeaponItem::use is mov x0,x1; ret. An override is not an action.
