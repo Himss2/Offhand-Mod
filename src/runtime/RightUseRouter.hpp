@@ -46,9 +46,19 @@ private:
 
     static const void* selectedItemDetour(const void* player) noexcept;
     static void releaseUsingItemDetour(void* gameMode) noexcept;
+    static void completeUsingItemDetour(void* player) noexcept;
+    static void handTransactionDetour(void* player, unsigned char hand, void* envelope,
+                                      void (*callback)(void*), void* context) noexcept;
+    std::unique_ptr<pl::memory::HookHandle> mHandTransactionHook;
+    void* mHandTransactionOriginal{nullptr};
+    static void setSelectedItemDetour(void* player, const void* stack) noexcept;
 
     static RightUseRouter* sInstance;
 
+    std::unique_ptr<pl::memory::HookHandle> mCompleteUsingItemHook;
+    std::unique_ptr<pl::memory::HookHandle> mSetSelectedItemHook;
+    void* mCompleteUsingItemOriginal{nullptr};
+    void* mSetSelectedItemOriginal{nullptr};
     std::unique_ptr<pl::memory::HookHandle> mSelectedItemHook;
     std::unique_ptr<pl::memory::HookHandle> mReleaseUsingItemHook;
     std::unique_ptr<pl::memory::HookHandle> mBaseUseItemHook;
@@ -78,3 +88,4 @@ private:
 };
 
 } // namespace levioffhand::runtime
+

@@ -112,6 +112,28 @@ static bool airUse(void*, const void* stack, unsigned char hand) {
     }
     return hand == 0 ? mainResult : offResult;
 }
+static int mainWrites = 0, completions = 0, cancellations = 0;
+static bool returnContainer = false, emptyReadStayedOff = false;
+static void writeMain(void*, const void* stack) { ++mainWrites; mainStack = *static_cast<const Stack*>(stack); }
+static void cancelUse(void*) { ++cancellations; usingItem = false; }
+static void completeUse(void* owner) {
+    ++completions;
+    Stack result = *static_cast<const Stack*>(RightUseRouter::selectedItemDetour(owner));
+    --result.count;
+    if (returnContainer && result.count == 0) { result.id = 99; result.count = 1; }
+    RightUseRouter::setSelectedItemDetour(owner, &result);
+    if (result.count == 0) emptyReadStayedOff = RightUseRouter::selectedItemDetour(owner) == &offStack;
+    usingItem = false;
+}
+static unsigned char transactionHand = 255;
+static int transactions = 0;
+static void transaction(void*, unsigned char hand, void*, void (*callback)(void*), void* context) {
+    ++transactions; transactionHand = hand; callback(context);
+}
+static void releaseCallback(void* owner) { completeUse(owner); }
+static void releaseUse(void*) {
+    RightUseRouter::handTransactionDetour(&player, 0, nullptr, releaseCallback, &player);
+}
 static void configureTable(std::array<void*,134>& t) {
     t[0x30/8] = reinterpret_cast<void*>(&duration);
     t[0x130/8] = reinterpret_cast<void*>(&damage);
@@ -140,9 +162,56 @@ int main(int argc, char** argv) {
     gStackIsNull = isNull;
     gPlayerIsUsingItem = isUsing; gItemInUseStack = active;
     gStackDiffersForUse = differs; gItemStackCopyCtor = copyStack; gItemStackDtor = destroyStack;
+    router.mCompleteUsingItemOriginal = reinterpret_cast<void*>(&completeUse);
+    router.mSetSelectedItemOriginal = reinterpret_cast<void*>(&writeMain);
+    gStopUsingItem = cancelUse;
+    router.mReleaseUsingItemOriginal = reinterpret_cast<void*>(&releaseUse);
+    router.mHandTransactionOriginal = reinterpret_cast<void*>(&transaction);
+    gReleaseCallback = reinterpret_cast<std::uintptr_t>(&releaseCallback);
     const std::string test = argv[1];
     bool ok = true;
-    if (test == "sword") {
+    if (test == "release_off" || test == "release_main" || test == "release_stale") {
+        usingItem = true; activeStack = offStack;
+        if (test != "release_main") { gSessionPlayer = &player; gSessionGameMode = &gameMode; }
+        else activeStack = mainStack;
+        if (test == "release_stale") offStack.id = 77;
+        RightUseRouter::releaseUsingItemDetour(&gameMode);
+        if (test == "release_stale") {
+            ok &= check(transactions == 0 && cancellations == 1 && mainWrites == 0, "stale release cancels without a transaction");
+        } else {
+            const bool off = test == "release_off";
+            ok &= check(transactions == 1 && transactionHand == (off ? 1 : 0), "release uses the correct native transaction hand");
+            ok &= check(mainWrites == (off ? 0 : 1) && offhandSetterCalls == (off ? 1 : 0), "release writes only its own slot");
+        }
+    } else if (test == "transaction_unscoped") {
+        gSessionPlayer = &player;
+        RightUseRouter::handTransactionDetour(&player, 0, nullptr, releaseCallback, &player);
+        ok &= check(transactionHand == 0 && mainWrites == 1, "session alone cannot redirect transactions");
+    } else if (test == "consume_food" || test == "consume_container" || test == "consume_last" || test == "consume_native_off") {
+        usingItem = true;
+        if (test == "consume_last" || test == "consume_container") offStack.count = 1;
+        returnContainer = test == "consume_container";
+        activeStack = offStack; gSessionPlayer = test == "consume_native_off" ? nullptr : &player; gSessionGameMode = &gameMode;
+        RightUseRouter::completeUsingItemDetour(&player);
+        ok &= check(completions == 1 && mainWrites == 0 && offhandSetterCalls == 1, "native completion writes OFF exactly once and never MAIN");
+        ok &= check(mainStack.id == 10 && mainStack.count == 1, "consumption preserves MAIN");
+        ok &= check(offStack.count == ((test == "consume_food" || test == "consume_native_off") ? 15 : returnContainer ? 1 : 0), "native consumed count is preserved");
+        if (test == "consume_last") ok &= check(emptyReadStayedOff, "empty result must not redirect callback reads to MAIN");
+        ok &= check(!returnContainer || offStack.id == 99, "native returned container lands in OFF");
+        ok &= check(gSessionPlayer == nullptr, "completed session ends");
+    } else if (test == "consume_stale") {
+        usingItem = true; activeStack = offStack; gSessionPlayer = &player;
+        offStack.id = 77;
+        RightUseRouter::completeUsingItemDetour(&player);
+        ok &= check(completions == 0 && cancellations == 1 && mainWrites == 0 && offhandSetterCalls == 0, "stale OFF session cancels without consuming either slot");
+    } else if (test == "consume_main") {
+        RightUseRouter::completeUsingItemDetour(&player);
+        ok &= check(completions == 1 && mainWrites == 1 && offhandSetterCalls == 0, "ordinary MAIN completion remains native");
+    } else if (test == "setter_unscoped") {
+        gSessionPlayer = &player; usingItem = true; activeStack = offStack;
+        RightUseRouter::setSelectedItemDetour(&player, &mainStack);
+        ok &= check(mainWrites == 1 && offhandSetterCalls == 0, "session alone cannot redirect inventory writes");
+    } else if (test == "sword") {
         mainItem.damage = 7;
         // Exact native WeaponItem::use is mov x0,x1; ret. An override is not an action.
         mainTable[0x290/8] = reinterpret_cast<void*>(testBase + 0xFD66F30);
@@ -212,3 +281,4 @@ int main(int argc, char** argv) {
     if (ok) std::cout << "PASS: " << test << '\n';
     return ok ? 0 : 1;
 }
+

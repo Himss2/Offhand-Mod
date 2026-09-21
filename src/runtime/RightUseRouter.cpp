@@ -36,6 +36,13 @@ constexpr unsigned char kOffHand = 1;
 
 constexpr std::uintptr_t kUseItemOnBlockRva = 0xF8A1CC4;
 constexpr std::uintptr_t kBaseUseItemRva = 0xF8A285C;
+// Completion is distinct from release: native callback 0xFA05E30 invokes
+// Item::useTimeDepleted (+0x2B8), then Player::setSelectedItem (+0x268).
+constexpr std::uintptr_t kCompleteUsingItemRva = 0xF9E8094;
+constexpr std::uintptr_t kSetSelectedItemRva = 0xF9F7850;
+constexpr std::uintptr_t kHandTransactionRva = 0xF9E9DFC;
+constexpr std::uintptr_t kReleaseCallbackRva = 0xF8A65FC;
+constexpr std::uintptr_t kStopUsingItemRva = 0xF9E86C0;
 constexpr std::uintptr_t kReleaseUsingItemRva = 0xF8A3204;
 constexpr std::uintptr_t kSelectedItemRva = 0xF9F7824;
 constexpr std::uintptr_t kOffhandSlotRva = 0xF579C2C;
@@ -138,6 +145,28 @@ using UseItemOnBlockFn = std::uint32_t (*)(
     std::uintptr_t,
     bool
 );
+constexpr std::array<std::uint8_t, 16> kCompleteUsingItemFingerprint{
+    0xFD,0x7B,0xBB,0xA9,0xFC,0x67,0x01,0xA9,
+    0xF8,0x5F,0x02,0xA9,0xF6,0x57,0x03,0xA9,
+};
+constexpr auto kSetSelectedItemFingerprint = kCompleteUsingItemFingerprint;
+constexpr std::array<std::uint8_t, 16> kStopUsingItemFingerprint{
+    0xFD,0x7B,0xBB,0xA9,0xFC,0x0B,0x00,0xF9,
+    0xF8,0x5F,0x02,0xA9,0xF6,0x57,0x03,0xA9,
+};
+constexpr std::array<std::uint8_t, 16> kHandTransactionFingerprint{
+    0xFF,0x43,0x02,0xD1,0xFD,0x7B,0x05,0xA9,
+    0xF7,0x33,0x00,0xF9,0xF6,0x57,0x07,0xA9,
+};
+using HandTransactionFn = void (*)(void*, unsigned char, void*, void (*)(void*), void*);
+std::uintptr_t gReleaseCallback = 0;
+thread_local const void* gReleasingPlayer = nullptr;
+using CompleteUsingItemFn = void (*)(void*);
+using SetSelectedItemFn = void (*)(void*, const void*);
+CompleteUsingItemFn gStopUsingItem = nullptr;
+thread_local const void* gUseWritebackPlayer = nullptr;
+thread_local const void* gUseWritebackBefore = nullptr;
+
 using ReleaseUsingItemFn = void (*)(void*);
 using SelectedItemFn = const void* (*)(const void*);
 using OffhandItemFn = const void* (*)(const void*);
@@ -624,6 +653,16 @@ bool RightUseRouter::install(pl::mod::ModContext& context) noexcept {
         );
     }
 
+    const auto stopTarget = resolveExactTarget(kStopUsingItemRva, kStopUsingItemFingerprint);
+    if (stopTarget == 0) {
+        context.logger().warn("[RightUseRouter] completion cancellation guard failed");
+        return false;
+    }
+    const auto completeTarget = resolveHookTarget("Player::completeUsingItem", kCompleteUsingItemRva, kCompleteUsingItemFingerprint);
+    const auto transactionTarget = resolveHookTarget("Player::handTransaction", kHandTransactionRva, kHandTransactionFingerprint);
+    const auto setterTarget = resolveHookTarget("Player::setSelectedItem", kSetSelectedItemRva, kSetSelectedItemFingerprint);
+    if (completeTarget == 0 || setterTarget == 0 || transactionTarget == 0) return false;
+
     // Only after the exact stable guard passes do we resolve hookable entry
     // points. Their prologues may already be changed in memory by a hook, so
     // use the known RVA and let Levi's HookHandle chain the live target.
@@ -675,6 +714,8 @@ bool RightUseRouter::install(pl::mod::ModContext& context) noexcept {
     mUseItemOnBlockTarget = blockUseTarget;
     mUseItemOnBlockPreHooked = blockUsePreHooked;
     sInstance = this;
+    gStopUsingItem = reinterpret_cast<CompleteUsingItemFn>(stopTarget);
+    gReleaseCallback = minecraftModuleBase() + kReleaseCallbackRva;
 
     mSelectedItemHook = std::make_unique<pl::memory::HookHandle>(
         reinterpret_cast<void*>(mSelectedItemTarget),
@@ -727,6 +768,23 @@ bool RightUseRouter::install(pl::mod::ModContext& context) noexcept {
         return false;
     }
 
+    mHandTransactionHook = std::make_unique<pl::memory::HookHandle>(
+        reinterpret_cast<void*>(transactionTarget), reinterpret_cast<void*>(&RightUseRouter::handTransactionDetour),
+        &mHandTransactionOriginal, pl::memory::HookPriority::Normal);
+    mSetSelectedItemHook = std::make_unique<pl::memory::HookHandle>(
+        reinterpret_cast<void*>(setterTarget), reinterpret_cast<void*>(&RightUseRouter::setSelectedItemDetour),
+        &mSetSelectedItemOriginal, pl::memory::HookPriority::Normal);
+    mCompleteUsingItemHook = std::make_unique<pl::memory::HookHandle>(
+        reinterpret_cast<void*>(completeTarget), reinterpret_cast<void*>(&RightUseRouter::completeUsingItemDetour),
+        &mCompleteUsingItemOriginal, pl::memory::HookPriority::Normal);
+    if (!mHandTransactionHook->installed() || !mHandTransactionOriginal ||
+        !mSetSelectedItemHook->installed() || !mCompleteUsingItemHook->installed() ||
+        !mSetSelectedItemOriginal || !mCompleteUsingItemOriginal) {
+        context.logger().warn("[RightUseRouter] consumption hooks failed");
+        uninstall(context);
+        return false;
+    }
+
     mFeatureEnabled.store(true, std::memory_order_release);
     mLoggedOffhandUse.store(false, std::memory_order_relaxed);
     mLoggedBlockUse.store(false, std::memory_order_relaxed);
@@ -742,6 +800,15 @@ bool RightUseRouter::install(pl::mod::ModContext& context) noexcept {
 void RightUseRouter::uninstall(pl::mod::ModContext& context) noexcept {
     mFeatureEnabled.store(false, std::memory_order_release);
     clearSession();
+
+    if (mHandTransactionHook) { mHandTransactionHook->reset(); mHandTransactionHook.reset(); }
+    mHandTransactionOriginal = nullptr;
+    gReleaseCallback = 0;
+    if (mCompleteUsingItemHook) { mCompleteUsingItemHook->reset(); mCompleteUsingItemHook.reset(); }
+    if (mSetSelectedItemHook) { mSetSelectedItemHook->reset(); mSetSelectedItemHook.reset(); }
+    mCompleteUsingItemOriginal = nullptr;
+    mSetSelectedItemOriginal = nullptr;
+    gStopUsingItem = nullptr;
 
     if (mUseItemOnBlockHook) {
         mUseItemOnBlockHook->reset();
@@ -794,7 +861,11 @@ bool RightUseRouter::featureEnabled() const noexcept {
 }
 
 bool RightUseRouter::installed() const noexcept {
-    return mSelectedItemHook != nullptr && mSelectedItemHook->installed() &&
+    return mHandTransactionHook != nullptr && mHandTransactionHook->installed() &&
+        mHandTransactionOriginal != nullptr && mCompleteUsingItemHook != nullptr && mCompleteUsingItemHook->installed() &&
+        mSetSelectedItemHook != nullptr && mSetSelectedItemHook->installed() &&
+        mCompleteUsingItemOriginal != nullptr && mSetSelectedItemOriginal != nullptr &&
+        mSelectedItemHook != nullptr && mSelectedItemHook->installed() &&
         mReleaseUsingItemHook != nullptr && mReleaseUsingItemHook->installed() &&
         mBaseUseItemHook != nullptr && mBaseUseItemHook->installed() &&
         mUseItemOnBlockHook != nullptr && mUseItemOnBlockHook->installed() &&
@@ -1147,6 +1218,11 @@ const void* RightUseRouter::selectedItemDetour(const void* player) noexcept {
     }
 
     const void* offStack = gGetOffhandSlot(player);
+    // During native completion/release an empty OFF stack is a valid result,
+    // not permission for later callback reads to switch to MAIN.
+    if (scopedOffhand && gUseWritebackPlayer == player && offStack != nullptr) {
+        return offStack;
+    }
     if (stackIsNull(offStack)) {
         if (sessionOffhand) {
             clearSession();
@@ -1176,6 +1252,82 @@ const void* RightUseRouter::selectedItemDetour(const void* player) noexcept {
     return offStack;
 }
 
+void RightUseRouter::completeUsingItemDetour(void* player) noexcept {
+    auto* instance = sInstance;
+    if (!instance || !instance->mCompleteUsingItemOriginal) return;
+    const auto original = reinterpret_cast<CompleteUsingItemFn>(instance->mCompleteUsingItemOriginal);
+    if (!instance->featureEnabled() || player == nullptr) {
+        original(player);
+        return;
+    }
+    const void* off = gGetOffhandSlot ? gGetOffhandSlot(player) : nullptr;
+    const auto selected = reinterpret_cast<SelectedItemFn>(instance->mSelectedItemOriginal);
+    const void* main = selected ? selected(player) : nullptr;
+    // The integrated server uses a different Player object/thread. A native
+    // active stack uniquely matching OFF also establishes ownership there.
+    // When both slots match, retain native MAIN unless this player has an
+    // explicitly tracked OFF session.
+    const bool ownsSession = gSessionPlayer == player;
+    const bool uniqueNativeOff = activeUseMatches(player, off) && !activeUseMatches(player, main);
+    if (!ownsSession && !uniqueNativeOff) {
+        ScopedActionHand mainScope(ActionHand::MainHand, ActionKind::UseAir);
+        original(player);
+        return;
+    }
+    if (!activeUseMatches(player, off) || stackIsNull(off) || !gSetItemInHandSlot) {
+        // The held stack changed during use: do not consume the replacement
+        // or let a stale OFF session consume MAIN. Stop without releasing.
+        if (gStopUsingItem) gStopUsingItem(player);
+        if (ownsSession) clearSession();
+        return;
+    }
+    ScopedItemStackSnapshot before(off);
+    if (!before.get()) {
+        if (gStopUsingItem) gStopUsingItem(player);
+        if (ownsSession) clearSession();
+        return;
+    }
+    const void* previousPlayer = gUseWritebackPlayer;
+    const void* previousBefore = gUseWritebackBefore;
+    gUseWritebackPlayer = player;
+    gUseWritebackBefore = before.get();
+    {
+        ScopedActionHand handScope(ActionHand::OffHand, ActionKind::UseAir);
+        ScopedPlayer playerScope(player);
+        // Keep the original consumption effect, container conversion, callback
+        // envelope, and clear-use lifecycle. Only its final slot write changes.
+        original(player);
+    }
+    gUseWritebackPlayer = previousPlayer;
+    gUseWritebackBefore = previousBefore;
+    if (ownsSession) clearSession();
+}
+
+void RightUseRouter::setSelectedItemDetour(void* player, const void* stack) noexcept {
+    auto* instance = sInstance;
+    if (!instance || !instance->mSetSelectedItemOriginal) return;
+    const auto original = reinterpret_cast<SetSelectedItemFn>(instance->mSetSelectedItemOriginal);
+    const auto action = currentScopedAction();
+    if (!instance->featureEnabled() || !player || player != gUseWritebackPlayer ||
+        !action || action->hand != ActionHand::OffHand || !gUseWritebackBefore) {
+        original(player, stack);
+        return;
+    }
+    const void* live = gGetOffhandSlot ? gGetOffhandSlot(player) : nullptr;
+    if (!live || !stacksMatch(live, gUseWritebackBefore) ||
+        stackCount(live) != stackCount(gUseWritebackBefore)) {
+        // A nested callback already replaced the slot. Never overwrite it or
+        // fall back to writing the consumed OFF stack into MAIN.
+        return;
+    }
+    if (gSetItemInHandSlot && stack) {
+        // Virtual hand setter dispatches LocalPlayer's OFF override, including
+        // native container-119 InventoryAction recording. Preserve empty stacks
+        // and bottle/bowl replacements supplied by the original callback.
+        gSetItemInHandSlot(player, kOffHand, stack);
+    }
+}
+
 void RightUseRouter::releaseUsingItemDetour(void* gameMode) noexcept {
     auto* instance = sInstance;
     if (instance == nullptr || instance->mReleaseUsingItemOriginal == nullptr) {
@@ -1185,20 +1337,64 @@ void RightUseRouter::releaseUsingItemDetour(void* gameMode) noexcept {
         instance->mReleaseUsingItemOriginal
     );
 
-    if (
-        !instance->featureEnabled() || gSessionPlayer == nullptr ||
-        gSessionGameMode != gameMode
-    ) {
+    const void* player = playerFromGameMode(gameMode);
+    if (!instance->featureEnabled() || !player) {
         original(gameMode);
         return;
     }
-
+    const void* off = gGetOffhandSlot ? gGetOffhandSlot(player) : nullptr;
+    const auto selected = reinterpret_cast<SelectedItemFn>(instance->mSelectedItemOriginal);
+    const void* main = selected ? selected(player) : nullptr;
+    const bool ownsSession = gSessionPlayer == player && gSessionGameMode == gameMode;
+    const bool uniqueNativeOff = activeUseMatches(player, off) && !activeUseMatches(player, main);
+    if (!ownsSession && !uniqueNativeOff) {
+        ScopedActionHand mainScope(ActionHand::MainHand, ActionKind::UseAir);
+        original(gameMode);
+        return;
+    }
+    if (!activeUseMatches(player, off) || stackIsNull(off) || !gSetItemInHandSlot) {
+        if (gStopUsingItem) gStopUsingItem(const_cast<void*>(player));
+        if (ownsSession) clearSession();
+        return;
+    }
+    ScopedItemStackSnapshot before(off);
+    if (!before.get()) {
+        if (gStopUsingItem) gStopUsingItem(const_cast<void*>(player));
+        if (ownsSession) clearSession();
+        return;
+    }
+    const void* previousPlayer = gUseWritebackPlayer;
+    const void* previousBefore = gUseWritebackBefore;
+    const void* previousRelease = gReleasingPlayer;
+    gUseWritebackPlayer = player;
+    gUseWritebackBefore = before.get();
+    gReleasingPlayer = player;
     {
         ScopedActionHand actionScope(ActionHand::OffHand, ActionKind::UseAir);
-        ScopedPlayer routedPlayer(gSessionPlayer);
+        ScopedPlayer routedPlayer(player);
         original(gameMode);
     }
-    clearSession();
+    gUseWritebackPlayer = previousPlayer;
+    gUseWritebackBefore = previousBefore;
+    gReleasingPlayer = previousRelease;
+    if (ownsSession) clearSession();
+}
+
+void RightUseRouter::handTransactionDetour(void* player, unsigned char hand, void* envelope,
+                                         void (*callback)(void*), void* context) noexcept {
+    auto* instance = sInstance;
+    if (!instance || !instance->mHandTransactionOriginal) return;
+    const auto original = reinterpret_cast<HandTransactionFn>(instance->mHandTransactionOriginal);
+    const auto action = currentScopedAction();
+    if (instance->featureEnabled() && player && player == gReleasingPlayer &&
+        action && action->hand == ActionHand::OffHand && hand == kMainHand &&
+        reinterpret_cast<std::uintptr_t>(callback) == gReleaseCallback) {
+        hand = kOffHand;
+    }
+    // Forward the same native envelope/callback/context exactly once. The
+    // wrapper owns callback lifetime; never copy its C++ closure manually.
+    original(player, hand, envelope, callback, context);
 }
 
 } // namespace levioffhand::runtime
+
