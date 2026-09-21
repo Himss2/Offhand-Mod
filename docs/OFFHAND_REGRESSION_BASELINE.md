@@ -1,3 +1,9 @@
+## September 21 animation/shears reset
+
+Renderer experiments that failed device verification are retired. Active rendering is restored to the accepted pre-animation baseline. Do not reintroduce FPP swing-progress, equip-height, final-matrix, or LocalPlayer swing suppression until a new pure-render path is proven by RE.
+
+Shears is a routing invariant: Item::mId is read at +0xAA and Item::mMaxStackSize at +0xA8; current Shears raw ID is 424 with stack size 1. This check runs before the attack-only fallback and must keep MAINHAND ownership. CI includes an executable Shears case that must produce only a MAINHAND call and no OFFHAND block placement.
+
 # Offhand Regression Baseline
 
 ## Consumption/release implementation candidate
