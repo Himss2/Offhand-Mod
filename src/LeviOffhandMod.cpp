@@ -2,7 +2,7 @@
 #include "runtime/NativeOffhandPolicy.hpp"
 #include "runtime/AutoInsertRouting.hpp"
 #include "runtime/RightUseRouter.hpp"
-#include "runtime/OffhandSwapRuntime.hpp"
+#include "swap/SwapRuntime.hpp"
 #include "ui/SwapButton.hpp"
 
 #include <android/log.h>
@@ -29,7 +29,7 @@ void onModuleToggle(std::string_view moduleId, bool enabled) {
         rightUse.setFeatureEnabled(enabled);
     }
 
-    auto& swapRuntime=runtime::OffhandSwapRuntime::instance();
+    auto& swapRuntime=swap::SwapRuntime::instance();
     if(swapRuntime.installed()) {
         swapRuntime.setFeatureEnabled(enabled);
     }
@@ -103,7 +103,7 @@ public:
         // Swap remains an optional extension. RightUseRouter is installed
         // first and is never patched/consulted by the swap runtime.
         const bool swapRuntimeInstalled=
-            runtime::OffhandSwapRuntime::instance().install(context);
+            swap::SwapRuntime::instance().install(context);
         if(!swapRuntimeInstalled) {
             context.logger().warn(
                 "Levi Offhand: isolated F-style swap runtime unavailable"
@@ -134,7 +134,7 @@ public:
             context.logger().error("Levi Offhand: Mod Menu registration failed");
             patch.uninstall(context);
             if(swapRuntimeInstalled) {
-                runtime::OffhandSwapRuntime::instance().uninstall(context);
+                swap::SwapRuntime::instance().uninstall(context);
             }
             if(rightUseInstalled) {
                 runtime::RightUseRouter::instance().uninstall(context);
@@ -161,7 +161,7 @@ public:
                 context.id(),
                 kModuleId,
                 []() {
-                    runtime::OffhandSwapRuntime::instance().requestSwap();
+                    swap::SwapRuntime::instance().requestSwap();
                 }
             );
 
@@ -198,7 +198,7 @@ public:
             rightUse.setFeatureEnabled(false);
         }
 
-        auto& swapRuntime=runtime::OffhandSwapRuntime::instance();
+        auto& swapRuntime=swap::SwapRuntime::instance();
         if(swapRuntime.installed()) {
             swapRuntime.setFeatureEnabled(false);
         }
@@ -219,7 +219,7 @@ public:
 
     bool unload(pl::mod::ModContext& context) {
         unregisterModMenu();
-        runtime::OffhandSwapRuntime::instance().uninstall(context);
+        swap::SwapRuntime::instance().uninstall(context);
         runtime::RightUseRouter::instance().uninstall(context);
         Patch::instance().uninstall(context);
         runtime::AutoInsertRouting::instance().uninstall(context);

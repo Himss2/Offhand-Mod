@@ -3,8 +3,8 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 
 button = (ROOT / "src/ui/SwapButton.cpp").read_text(errors="replace")
-runtime = (ROOT / "src/runtime/OffhandSwapRuntime.cpp").read_text(errors="replace")
-header = (ROOT / "src/runtime/OffhandSwapRuntime.hpp").read_text(errors="replace")
+runtime = (ROOT / "src/swap/SwapRuntime.cpp").read_text(errors="replace")
+header = (ROOT / "src/swap/SwapRuntime.hpp").read_text(errors="replace")
 router = (ROOT / "src/runtime/RightUseRouter.cpp").read_text(errors="replace")
 mod = (ROOT / "src/LeviOffhandMod.cpp").read_text(errors="replace")
 cmake = (ROOT / "CMakeLists.txt").read_text(errors="replace")
@@ -29,6 +29,9 @@ for token in (
     "kClientPreFrameTickRva = 0x9803334",
     "kSelectedItemRva = 0xF9F7824",
     "kEmptyItemRva = 0x134C6780",
+    "addressInMinecraftLoadSegment",
+    "emptyMapped",
+    "[SwapEngine] targets off=%d null=%d copy=%d dtor=%d setOff=%d ",
     "kClientGetLocalPlayerVtableOffset = 0x100",
     "clientPreFrameTickDetour",
     "currentThreadName",
@@ -45,7 +48,7 @@ for token in (
     "[SwapRuntime] swapped selected hotbar <-> OFFHAND without transient duplicates",
 ):
     if token not in runtime:
-        raise AssertionError(f"OffhandSwapRuntime missing {token}")
+        raise AssertionError(f"SwapRuntime missing {token}")
 
 for token in (
     "void requestSwap() noexcept",
@@ -55,11 +58,11 @@ for token in (
     "SetSelectedItemFn mSetSelectedItem",
 ):
     if token not in header:
-        raise AssertionError(f"OffhandSwapRuntime.hpp missing {token}")
+        raise AssertionError(f"SwapRuntime.hpp missing {token}")
 
-request_start = runtime.index("void OffhandSwapRuntime::requestSwap()")
+request_start = runtime.index("void SwapRuntime::requestSwap()")
 request_end = runtime.index(
-    "bool OffhandSwapRuntime::hasPendingSwap()",
+    "bool SwapRuntime::hasPendingSwap()",
     request_start,
 )
 request_body = runtime[request_start:request_end]
@@ -74,7 +77,7 @@ for forbidden in (
             f"UI-thread requestSwap must not touch Minecraft state: {forbidden}"
         )
 
-process_start = runtime.index("bool OffhandSwapRuntime::processPendingSwap(")
+process_start = runtime.index("bool SwapRuntime::processPendingSwap(")
 process_body = runtime[process_start:]
 if "hasPendingSwap()" not in process_body:
     raise AssertionError("processPendingSwap must enforce pending request gate")
@@ -145,22 +148,22 @@ for token in (
 ):
     if token not in runtime:
         raise AssertionError(
-            f"OffhandSwapRuntime frame pump missing: {token}"
+            f"SwapRuntime frame pump missing: {token}"
         )
 
 if "observePlayer(player)" in router:
     raise AssertionError("swap must not cache a LocalPlayer pointer across threads")
 
 right_use_install = mod.index("RightUseRouter::instance().install(context)")
-swap_install = mod.index("OffhandSwapRuntime::instance().install(context)")
+swap_install = mod.index("SwapRuntime::instance().install(context)")
 if right_use_install > swap_install:
     raise AssertionError(
         "RightUseRouter must install before the optional swap extension"
     )
 
 for forbidden in (
-    '#include "runtime/OffhandSwapRuntime.hpp"',
-    "OffhandSwapRuntime::instance()",
+    '#include "runtime/SwapRuntime.hpp"',
+    "SwapRuntime::instance()",
     "processPendingSwap(",
     "hasPendingSwap()",
 ):
@@ -176,12 +179,14 @@ if runtime_gate_pos != -1:
         "SwapButton registration must stay visible even when native swap runtime is unavailable"
     )
 
-if "OffhandSwapRuntime::instance().requestSwap()" not in mod:
+if "SwapRuntime::instance().requestSwap()" not in mod:
     raise AssertionError("SwapButton callback must only queue the swap request")
-if "OffhandSwapRuntime::instance().swapNow()" in mod:
+if "SwapRuntime::instance().swapNow()" in mod:
     raise AssertionError("SwapButton callback must not execute Minecraft swap synchronously")
 
-if "src/runtime/OffhandSwapRuntime.cpp" not in cmake:
-    raise AssertionError("CMakeLists.txt missing OffhandSwapRuntime.cpp")
+if "src/swap/SwapRuntime.cpp" not in cmake:
+    raise AssertionError("CMakeLists.txt missing isolated src/swap/SwapRuntime.cpp")
+if "src/runtime/OffhandSwapRuntime.cpp" in cmake:
+    raise AssertionError("legacy OffhandSwapRuntime must stay uncompiled")
 
 print("v0.2.68 swap button ClientInstance frame-pump contract passed")
