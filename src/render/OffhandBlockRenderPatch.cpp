@@ -101,6 +101,22 @@ namespace levioffhand::render {
         constexpr std::uintptr_t kFinalOffhandMatrixTopRva=0x107CC804;
         constexpr std::uintptr_t kFinalOffhandMatrixReturnRva=0xADE56D8;
 
+        // ItemInHandRenderer::renderFirstPerson.
+        // 1.26.45.1 0xADE96B0 -> 1.26.51.1 0xB2FB6C0.
+        //
+        // 1.26.51.1 entry RE:
+        //   +0x180 current MAIN height, +0x184 old MAIN height
+        //   +0x188 current OFF height,  +0x18C old OFF height
+        // The MAIN pair is interpolated into S13 and then published as
+        // "variable.player_arm_height". Freeze only MAIN; OFF stays native.
+        constexpr std::uintptr_t kRenderFirstPersonRva=0xADE96B0;
+        constexpr std::array<std::uint8_t,16> kRenderFirstPersonFingerprint{
+            0xFF,0x03,0x07,0xD1,0xEF,0x3B,0x12,0x6D,
+            0xED,0x33,0x13,0x6D,0xEB,0x2B,0x14,0x6D
+        };
+        constexpr std::size_t kMainhandHeightOffset=0x180;
+        constexpr std::size_t kMainhandOldHeightOffset=0x184;
+
         constexpr std::uintptr_t kBowIdRva=0x126F0FB8;
         constexpr std::uintptr_t kCrossbowIdRva=0x126F0FE0;
         constexpr std::uintptr_t kTridentIdRva=0x126F11C0;
@@ -396,6 +412,13 @@ namespace levioffhand::render {
         void* gFinalOffhandMatrixOriginal=nullptr;
         std::uintptr_t gFinalOffhandMatrixTarget=0;
         std::uintptr_t gToolMatrixMultiplyTarget=0;
+
+        std::unique_ptr<pl::memory::HookHandle> gRenderFirstPersonHook;
+        void* gRenderFirstPersonOriginal=nullptr;
+        std::uintptr_t gRenderFirstPersonTarget=0;
+        thread_local float gMainhandStableHeight=1.0f;
+        thread_local bool gMainhandStableHeightValid=false;
+        thread_local bool gMainhandEquipFreezeLogged=false;
 
         template<typename T>
         T readValue(
@@ -2442,6 +2465,152 @@ namespace levioffhand::render {
             }
         }
 
+        using RenderFirstPersonFn=void(*)(
+            void*,
+            void*,
+            const void*,
+            std::uint8_t
+        );
+
+        void
+        renderFirstPersonDetour(
+            void* self,
+            void* renderContext,
+            const void* prevProjection,
+            std::uint8_t itemFlags
+        ) noexcept {
+            const auto original=
+                reinterpret_cast<RenderFirstPersonFn>(
+                    gRenderFirstPersonOriginal
+                );
+
+            if(!original) {
+                return;
+            }
+
+            const float placementProgress=
+                runtime::OffhandPlacementAnimation::
+                    instance().
+                    progress();
+
+            const bool placementActive=
+                placementProgress>0.0f
+                &&
+                placementProgress<1.0f;
+
+            if(
+                !self
+                ||
+                !OffhandBlockRenderPatch::
+                    instance().
+                    featureEnabled()
+            ) {
+                gMainhandStableHeightValid=false;
+                gMainhandEquipFreezeLogged=false;
+                original(
+                    self,
+                    renderContext,
+                    prevProjection,
+                    itemFlags
+                );
+                return;
+            }
+
+            const float liveHeight=
+                readValue<float>(
+                    self,
+                    kMainhandHeightOffset,
+                    1.0f
+                );
+
+            const float liveOldHeight=
+                readValue<float>(
+                    self,
+                    kMainhandOldHeightOffset,
+                    liveHeight
+                );
+
+            if(!placementActive) {
+                if(
+                    std::isfinite(liveHeight)
+                    &&
+                    liveHeight>=-2.0f
+                    &&
+                    liveHeight<=2.0f
+                ) {
+                    gMainhandStableHeight=liveHeight;
+                    gMainhandStableHeightValid=true;
+                }
+
+                gMainhandEquipFreezeLogged=false;
+                original(
+                    self,
+                    renderContext,
+                    prevProjection,
+                    itemFlags
+                );
+                return;
+            }
+
+            float frozenHeight=
+                gMainhandStableHeightValid
+                ? gMainhandStableHeight
+                : liveOldHeight;
+
+            if(!std::isfinite(frozenHeight)) {
+                frozenHeight=
+                    std::isfinite(liveHeight)
+                    ? liveHeight
+                    : 1.0f;
+            }
+
+            // Scoped render-only replacement. renderFirstPerson now publishes
+            // a constant variable.player_arm_height while OFFHAND's separate
+            // +0x188/+0x18C height pair remains untouched.
+            writeValue<float>(
+                self,
+                kMainhandHeightOffset,
+                frozenHeight
+            );
+            writeValue<float>(
+                self,
+                kMainhandOldHeightOffset,
+                frozenHeight
+            );
+
+            if(!gMainhandEquipFreezeLogged) {
+                gMainhandEquipFreezeLogged=true;
+                __android_log_print(
+                    ANDROID_LOG_INFO,
+                    kLogTag,
+                    "[PlacementVisual] MAINHAND player_arm_height frozen "
+                    "at renderFirstPerson height=%.3f",
+                    static_cast<double>(
+                        frozenHeight
+                    )
+                );
+            }
+
+            original(
+                self,
+                renderContext,
+                prevProjection,
+                itemFlags
+            );
+
+            writeValue<float>(
+                self,
+                kMainhandHeightOffset,
+                liveHeight
+            );
+            writeValue<float>(
+                self,
+                kMainhandOldHeightOffset,
+                liveOldHeight
+            );
+        }
+
+
         using FinalMatrixTopFn=
             void* (*)(
                 void*
@@ -2661,6 +2830,7 @@ namespace levioffhand::render {
             gMinecraftBase=base;
             gItemStackMatchesTarget=base+kItemStackMatchesRva;
             gFinalOffhandMatrixTarget=base+kFinalOffhandMatrixTopRva;
+            gRenderFirstPersonTarget=base+kRenderFirstPersonRva;
 
             gPrepareAttachmentTarget=base+kPrepareAttachmentRva;
             gFindOwnerBoneVectorTarget=base+kFindOwnerBoneVectorRva;
@@ -2762,6 +2932,7 @@ namespace levioffhand::render {
         gComposeAttachmentBoneMatrixOriginal=nullptr;
         gHandEquipPredicateOriginal=nullptr;
         gFinalOffhandMatrixOriginal=nullptr;
+        gRenderFirstPersonOriginal=nullptr;
         gPrepareAttachmentOriginalPublished.store(nullptr,std::memory_order_release);
         gResolveOwnerBoneByNameOriginalPublished.store(
             nullptr,std::memory_order_release
@@ -2785,6 +2956,9 @@ namespace levioffhand::render {
         gCurrentToolFamily=ToolFamily::None;
         gToolFinalMatrixApplied=false;
         gLastCalibratedToolItem=nullptr;
+        gMainhandStableHeight=1.0f;
+        gMainhandStableHeightValid=false;
+        gMainhandEquipFreezeLogged=false;
         gOffhandDepth=0;
         gRenderer=nullptr;
         gPlayer=nullptr;
@@ -2990,6 +3164,52 @@ namespace levioffhand::render {
             return fail("tool orientation final-matrix hook failed");
         }
 
+        // Optional renderer-only freeze. A future binary mismatch must not
+        // disable any already-proven OFFHAND render path.
+        if(
+            belongsToMinecraft(gRenderFirstPersonTarget)
+            &&
+            matchesFingerprint(
+                gRenderFirstPersonTarget,
+                kRenderFirstPersonFingerprint
+            )
+        ) {
+            gRenderFirstPersonHook=
+                std::make_unique<pl::memory::HookHandle>(
+                    reinterpret_cast<void*>(
+                        gRenderFirstPersonTarget
+                    ),
+                    reinterpret_cast<void*>(
+                        &renderFirstPersonDetour
+                    ),
+                    &gRenderFirstPersonOriginal,
+                    pl::memory::HookPriority::Normal
+                );
+
+            if(
+                !gRenderFirstPersonHook
+                ||
+                !gRenderFirstPersonHook->installed()
+                ||
+                !gRenderFirstPersonOriginal
+            ) {
+                if(gRenderFirstPersonHook) {
+                    gRenderFirstPersonHook->reset();
+                    gRenderFirstPersonHook.reset();
+                }
+                gRenderFirstPersonOriginal=nullptr;
+                logger.info(
+                    "Placement visual: MAINHAND arm-height freeze unavailable; "
+                    "existing visuals retained"
+                );
+            }
+        } else {
+            logger.info(
+                "Placement visual: renderFirstPerson target unavailable; "
+                "existing visuals retained"
+            );
+        }
+
         mFeatureEnabled.store(true,std::memory_order_release);
         gNativeAttachmentHooksReady.store(true,std::memory_order_seq_cst);
 
@@ -3008,6 +3228,12 @@ namespace levioffhand::render {
         );
         logger.info(
             "Banner/Pot/Copper/Skull and unrelated item paths retained"
+        );
+        logger.info(
+            gRenderFirstPersonHook
+            && gRenderFirstPersonHook->installed()
+                ? "Placement visual: MAINHAND arm-height freeze armed"
+                : "Placement visual: MAINHAND arm-height freeze unavailable"
         );
         return true;
     }
@@ -3098,6 +3324,16 @@ namespace levioffhand::render {
         gHandEquipPredicateOriginal=nullptr;
         gHandEquipPredicateTarget=0;
 
+        if(gRenderFirstPersonHook) {
+            gRenderFirstPersonHook->reset();
+            gRenderFirstPersonHook.reset();
+        }
+        gRenderFirstPersonOriginal=nullptr;
+        gRenderFirstPersonTarget=0;
+        gMainhandStableHeight=1.0f;
+        gMainhandStableHeightValid=false;
+        gMainhandEquipFreezeLogged=false;
+
         if(gFinalOffhandMatrixHook) {
             gFinalOffhandMatrixHook->reset();
             gFinalOffhandMatrixHook.reset();
@@ -3140,6 +3376,9 @@ namespace levioffhand::render {
         gCurrentToolFamily=ToolFamily::None;
         gToolFinalMatrixApplied=false;
         gLastCalibratedToolItem=nullptr;
+        gMainhandStableHeight=1.0f;
+        gMainhandStableHeightValid=false;
+        gMainhandEquipFreezeLogged=false;
         gBowOffhandBindingDepth=0;
         gNative3dWeaponFppDepth=0;
         gNative3dFppFamily=ToolFamily::None;
@@ -3365,6 +3604,9 @@ namespace levioffhand::render {
         gCurrentToolFamily=ToolFamily::None;
         gToolFinalMatrixApplied=false;
         gLastCalibratedToolItem=nullptr;
+        gMainhandStableHeight=1.0f;
+        gMainhandStableHeightValid=false;
+        gMainhandEquipFreezeLogged=false;
         gBowOffhandBindingDepth=0;
         gNative3dWeaponFppDepth=0;
         gNative3dFppFamily=ToolFamily::None;

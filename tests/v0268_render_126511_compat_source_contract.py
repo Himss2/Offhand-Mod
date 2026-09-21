@@ -21,6 +21,7 @@ REQUIRED_NAMED_RVAS = {
     "kMatrixMultiplyRva": "0x98B49A0",
     "kItemStackMatchesRva": "0xFF86E80",
     "kHandEquipPredicateRva": "0xFFA6140",
+    "kRenderFirstPersonRva": "0xB2FB6C0",
     "kFirstPersonDataDrivenRenderRva": "0xA79F2C0",
     "kGetOffhandStackRva": "0xF579CA4",
     "kPrepareAttachmentRva": "0x9F013F0",
@@ -47,6 +48,7 @@ REQUIRED_ARCHIVED_LITERAL_MAP = {
     "0xEE63508": "0xF7AA2DC",
     "0xEEA721C": "0xF7728A8",
     "0x2652B1D": "0x272F25E",
+    "0xADE96B0": "0xB2FB6C0",
 }
 
 
@@ -57,6 +59,7 @@ REQUIRED_CPP_TARGETS = (
     "0xFF86E80",   # ItemStack match
     "0xFFA6140",   # hand-equip predicate
     "0xB2FC0BC",   # offhand dispatch callsite
+    "0xB2FB6C0",   # ItemInHandRenderer::renderFirstPerson
     "0xA79F2C0",   # first-person data-driven renderer
     "0xB2FBE9C",   # first-person data-driven callsite
     "0xF579CA4",   # Actor offhand ItemStack getter
@@ -159,6 +162,52 @@ def main() -> int:
         raise AssertionError(
             "Banner must use build470 block-path routing, not the later bridge-depth exception"
         )
+
+    # Exact MAINHAND arm-height source identified in renderFirstPerson.
+    # Keep OFFHAND height fields and all gameplay routing out of this detour.
+    for token in (
+        "kRenderFirstPersonRva=0xADE96B0",
+        "kRenderFirstPersonFingerprint",
+        "kMainhandHeightOffset=0x180",
+        "kMainhandOldHeightOffset=0x184",
+        "renderFirstPersonDetour(",
+        "gMainhandStableHeight",
+        "[PlacementVisual] MAINHAND player_arm_height frozen",
+        "Placement visual: MAINHAND arm-height freeze armed",
+    ):
+        if token not in compact_cpp and token not in cpp:
+            raise AssertionError(
+                f"MAINHAND arm-height freeze missing {token!r}"
+            )
+
+    freeze_start = cpp.index("renderFirstPersonDetour(")
+    freeze_end = cpp.index("using FinalMatrixTopFn", freeze_start)
+    freeze_body = cpp[freeze_start:freeze_end]
+    compact_freeze = re.sub(r"\s+", "", freeze_body)
+
+    for token in (
+        "writeValue<float>(self,kMainhandHeightOffset,frozenHeight)",
+        "writeValue<float>(self,kMainhandOldHeightOffset,frozenHeight)",
+        "writeValue<float>(self,kMainhandHeightOffset,liveHeight)",
+        "writeValue<float>(self,kMainhandOldHeightOffset,liveOldHeight)",
+        "OffhandPlacementAnimation::instance().progress()",
+        "original(self,renderContext,prevProjection,itemFlags)",
+    ):
+        if token not in compact_freeze:
+            raise AssertionError(
+                f"MAINHAND arm-height freeze scope missing {token!r}"
+            )
+
+    for forbidden in (
+        "LocalPlayer::swing",
+        "RightUseRouter",
+        "useItemOnBlock",
+        "baseUseItem",
+    ):
+        if forbidden in freeze_body:
+            raise AssertionError(
+                f"MAINHAND renderer freeze touched gameplay path {forbidden!r}"
+            )
 
     # The renderer and attachment helper must come from the same accepted overlay.
     assert git_blob_sha(header) == "deb12b1f33aa36e91d143d996ea92c415604f128"
