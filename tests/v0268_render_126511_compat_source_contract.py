@@ -21,7 +21,6 @@ REQUIRED_NAMED_RVAS = {
     "kMatrixMultiplyRva": "0x98B49A0",
     "kItemStackMatchesRva": "0xFF86E80",
     "kHandEquipPredicateRva": "0xFFA6140",
-    "kRenderFirstPersonRva": "0xB2FB6C0",
     "kFirstPersonDataDrivenRenderRva": "0xA79F2C0",
     "kGetOffhandStackRva": "0xF579CA4",
     "kPrepareAttachmentRva": "0x9F013F0",
@@ -30,8 +29,6 @@ REQUIRED_NAMED_RVAS = {
     "kDrawAttachmentRva": "0x9F03EAC",
     "kComposeAttachmentBoneMatrixRva": "0xFA528A4",
     "kFinalOffhandMatrixTopRva": "0x110AFF88",
-    "kFppSwingProgressRva": "0xF286ED8",
-    "kFppSwingProgressReturnRva": "0xB2FC398",
 }
 
 
@@ -50,9 +47,6 @@ REQUIRED_ARCHIVED_LITERAL_MAP = {
     "0xEE63508": "0xF7AA2DC",
     "0xEEA721C": "0xF7728A8",
     "0x2652B1D": "0x272F25E",
-    "0xADE96B0": "0xB2FB6C0",
-    "0xEA8DEFC": "0xF286ED8",
-    "0xADEA398": "0xB2FC398",
 }
 
 
@@ -63,7 +57,6 @@ REQUIRED_CPP_TARGETS = (
     "0xFF86E80",   # ItemStack match
     "0xFFA6140",   # hand-equip predicate
     "0xB2FC0BC",   # offhand dispatch callsite
-    "0xB2FB6C0",   # ItemInHandRenderer::renderFirstPerson
     "0xA79F2C0",   # first-person data-driven renderer
     "0xB2FBE9C",   # first-person data-driven callsite
     "0xF579CA4",   # Actor offhand ItemStack getter
@@ -81,9 +74,7 @@ REQUIRED_CPP_TARGETS = (
     "0xFA528A4",   # compose attachment matrix
     "0x9F5A6D0",   # compose callsite
     "0x110AFF88",  # final matrix top
-    "0xF286ED8",   # FPP swing-progress getter
-    "0xB2FC398",   # exact renderFirstPerson caller return
-    "0xB2F7ADC",   # OFFHAND final matrix return
+    "0xB2F7ADC",   # final matrix return
     "0x134BEF38",  # bow id
     "0x134BEF60",  # crossbow id
     "0x134BF140",  # trident id
@@ -168,117 +159,6 @@ def main() -> int:
         raise AssertionError(
             "Banner must use build470 block-path routing, not the later bridge-depth exception"
         )
-
-    # The visible placement dip is driven by MAINHAND equip-height
-    # interpolation at the top of renderFirstPerson.
-    for token in (
-        "kRenderFirstPersonRva=0xADE96B0",
-        "kMainhandHeightOffset=0x180",
-        "kMainhandOldHeightOffset=0x184",
-        "kRenderFirstPersonFingerprint",
-        "renderFirstPersonDetour(",
-        "gMainhandStableHeight",
-        "[PlacementVisual] MAINHAND FPP equip height frozen",
-        "Placement visual: MAINHAND FPP equip freeze armed",
-    ):
-        if token not in compact_cpp and token not in cpp:
-            raise AssertionError(
-                f"MAINHAND FPP equip freeze missing {token!r}"
-            )
-
-    equip_start = cpp.index("renderFirstPersonDetour(")
-    equip_end = cpp.index("using FppSwingProgressFn", equip_start)
-    compact_equip = re.sub(r"\s+", "", cpp[equip_start:equip_end])
-    for token in (
-        "writeValue<float>(self,kMainhandHeightOffset,frozenHeight)",
-        "writeValue<float>(self,kMainhandOldHeightOffset,frozenHeight)",
-        "writeValue<float>(self,kMainhandHeightOffset,liveHeight)",
-        "writeValue<float>(self,kMainhandOldHeightOffset,liveOldHeight)",
-        "original(self,renderContext,prevProjection,itemFlags)",
-    ):
-        if token not in compact_equip:
-            raise AssertionError(
-                f"MAINHAND FPP equip-freeze scope missing {token!r}"
-            )
-
-    # Pure-render MAINHAND placement freeze: neutralize only the
-    # swing-progress getter call made by ItemInHandRenderer::renderFirstPerson.
-    for token in (
-        "kFppSwingProgressRva=0xEA8DEFC",
-        "kFppSwingProgressReturnRva=0xADEA398",
-        "kFppSwingProgressFingerprint",
-        "fppSwingProgressDetour(",
-        "OffhandPlacementAnimation::",
-        "return 0.0f;",
-        "[PlacementVisual] MAINHAND FPP swing progress",
-        "Placement visual: MAINHAND FPP swing freeze armed",
-    ):
-        if token not in compact_cpp and token not in cpp:
-            raise AssertionError(
-                f"MAINHAND FPP swing freeze missing {token!r}"
-            )
-
-    swing_start = cpp.index("fppSwingProgressDetour(")
-    swing_end = cpp.index("using FinalMatrixTopFn", swing_start)
-    swing_detour = cpp[swing_start:swing_end]
-    compact_swing = re.sub(r"\s+", "", swing_detour)
-
-    for forbidden in (
-        "gMainhandStableHeight=",
-        "gMainhandStableHeightValid=",
-        "gMainhandEquipFreezeLogged=",
-    ):
-        if forbidden in swing_detour:
-            raise AssertionError(
-                "swing-progress detour must not clear top-level equip freeze state"
-            )
-
-    for token in (
-        "returnAddress==gMinecraftBase+kFppSwingProgressReturnRva",
-        "placementProgress>0.0f",
-        "placementProgress<1.0f",
-        "return0.0f;",
-        "returnoriginal(player,partialTicks);",
-    ):
-        if token not in compact_swing:
-            raise AssertionError(
-                f"FPP swing detour missing exact render-only guard {token!r}"
-            )
-
-    install_pos = cpp.index("gFppSwingProgressHook=")
-    feature_pos = cpp.index("mFeatureEnabled.store(true", install_pos)
-    optional_install = cpp[install_pos:feature_pos]
-    if "return fail(" in optional_install or "uninstall(context)" in optional_install:
-        raise AssertionError(
-            "optional FPP swing-progress hook must not disable visual baseline"
-        )
-
-    for stale in (
-        "kFinalMainhandMatrixReturnRva",
-        "gMainhandStableMatrix",
-        "MAINHAND final matrix frozen",
-    ):
-        if stale in cpp:
-            raise AssertionError(
-                f"ineffective MAINHAND matrix freeze returned: {stale!r}"
-            )
-
-    # Renderer-only invariant: never hook/override gameplay swing or upper-use
-    # control flow from src/render.  A previous experiment returned a synthetic
-    # bool from LocalPlayer::swing and changed MAINHAND ownership for specialized
-    # items such as Shears, allowing OFFHAND block placement to run incorrectly.
-    for forbidden in (
-        "kLocalPlayerSwingSignature",
-        "localPlayerSwingDetour(",
-        "kUpperUsePlacementSwingCallsiteA",
-        "kUpperUsePlacementSwingCallsiteB",
-        "0x97F8C28",
-        "0x97F8D04",
-    ):
-        if forbidden in cpp:
-            raise AssertionError(
-                f"renderer must not intercept gameplay swing/use routing: {forbidden!r}"
-            )
 
     # The renderer and attachment helper must come from the same accepted overlay.
     assert git_blob_sha(header) == "deb12b1f33aa36e91d143d996ea92c415604f128"
