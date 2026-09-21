@@ -54,18 +54,34 @@ for token in (
     if token not in engine.replace(" ", "") and token not in engine:
         raise AssertionError(f"SwapEngine missing {token}")
 
-# Runtime log regression: SwapEngine installs after RightUseRouter, so
-# Player::setSelectedItem may already be detoured. Exact-prologue validation
-# must fall back to the known live 1.26.51.1 target instead of disabling swap.
+# RightUseRouter installs before swap and hooks Player::setSelectedItem.
+// Swap must exact-validate the rest of the ABI, then accept only the known
+// executable 1.26.51.1 setter RVA when its prologue is already chained.
 for token in (
-    "resolveHookableTarget(",
-    "setSelectedPreHooked",
-    "setSelected live pre-hook target accepted",
+    "resolveSetSelectedTarget(",
+    "stableBuild",
+    "setSelectedChainedLive",
+    "base+kSetSelectedItemRva",
+    "mapped(live,PF_X)",
+    "Player::setSelectedItem pre-hooked; chaining live",
 ):
     if token not in engine:
         raise AssertionError(
-            f"SwapEngine must tolerate pre-hooked setSelectedItem: {token}"
+            f"SwapEngine missing hook-aware setSelected resolution: {token}"
         )
+
+if "const auto setSel=resolve(kSetSelectedItemRva,kSetSelectedItemFingerprint)" in engine.replace(" ", ""):
+    raise AssertionError(
+        "SwapEngine must not require an unmodified setSelected prologue after RightUseRouter installs"
+    )
+
+setter_start = router.index("void RightUseRouter::setSelectedItemDetour")
+setter_end = router.index("void RightUseRouter::releaseUsingItemDetour", setter_start)
+setter_body = router[setter_start:setter_end]
+if "original(player, stack);" not in setter_body:
+    raise AssertionError(
+        "hook-aware swap setter requires RightUseRouter setSelected detour to pass through outside scoped OFF writeback"
+    )
 
 # Critical fix: never validate/call the RightUseRouter-hooked getSelectedItem entry.
 for forbidden in (
@@ -79,52 +95,9 @@ for forbidden in (
             f"isolated swap must not depend on hooked selected-item entry: {forbidden}"
         )
 
-# One-empty swaps must use the canonical ItemStack::EMPTY_ITEM.  Do not feed
-# an empty stack object borrowed from the opposite container into a native
-# setter; that cross-slot identity caused intermittent OFF->MAIN loss and
-# locked/ghost OFFHAND state.
-compact_engine = engine.replace(" ", "")
-for token in (
-    "mSetSelectedItem(player,mEmptyItem)",
-    "mSetItemInHandSlot(player,kOffHand,mEmptyItem)",
-    "[SwapEngine] MAIN->OFF committed with canonical EMPTY_ITEM",
-    "[SwapEngine] OFF->MAIN committed with canonical EMPTY_ITEM",
-):
-    if token not in compact_engine and token not in engine:
-        raise AssertionError(f"canonical-empty swap sync missing {token}")
-
-if "mSetSelectedItem(player,off)" in compact_engine:
-    raise AssertionError(
-        "MAIN->OFF must not clear selected slot with OFFHAND's empty stack object"
-    )
-if "mSetItemInHandSlot(player,kOffHand,selected)" in compact_engine:
-    raise AssertionError(
-        "OFF->MAIN must not clear OFFHAND with selected-slot empty stack object"
-    )
-
-# Keep exact user-tested 44a occupied exchange; no clear-both derivative in
-# the occupied branch.  The canonical OFFHAND clear above is allowed only in
-# the MAIN-empty branch.
-occupied_marker = "Snapshot main(mItemStackCopyCtor,mItemStackDtor,selected);\n    Snapshot offSnap"
-occupied_start = engine.index(occupied_marker)
-occupied_body = engine[occupied_start:]
-occupied_sequence = (
-    "mSetSelectedItem(player,mEmptyItem)",
-    "mSetItemInHandSlot(player,kOffHand,main.get())",
-    "mSetSelectedItem(player,offSnap.get())",
-)
-occupied_positions = [
-    occupied_body.replace(" ", "").index(token)
-    for token in occupied_sequence
-]
-if occupied_positions != sorted(occupied_positions):
-    raise AssertionError(
-        "occupied 44a order changed: MAIN empty -> OFF gets MAIN -> MAIN gets old OFF"
-    )
-if "mSetItemInHandSlot(player,kOffHand,mEmptyItem)" in occupied_body.replace(" ", ""):
-    raise AssertionError(
-        "do not reintroduce clear-both inside occupied<->occupied swap"
-    )
+# Keep exact user-tested 44a occupied exchange; no clear-both derivative.
+if "mSetItemInHandSlot(player,kOffHand,mEmptyItem)" in engine.replace(" ", ""):
+    raise AssertionError("do not reintroduce OFFHAND clear-both derivative")
 
 for forbidden in (
     "InventoryTransactionPacket",

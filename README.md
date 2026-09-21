@@ -169,18 +169,19 @@ Immediately after this call Minecraft performs `sqrt`/`sin` math and applies the
 This remains render-only: it does not hook `LocalPlayer::swing`, upper-use, `RightUseRouter`, inventory, hand ownership, Banner, Crossbow, Bow, Trident/Spear, or block-count handling. If the optional render getter hook is unavailable, the accepted visual baseline remains active.
 
 
-### F-swap synchronization — canonical empty-stack ownership
+### F-swap install regression — pre-hooked selected setter
 
-Device testing established two remaining one-empty swap failures: OFFHAND -> empty MAIN could intermittently lose the visible item, and an item moved into OFFHAND could become impossible to drag out normally.
-
-Static RE of Minecraft 1.26.51.1 confirms that the native setters already record real inventory actions: LocalPlayer's OFFHAND setter reaches the container-119 action path, while `Player::setSelectedItem` records the selected-container transition. The isolated swap engine therefore does **not** add packets, ContainerValidation hooks, or a new transaction layer.
-
-The one suspicious mismatch was the empty stack object supplied to those setters. The previous code borrowed the empty ItemStack from the *opposite live slot* (`off` when clearing MAIN, `selected` when clearing OFF). Those objects are null-like but belong to different container/storage contexts. One-empty swaps now clear with Minecraft's canonical `ItemStack::EMPTY_ITEM` at `0x134C6780` in both directions:
+The device log from the rejected candidate showed the failure before any swap mutation ran:
 
 ```text
-MAIN=A,     OFF=empty -> MAIN=EMPTY_ITEM -> OFF=A
-MAIN=empty, OFF=B     -> OFF=EMPTY_ITEM  -> MAIN=B
+[SwapEngine] targets off=1 null=1 copy=1 dtor=1 setOff=1 setSelected=0 emptyMapped=1
+Swap engine: native storage target validation failed
+Swap Item HUD button registered (runtime unavailable; button kept visible)
 ```
 
-The already-working occupied 44a sequence is intentionally untouched: `MAIN=EMPTY -> OFF=old MAIN -> MAIN=old OFF`. The F button, preFrame pump, RightUseRouter, renderer, Sword/Shears ownership and block placement are unchanged.
+The supplied 1.26.51.1 binary still matches the `Player::setSelectedItem @ 0xF9F7850` fingerprint exactly on disk. The runtime mismatch occurs because `RightUseRouter` installs first and intentionally hooks that same setter before `SwapEngine::install()`.
+
+Swap now keeps exact fingerprint validation for every other native ABI target. Only after those guards identify the supported build may the engine accept the executable live address `base + 0xF9F7850` for `setSelectedItem`. RightUseRouter's detour is pass-through outside its explicit OFFHAND completion/release writeback scope, which is the state used by the preFrame swap pump.
+
+This commit restores the pre-regression swap mutation sequence unchanged. It does **not** attempt to solve the remaining one-empty synchronization bugs yet; those will be isolated after the F runtime is confirmed active again.
 

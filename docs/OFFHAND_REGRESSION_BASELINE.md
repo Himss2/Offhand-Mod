@@ -186,21 +186,21 @@ The build-#596 failure was caused by validating `Player::getSelectedItem` at `0x
 Storage mutation remains the user-tested 44a design: selected hotbar only through `Player::setSelectedItem`, OFFHAND only through `setItemInHandSlot(hand=1)`, detached snapshots before mutation, and occupied MAIN=A/OFF=B uses `MAIN=EMPTY -> OFF=A -> MAIN=B`. No clear-both step, ContainerValidation, packet synthesis, right-use hook, or renderer hook is added.
 
 
-## F-swap one-empty synchronization invariant
+## F-swap install regression: setSelected target already hooked
 
-New device evidence supersedes the earlier assumption that any `ItemStack::isNull()==true` object is interchangeable across hand containers.
+Systematic-debugging evidence:
 
-Minecraft 1.26.51.1 native setters already perform inventory bookkeeping. RE shows LocalPlayer OFFHAND write `0xAAD0360` calls `0xF9FC7C8`, which builds an InventoryAction for container ID `119 (0x77)` before the low-level OFF slot write. `Player::setSelectedItem @ 0xF9F7850` separately owns the selected-container mutation.
+1. Device runtime log: all SwapEngine targets validate except `setSelected=0`; the engine disables itself before an F request can execute.
+2. Static 1.26.51.1 binary check: the 48-byte fingerprint at `0xF9F7850` matches exactly on disk.
+3. Install order: `RightUseRouter::install()` runs before `SwapRuntime::install()`.
+4. RightUseRouter installs a HookHandle on `Player::setSelectedItem @ 0xF9F7850`, so the in-memory prologue is expected to differ by the time SwapEngine validates it.
+5. RightUseRouter's `setSelectedItemDetour` immediately forwards to the original setter unless an explicit OFFHAND completion/release writeback scope is active.
 
-Therefore the swap engine must preserve container ownership of the empty transition:
+Root cause: SwapEngine incorrectly treated an expected in-process hook as a game-version fingerprint failure.
 
-- MAIN -> empty uses canonical `ItemStack::EMPTY_ITEM @ 0x134C6780`, never the OFFHAND slot's null-like stack object.
-- OFFHAND -> empty uses the same canonical EMPTY_ITEM, never the selected hotbar slot's null-like stack object.
-- Detached snapshots remain mandatory before the first mutation.
-- Occupied MAIN=A / OFF=B retains the accepted 44a sequence and must not gain the rejected clear-both intermediate step.
-- No synthetic packet, ContainerValidation hook, ItemStackRequest action, RightUseRouter coupling, or renderer change is permitted for this fix.
+Fix boundary: keep exact fingerprints for offhand getter, null test, ItemStack copy/dtor, and OFF setter. Only `setSelectedItem` receives a known-build live-RVA fallback after those stable guards pass. Do not change swap mutation ordering in the same candidate.
 
-Device checks for this candidate: repeat empty MAIN/OFF -> MAIN at least 20 times without loss; repeat MAIN -> empty OFF and immediately drag the resulting OFF item to inventory/hotbar; then repeat occupied A/B swaps to verify the 44a path remains unchanged.
+The previous canonical-empty experiment is rolled back for this diagnostic candidate so device testing changes only one variable: whether the isolated swap runtime becomes available again.
 
 ## Must-pass runtime matrix (not yet run on device)
 

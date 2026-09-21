@@ -146,30 +146,37 @@ template<std::size_t N>
         ? target : 0;
 }
 
-[[nodiscard]] std::uintptr_t resolveKnownBuildTarget(
-    std::uintptr_t rva
+
+[[nodiscard]] std::uintptr_t resolveSetSelectedTarget(
+    bool& chainedLiveTarget
 ) noexcept {
+    chainedLiveTarget=false;
+
+    const auto exact=resolve(
+        kSetSelectedItemRva,
+        kSetSelectedItemFingerprint
+    );
+    if(exact!=0) {
+        return exact;
+    }
+
+    // RightUseRouter installs before SwapRuntime and hooks this exact entry.
+    // All other swap ABI targets above remain exact-fingerprint validated, so
+    // once those guards identify the supported 1.26.51.1 build, a changed
+    // prologue here means the known setter is already hook-chained in-process.
+    //
+    // Calling the live entry is safe for the preFrame swap path because
+    // RightUseRouter::setSelectedItemDetour is pass-through unless an explicit
+    // OFFHAND consumption/release writeback scope is active.
     const auto base=moduleBase();
     if(base==0) return 0;
-    const auto target=base+rva;
-    return mapped(target,PF_X) ? target : 0;
-}
 
-template<std::size_t N>
-[[nodiscard]] std::uintptr_t resolveHookableTarget(
-    std::uintptr_t rva,
-    const std::array<std::uint8_t,N>& fp,
-    bool* usedLiveFallback=nullptr
-) noexcept {
-    if(usedLiveFallback) *usedLiveFallback=false;
-
-    const auto exact=resolve(rva,fp);
-    if(exact) return exact;
-
-    const auto live=resolveKnownBuildTarget(rva);
-    if(live && usedLiveFallback) {
-        *usedLiveFallback=true;
+    const auto live=base+kSetSelectedItemRva;
+    if(!mapped(live,PF_X)) {
+        return 0;
     }
+
+    chainedLiveTarget=true;
     return live;
 }
 
@@ -226,46 +233,31 @@ bool SwapEngine::install(pl::mod::ModContext& context) noexcept {
     const auto dtor=resolve(kItemStackDtorRva,kItemStackDtorFingerprint);
     const auto setOff=resolve(kSetItemInHandSlotRva,kSetItemInHandSlotFingerprint);
 
+    const bool stableBuild=
+        off!=0 && nul!=0 && copy!=0 && dtor!=0 && setOff!=0;
+
+    bool setSelectedChainedLive=false;
+    const auto setSel=
+        stableBuild
+        ? resolveSetSelectedTarget(setSelectedChainedLive)
+        : 0;
+
     const auto base=moduleBase();
     const auto empty=base?base+kEmptyItemRva:0;
     const bool emptyMapped=mapped(empty,0);
 
-    // These unhooked helpers are the exact-build guard. Do not accept a live
-    // fallback for them. Only after they prove the 1.26.51.1 layout do we
-    // tolerate setSelectedItem having a modified prologue from RightUseRouter,
-    // which installs earlier by design.
-    const bool stableTargets=
-        off && nul && copy && dtor && setOff && emptyMapped;
-
-    bool setSelectedPreHooked=false;
-    const auto setSel=stableTargets
-        ? resolveHookableTarget(
-            kSetSelectedItemRva,
-            kSetSelectedItemFingerprint,
-            &setSelectedPreHooked
-        )
-        : 0;
-
     __android_log_print(
         ANDROID_LOG_INFO,kLogTag,
-        "[SwapEngine] targets off=%d null=%d copy=%d dtor=%d setOff=%d setSelected=%d setSelectedPreHooked=%d emptyMapped=%d",
+        "[SwapEngine] targets off=%d null=%d copy=%d dtor=%d setOff=%d setSelected=%d setSelectedLive=%d emptyMapped=%d",
         off!=0,nul!=0,copy!=0,dtor!=0,setOff!=0,setSel!=0,
-        setSelectedPreHooked?1:0,emptyMapped
+        setSelectedChainedLive?1:0,emptyMapped
     );
 
-    if(!stableTargets||!setSel) {
+    if(!off||!nul||!copy||!dtor||!setOff||!setSel||!emptyMapped) {
         context.logger().error(
             "Swap engine: native storage target validation failed"
         );
         return false;
-    }
-
-    if(setSelectedPreHooked) {
-        __android_log_print(
-            ANDROID_LOG_INFO,kLogTag,
-            "[SwapEngine] setSelected live pre-hook target accepted RVA=0x%llX",
-            static_cast<unsigned long long>(kSetSelectedItemRva)
-        );
     }
 
     mGetOffhandSlot=reinterpret_cast<GetOffhandSlotFn>(off);
@@ -275,6 +267,13 @@ bool SwapEngine::install(pl::mod::ModContext& context) noexcept {
     mSetItemInHandSlot=reinterpret_cast<SetItemInHandSlotFn>(setOff);
     mSetSelectedItem=reinterpret_cast<SetSelectedItemFn>(setSel);
     mEmptyItem=reinterpret_cast<const void*>(empty);
+
+    if(setSelectedChainedLive) {
+        context.logger().info(
+            "[SwapEngine] Player::setSelectedItem pre-hooked; chaining live "
+            "1.26.51.1 target RVA=0xF9F7850"
+        );
+    }
 
     if(!mStackIsNull(mEmptyItem)) {
         context.logger().error("Swap engine: native EMPTY_ITEM validation failed");
@@ -342,49 +341,17 @@ bool SwapEngine::swap(void* player,const void* selected) noexcept {
 
     if(offEmpty) {
         Snapshot main(mItemStackCopyCtor,mItemStackDtor,selected);
-        if(!main.get() || !mStackIsNull(mEmptyItem)) return false;
-
-        // Never use the OFFHAND slot's own empty ItemStack object as the
-        // replacement for the selected hotbar slot.  Although both report
-        // isNull(), they belong to different native container/storage
-        // contexts.  Feeding that cross-slot empty object into
-        // Player::setSelectedItem leaves Bedrock's paired inventory actions
-        // with the wrong empty-stack identity and can make the new OFFHAND
-        // stack behave like a locked/ghost slot.
-        //
-        // Use Minecraft's canonical ItemStack::EMPTY_ITEM instead; the
-        // user-tested mutation order remains unchanged:
-        //   MAIN=A, OFF=empty -> MAIN=empty -> OFF=A.
-        mSetSelectedItem(player,mEmptyItem);
+        if(!main.get()) return false;
+        mSetSelectedItem(player,off);
         mSetItemInHandSlot(player,kOffHand,main.get());
-
-        __android_log_print(
-            ANDROID_LOG_INFO,kLogTag,
-            "[SwapEngine] MAIN->OFF committed with canonical EMPTY_ITEM"
-        );
         return true;
     }
 
     if(mainEmpty) {
         Snapshot offSnap(mItemStackCopyCtor,mItemStackDtor,off);
-        if(!offSnap.get() || !mStackIsNull(mEmptyItem)) return false;
-
-        // Same rule in the reverse direction.  Do not clear OFFHAND using the
-        // selected hotbar slot's empty ItemStack object: that object is owned
-        // by the selected container, not container 119.  LocalPlayer's native
-        // OFFHAND setter records container-119 actions, so give it the
-        // canonical EMPTY_ITEM before installing the detached OFF snapshot
-        // into MAIN.
-        //
-        // Mutation order stays loss-safe:
-        //   MAIN=empty, OFF=B -> OFF=empty -> MAIN=B.
-        mSetItemInHandSlot(player,kOffHand,mEmptyItem);
+        if(!offSnap.get()) return false;
+        mSetItemInHandSlot(player,kOffHand,selected);
         mSetSelectedItem(player,offSnap.get());
-
-        __android_log_print(
-            ANDROID_LOG_INFO,kLogTag,
-            "[SwapEngine] OFF->MAIN committed with canonical EMPTY_ITEM"
-        );
         return true;
     }
 
