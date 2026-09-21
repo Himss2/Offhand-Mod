@@ -1,3 +1,9 @@
+### September 21 stability reset
+
+The unsuccessful MAINHAND freeze experiments are removed from the active renderer. The accepted pre-animation visual baseline is restored before any further animation RE. No FPP swing-progress, equip-height, final-matrix, or LocalPlayer swing hook is active.
+
+Shears routing is pinned independently of RTTI. For the current 26.50/26.51 item layout the router reads Item::mId at +0xAA and mMaxStackSize at +0xA8; Shears uses raw item ID 424 and stack size 1. This decision runs before the generic attack-only fallback, so Shears must retain MAINHAND ownership and must never invoke OFFHAND block placement.
+
 # Levi Offhand
 
 Native Levi Launcher Android mod for Minecraft Bedrock **1.26.45.1** and **1.26.51.1**.
