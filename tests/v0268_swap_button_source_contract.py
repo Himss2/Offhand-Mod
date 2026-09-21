@@ -54,6 +54,19 @@ for token in (
     if token not in engine.replace(" ", "") and token not in engine:
         raise AssertionError(f"SwapEngine missing {token}")
 
+# Runtime log regression: SwapEngine installs after RightUseRouter, so
+# Player::setSelectedItem may already be detoured. Exact-prologue validation
+# must fall back to the known live 1.26.51.1 target instead of disabling swap.
+for token in (
+    "resolveHookableTarget(",
+    "setSelectedPreHooked",
+    "setSelected live pre-hook target accepted",
+):
+    if token not in engine:
+        raise AssertionError(
+            f"SwapEngine must tolerate pre-hooked setSelectedItem: {token}"
+        )
+
 # Critical fix: never validate/call the RightUseRouter-hooked getSelectedItem entry.
 for forbidden in (
     "kSelectedItemRva",
