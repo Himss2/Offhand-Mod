@@ -106,12 +106,19 @@ if "mSetItemInHandSlot(player, kOffHand, gEmptyItem)" in process_body:
         "do not reintroduce the later clear-both derivative"
     )
 
+occupied_start = process_body.rfind(
+    "} else {\n        ItemStackSnapshot mainSnapshot("
+)
+if occupied_start < 0:
+    raise AssertionError("occupied<->occupied swap branch missing")
+occupied_body = process_body[occupied_start:]
+
 occupied_sequence = (
     "mSetSelectedItem(player, gEmptyItem)",
     "mSetItemInHandSlot(player, kOffHand, mainSnapshot.get())",
     "mSetSelectedItem(player, offSnapshot.get())",
 )
-occupied_positions = [process_body.index(token) for token in occupied_sequence]
+occupied_positions = [occupied_body.index(token) for token in occupied_sequence]
 if occupied_positions != sorted(occupied_positions):
     raise AssertionError(
         "occupied swap order changed from 44a: MAIN empty -> OFF gets MAIN -> MAIN gets old OFF"
