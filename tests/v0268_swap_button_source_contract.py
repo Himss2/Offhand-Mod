@@ -169,6 +169,13 @@ for forbidden in (
             f"RightUseRouter must remain independent from swap: {forbidden}"
         )
 
+button_register_pos = mod.index("ui::SwapButton::instance().registerButton(")
+runtime_gate_pos = mod.find("if(swapRuntimeInstalled)", mod.index("mModMenuRegistered=true"), button_register_pos)
+if runtime_gate_pos != -1:
+    raise AssertionError(
+        "SwapButton registration must stay visible even when native swap runtime is unavailable"
+    )
+
 if "OffhandSwapRuntime::instance().requestSwap()" not in mod:
     raise AssertionError("SwapButton callback must only queue the swap request")
 if "OffhandSwapRuntime::instance().swapNow()" in mod:

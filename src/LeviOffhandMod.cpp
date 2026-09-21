@@ -151,25 +151,30 @@ public:
         mModMenuRegistered=true;
         context.logger().info("Levi Offhand registered in Mod Menu");
 
-        if(swapRuntimeInstalled) {
-            const bool swapButtonRegistered=
-                ui::SwapButton::instance().registerButton(
-                    context.id(),
-                    kModuleId,
-                    []() {
-                        runtime::OffhandSwapRuntime::instance().requestSwap();
-                    }
-                );
+        // Register the HUD control independently from native swap readiness.
+        // Build #595 hid the F button whenever OffhandSwapRuntime::install()
+        // failed, even though ButtonBuilder itself was healthy.  The callback
+        // remains queue-only; requestSwap() already fails closed when runtime
+        // targets are unavailable.
+        const bool swapButtonRegistered=
+            ui::SwapButton::instance().registerButton(
+                context.id(),
+                kModuleId,
+                []() {
+                    runtime::OffhandSwapRuntime::instance().requestSwap();
+                }
+            );
 
-            if(swapButtonRegistered) {
-                context.logger().info(
-                    "Swap Item HUD button registered (44a isolated preFrame path)"
-                );
-            } else {
-                context.logger().warn(
-                    "Swap Item HUD button registration failed"
-                );
-            }
+        if(swapButtonRegistered) {
+            context.logger().info(
+                swapRuntimeInstalled
+                    ? "Swap Item HUD button registered (runtime ready)"
+                    : "Swap Item HUD button registered (runtime unavailable; button kept visible)"
+            );
+        } else {
+            context.logger().warn(
+                "Swap Item HUD button registration failed"
+            );
         }
         if(policyInstalled) {
             context.logger().info(

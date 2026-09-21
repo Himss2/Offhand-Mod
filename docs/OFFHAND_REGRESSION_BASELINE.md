@@ -181,6 +181,7 @@ Required architecture:
 
 - `RightUseRouter` installs first; `OffhandSwapRuntime` installs afterward as an optional extension.
 - The HUD F callback only sets `mSwapRequested`.
+- The ButtonBuilder control itself is registered regardless of whether `OffhandSwapRuntime::install()` succeeds. Native target failure may disable swap execution, but must not hide the F control; `requestSwap()` remains the fail-closed boundary.
 - Only `ClientInstance::preFrameTick` may drain the queued request.
 - MAIN selected storage is written only through `Player::setSelectedItem`.
 - OFFHAND storage is written only through `setItemInHandSlot(hand=1)`.
