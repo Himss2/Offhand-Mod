@@ -69,13 +69,17 @@ constexpr std::array<std::uint8_t,16> kSetItemInHandSlotFingerprint{
     0x28,0x1C,0x00,0x72,0x00,0x01,0x00,0x54,
     0x1F,0x05,0x00,0x71,0x61,0x01,0x00,0x54,
 };
-constexpr std::array<std::uint8_t,48> kSetSelectedItemFingerprint{
+constexpr std::array<std::uint8_t,80> kSetSelectedItemFingerprint{
     0xFD,0x7B,0xBB,0xA9,0xFC,0x67,0x01,0xA9,
     0xF8,0x5F,0x02,0xA9,0xF6,0x57,0x03,0xA9,
     0xF4,0x4F,0x04,0xA9,0xFD,0x03,0x00,0x91,
     0xFF,0xC3,0x0E,0xD1,0x56,0xD0,0x3B,0xD5,
     0xF3,0x03,0x01,0xAA,0xF4,0x03,0x00,0xAA,
     0xC8,0x16,0x40,0xF9,0xA8,0x83,0x1F,0xF8,
+    0x04,0xA0,0xED,0x97,0x08,0x00,0x40,0xF9,
+    0x08,0x11,0x43,0xF9,0x00,0x01,0x3F,0xD6,
+    0xF5,0x03,0x00,0xAA,0xE8,0x23,0x00,0x91,
+    0x80,0x22,0x00,0x91,0xAC,0xC8,0xB6,0x94,
 };
 
 struct ModuleState {
@@ -146,6 +150,23 @@ template<std::size_t N>
         ? target : 0;
 }
 
+// RightUseRouter installs its setter hook before swap. Validate the untouched
+// native body instead of requiring the original hookable entry bytes. Keep
+// calling the entry so the existing hook chain and native transactions run.
+// This exception is setter-specific; all independent helpers stay exact-match.
+[[nodiscard]] std::uintptr_t resolveSelectedSetter(std::uintptr_t rva) noexcept {
+    constexpr std::size_t bodyOffset=32;
+    const auto base=moduleBase();
+    if(base==0) return 0;
+    const auto target=base+rva;
+    if(!mapped(target,PF_R|PF_X) ||
+       !mapped(target+kSetSelectedItemFingerprint.size()-1,PF_R|PF_X)) return 0;
+    if(std::memcmp(reinterpret_cast<const void*>(target+bodyOffset),
+                   kSetSelectedItemFingerprint.data()+bodyOffset,
+                   kSetSelectedItemFingerprint.size()-bodyOffset)!=0) return 0;
+    return target;
+}
+
 template<typename T>
 [[nodiscard]] T read(const void* base,std::size_t off,T fallback={}) noexcept {
     if(!base) return fallback;
@@ -198,7 +219,8 @@ bool SwapEngine::install(pl::mod::ModContext& context) noexcept {
     const auto copy=resolve(kItemStackCopyCtorRva,kItemStackCopyCtorFingerprint);
     const auto dtor=resolve(kItemStackDtorRva,kItemStackDtorFingerprint);
     const auto setOff=resolve(kSetItemInHandSlotRva,kSetItemInHandSlotFingerprint);
-    const auto setSel=resolve(kSetSelectedItemRva,kSetSelectedItemFingerprint);
+    const auto setSel=(off && nul && copy && dtor && setOff)
+        ? resolveSelectedSetter(kSetSelectedItemRva) : 0;
 
     const auto base=moduleBase();
     const auto empty=base?base+kEmptyItemRva:0;
@@ -215,6 +237,13 @@ bool SwapEngine::install(pl::mod::ModContext& context) noexcept {
             "Swap engine: native storage target validation failed"
         );
         return false;
+    }
+
+    if(std::memcmp(reinterpret_cast<const void*>(setSel),
+                   kSetSelectedItemFingerprint.data(),32)!=0) {
+        context.logger().info(
+            "Swap engine: pre-hooked selected setter accepted; native body verified"
+        );
     }
 
     mGetOffhandSlot=reinterpret_cast<GetOffhandSlotFn>(off);
@@ -320,3 +349,4 @@ bool SwapEngine::swap(void* player,const void* selected) noexcept {
 }
 
 } // namespace levioffhand::swap
+
