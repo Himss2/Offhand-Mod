@@ -101,39 +101,6 @@ namespace levioffhand::render {
         constexpr std::uintptr_t kFinalOffhandMatrixTopRva=0x107CC804;
         constexpr std::uintptr_t kFinalOffhandMatrixReturnRva=0xADE56D8;
 
-        // ItemInHandRenderer::renderFirstPerson.
-        // 1.26.45.1 RVA 0xADE96B0 -> 1.26.51.1 RVA 0xB2FB6C0.
-        constexpr std::uintptr_t kRenderFirstPersonRva=0xADE96B0;
-        constexpr std::array<std::uint8_t,16> kRenderFirstPersonFingerprint{
-            0xFF,0x03,0x07,0xD1,0xEF,0x3B,0x12,0x6D,
-            0xED,0x33,0x13,0x6D,0xEB,0x2B,0x14,0x6D
-        };
-
-        // Verified directly at the top of renderFirstPerson:
-        // MAINHAND current/previous equip height = +0x180/+0x184.
-        // OFFHAND uses a separate pair at +0x188/+0x18C.
-        constexpr std::size_t kMainhandHeightOffset=0x180;
-        constexpr std::size_t kMainhandOldHeightOffset=0x184;
-
-        // Pure render-time MAINHAND swing source.
-        //
-        // 1.26.45.1 renderFirstPerson:
-        //   BL 0xEA8DEFC @ 0xADEA394, return 0xADEA398.
-        //
-        // 1.26.51.1:
-        //   BL 0xF286ED8 @ 0xB2FC394, return 0xB2FC398.
-        //
-        // The returned float is immediately consumed by sqrt/sin MAINHAND
-        // matrix composition.  The target itself only reads/interpolates
-        // swing state, so neutralizing its return is render-only.
-        constexpr std::uintptr_t kFppSwingProgressRva=0xEA8DEFC;
-        constexpr std::uintptr_t kFppSwingProgressReturnRva=0xADEA398;
-
-        constexpr std::array<std::uint8_t,16> kFppSwingProgressFingerprint{
-            0x02,0xEC,0x43,0xBD,0x01,0x30,0x44,0xBD,
-            0xE3,0x03,0x22,0x1E,0x42,0x38,0x21,0x1E
-        };
-
         constexpr std::uintptr_t kBowIdRva=0x126F0FB8;
         constexpr std::uintptr_t kCrossbowIdRva=0x126F0FE0;
         constexpr std::uintptr_t kTridentIdRva=0x126F11C0;
@@ -342,7 +309,6 @@ namespace levioffhand::render {
         std::uintptr_t gHandEquipPredicateTarget=0;
         thread_local std::uint32_t gGenericLeftFppLoggedMask=0;
 
-
         std::unique_ptr<pl::memory::HookHandle> gRenderItemRouteHook;
         void* gRenderItemRouteOriginal=nullptr;
         std::uintptr_t gRenderItemRouteTarget=0;
@@ -430,22 +396,6 @@ namespace levioffhand::render {
         void* gFinalOffhandMatrixOriginal=nullptr;
         std::uintptr_t gFinalOffhandMatrixTarget=0;
         std::uintptr_t gToolMatrixMultiplyTarget=0;
-
-        // Top-level FPP hook: the equip-height interpolation happens before
-        // the shared hand helper, so freezing inside that helper is too late.
-        std::unique_ptr<pl::memory::HookHandle> gRenderFirstPersonHook;
-        void* gRenderFirstPersonOriginal=nullptr;
-        std::uintptr_t gRenderFirstPersonTarget=0;
-        thread_local float gMainhandStableHeight=1.0f;
-        thread_local bool gMainhandStableHeightValid=false;
-        thread_local bool gMainhandEquipFreezeLogged=false;
-
-        // Optional render-only hook for the read-only swing interpolation
-        // getter used by ItemInHandRenderer::renderFirstPerson.
-        std::unique_ptr<pl::memory::HookHandle> gFppSwingProgressHook;
-        void* gFppSwingProgressOriginal=nullptr;
-        std::uintptr_t gFppSwingProgressTarget=0;
-        thread_local bool gFppSwingNeutralizedLogged=false;
 
         template<typename T>
         T readValue(
@@ -2492,209 +2442,6 @@ namespace levioffhand::render {
             }
         }
 
-        using RenderFirstPersonFn=void(*)(
-            void*,
-            void*,
-            const void*,
-            std::uint8_t
-        );
-
-        void
-        renderFirstPersonDetour(
-            void* self,
-            void* renderContext,
-            const void* prevProjection,
-            std::uint8_t itemFlags
-        ) noexcept {
-            const auto original=
-                reinterpret_cast<RenderFirstPersonFn>(
-                    gRenderFirstPersonOriginal
-                );
-
-            if(!original) {
-                return;
-            }
-
-            const float placementProgress=
-                runtime::OffhandPlacementAnimation::
-                    instance().
-                    progress();
-
-            const bool placementActive=
-                placementProgress>0.0f
-                &&
-                placementProgress<1.0f;
-
-            if(
-                !self
-                ||
-                !OffhandBlockRenderPatch::
-                    instance().
-                    featureEnabled()
-            ) {
-                gMainhandStableHeightValid=false;
-                gMainhandEquipFreezeLogged=false;
-                original(self,renderContext,prevProjection,itemFlags);
-                return;
-            }
-
-            const float liveHeight=
-                readValue<float>(
-                    self,
-                    kMainhandHeightOffset,
-                    1.0f
-                );
-            const float liveOldHeight=
-                readValue<float>(
-                    self,
-                    kMainhandOldHeightOffset,
-                    liveHeight
-                );
-
-            if(!placementActive) {
-                if(
-                    std::isfinite(liveHeight)
-                    &&
-                    liveHeight>=-2.0f
-                    &&
-                    liveHeight<=2.0f
-                ) {
-                    gMainhandStableHeight=liveHeight;
-                    gMainhandStableHeightValid=true;
-                }
-
-                gMainhandEquipFreezeLogged=false;
-                original(self,renderContext,prevProjection,itemFlags);
-                return;
-            }
-
-            float frozenHeight=
-                gMainhandStableHeightValid
-                ? gMainhandStableHeight
-                : liveOldHeight;
-
-            if(!std::isfinite(frozenHeight)) {
-                frozenHeight=
-                    std::isfinite(liveHeight)
-                    ? liveHeight
-                    : 1.0f;
-            }
-
-            // Scope only the MAINHAND equip interpolation consumed by this
-            // render call. OFFHAND height fields are never touched.
-            writeValue<float>(
-                self,
-                kMainhandHeightOffset,
-                frozenHeight
-            );
-            writeValue<float>(
-                self,
-                kMainhandOldHeightOffset,
-                frozenHeight
-            );
-
-            if(!gMainhandEquipFreezeLogged) {
-                gMainhandEquipFreezeLogged=true;
-                __android_log_print(
-                    ANDROID_LOG_INFO,
-                    kLogTag,
-                    "[PlacementVisual] MAINHAND FPP equip height frozen "
-                    "at renderFirstPerson height=%.3f",
-                    static_cast<double>(frozenHeight)
-                );
-            }
-
-            original(self,renderContext,prevProjection,itemFlags);
-
-            writeValue<float>(
-                self,
-                kMainhandHeightOffset,
-                liveHeight
-            );
-            writeValue<float>(
-                self,
-                kMainhandOldHeightOffset,
-                liveOldHeight
-            );
-        }
-
-
-        using FppSwingProgressFn=float(*)(void*,float);
-
-        float
-        fppSwingProgressDetour(
-            void* player,
-            float partialTicks
-        ) noexcept {
-            const auto original=
-                reinterpret_cast<FppSwingProgressFn>(
-                    gFppSwingProgressOriginal
-                );
-
-            if(!original) {
-                return 0.0f;
-            }
-
-            const auto returnAddress=
-                reinterpret_cast<std::uintptr_t>(
-                    __builtin_return_address(0)
-                );
-
-            const bool exactFppCaller=
-                gMinecraftBase!=0
-                &&
-                returnAddress
-                ==
-                gMinecraftBase
-                +
-                kFppSwingProgressReturnRva;
-
-            const float placementProgress=
-                runtime::OffhandPlacementAnimation::
-                    instance().
-                    progress();
-
-            const bool placementActive=
-                placementProgress>0.0f
-                &&
-                placementProgress<1.0f;
-
-            if(
-                exactFppCaller
-                &&
-                placementActive
-                &&
-                OffhandBlockRenderPatch::
-                    instance().
-                    featureEnabled()
-            ) {
-                if(!gFppSwingNeutralizedLogged) {
-                    gFppSwingNeutralizedLogged=true;
-                    __android_log_print(
-                        ANDROID_LOG_INFO,
-                        kLogTag,
-                        "[PlacementVisual] MAINHAND FPP swing progress "
-                        "neutralized at renderFirstPerson caller=0x%llX",
-                        static_cast<unsigned long long>(
-                            returnAddress-gMinecraftBase
-                        )
-                    );
-                }
-
-                return 0.0f;
-            }
-
-            if(!placementActive) {
-                gFppSwingNeutralizedLogged=false;
-            }
-
-            return original(
-                player,
-                partialTicks
-            );
-        }
-
-
         using FinalMatrixTopFn=
             void* (*)(
                 void*
@@ -2719,11 +2466,6 @@ namespace levioffhand::render {
             void* result=
                 original(
                     matrixStack
-                );
-
-            const std::uintptr_t caller=
-                reinterpret_cast<std::uintptr_t>(
-                    __builtin_return_address(0)
                 );
 
             /*
@@ -2756,6 +2498,11 @@ namespace levioffhand::render {
             ) {
                 return result;
             }
+
+            const std::uintptr_t caller=
+                reinterpret_cast<std::uintptr_t>(
+                    __builtin_return_address(0)
+                );
 
             if(
                 gMinecraftBase==0
@@ -2914,8 +2661,6 @@ namespace levioffhand::render {
             gMinecraftBase=base;
             gItemStackMatchesTarget=base+kItemStackMatchesRva;
             gFinalOffhandMatrixTarget=base+kFinalOffhandMatrixTopRva;
-            gRenderFirstPersonTarget=base+kRenderFirstPersonRva;
-            gFppSwingProgressTarget=base+kFppSwingProgressRva;
 
             gPrepareAttachmentTarget=base+kPrepareAttachmentRva;
             gFindOwnerBoneVectorTarget=base+kFindOwnerBoneVectorRva;
@@ -3017,8 +2762,6 @@ namespace levioffhand::render {
         gComposeAttachmentBoneMatrixOriginal=nullptr;
         gHandEquipPredicateOriginal=nullptr;
         gFinalOffhandMatrixOriginal=nullptr;
-        gRenderFirstPersonOriginal=nullptr;
-        gFppSwingProgressOriginal=nullptr;
         gPrepareAttachmentOriginalPublished.store(nullptr,std::memory_order_release);
         gResolveOwnerBoneByNameOriginalPublished.store(
             nullptr,std::memory_order_release
@@ -3042,10 +2785,6 @@ namespace levioffhand::render {
         gCurrentToolFamily=ToolFamily::None;
         gToolFinalMatrixApplied=false;
         gLastCalibratedToolItem=nullptr;
-        gMainhandStableHeight=1.0f;
-        gMainhandStableHeightValid=false;
-        gMainhandEquipFreezeLogged=false;
-        gFppSwingNeutralizedLogged=false;
         gOffhandDepth=0;
         gRenderer=nullptr;
         gPlayer=nullptr;
@@ -3251,93 +2990,6 @@ namespace levioffhand::render {
             return fail("tool orientation final-matrix hook failed");
         }
 
-        // Top-level FPP equip-height freeze. Optional by design.
-        if(
-            belongsToMinecraft(gRenderFirstPersonTarget)
-            &&
-            matchesFingerprint(
-                gRenderFirstPersonTarget,
-                kRenderFirstPersonFingerprint
-            )
-        ) {
-            gRenderFirstPersonHook=
-                std::make_unique<pl::memory::HookHandle>(
-                    reinterpret_cast<void*>(gRenderFirstPersonTarget),
-                    reinterpret_cast<void*>(&renderFirstPersonDetour),
-                    &gRenderFirstPersonOriginal,
-                    pl::memory::HookPriority::Normal
-                );
-
-            if(
-                !gRenderFirstPersonHook
-                ||
-                !gRenderFirstPersonHook->installed()
-                ||
-                !gRenderFirstPersonOriginal
-            ) {
-                if(gRenderFirstPersonHook) {
-                    gRenderFirstPersonHook->reset();
-                    gRenderFirstPersonHook.reset();
-                }
-                gRenderFirstPersonOriginal=nullptr;
-                logger.info(
-                    "Placement visual: MAINHAND FPP equip freeze unavailable; "
-                    "existing visuals retained"
-                );
-            }
-        } else {
-            logger.info(
-                "Placement visual: renderFirstPerson target unavailable; "
-                "existing visuals retained"
-            );
-        }
-
-        // Optional and render-only. A mismatch must never disable the proven
-        // Banner/Bow/Crossbow/Trident/block visual stack.
-        if(
-            belongsToMinecraft(gFppSwingProgressTarget)
-            &&
-            matchesFingerprint(
-                gFppSwingProgressTarget,
-                kFppSwingProgressFingerprint
-            )
-        ) {
-            gFppSwingProgressHook=
-                std::make_unique<pl::memory::HookHandle>(
-                    reinterpret_cast<void*>(
-                        gFppSwingProgressTarget
-                    ),
-                    reinterpret_cast<void*>(
-                        &fppSwingProgressDetour
-                    ),
-                    &gFppSwingProgressOriginal,
-                    pl::memory::HookPriority::Normal
-                );
-
-            if(
-                !gFppSwingProgressHook
-                ||
-                !gFppSwingProgressHook->installed()
-                ||
-                !gFppSwingProgressOriginal
-            ) {
-                if(gFppSwingProgressHook) {
-                    gFppSwingProgressHook->reset();
-                    gFppSwingProgressHook.reset();
-                }
-                gFppSwingProgressOriginal=nullptr;
-                logger.info(
-                    "Placement visual: FPP swing-progress hook unavailable; "
-                    "existing visuals retained"
-                );
-            }
-        } else {
-            logger.info(
-                "Placement visual: FPP swing-progress target unavailable; "
-                "existing visuals retained"
-            );
-        }
-
         mFeatureEnabled.store(true,std::memory_order_release);
         gNativeAttachmentHooksReady.store(true,std::memory_order_seq_cst);
 
@@ -3356,18 +3008,6 @@ namespace levioffhand::render {
         );
         logger.info(
             "Banner/Pot/Copper/Skull and unrelated item paths retained"
-        );
-        logger.info(
-            gRenderFirstPersonHook
-            && gRenderFirstPersonHook->installed()
-                ? "Placement visual: MAINHAND FPP equip freeze armed"
-                : "Placement visual: MAINHAND FPP equip freeze unavailable"
-        );
-        logger.info(
-            gFppSwingProgressHook
-            && gFppSwingProgressHook->installed()
-                ? "Placement visual: MAINHAND FPP swing freeze armed"
-                : "Placement visual: MAINHAND FPP swing freeze unavailable"
         );
         return true;
     }
@@ -3458,27 +3098,6 @@ namespace levioffhand::render {
         gHandEquipPredicateOriginal=nullptr;
         gHandEquipPredicateTarget=0;
 
-        if(gRenderFirstPersonHook) {
-            gRenderFirstPersonHook->reset();
-            gRenderFirstPersonHook.reset();
-        }
-        gRenderFirstPersonOriginal=nullptr;
-        gRenderFirstPersonTarget=0;
-        gMainhandStableHeight=1.0f;
-        gMainhandStableHeightValid=false;
-        gMainhandEquipFreezeLogged=false;
-
-        if(gFppSwingProgressHook) {
-            gFppSwingProgressHook->reset();
-            gFppSwingProgressHook.reset();
-        }
-        gFppSwingProgressOriginal=nullptr;
-        gFppSwingProgressTarget=0;
-        gMainhandStableHeight=1.0f;
-        gMainhandStableHeightValid=false;
-        gMainhandEquipFreezeLogged=false;
-        gFppSwingNeutralizedLogged=false;
-
         if(gFinalOffhandMatrixHook) {
             gFinalOffhandMatrixHook->reset();
             gFinalOffhandMatrixHook.reset();
@@ -3521,10 +3140,6 @@ namespace levioffhand::render {
         gCurrentToolFamily=ToolFamily::None;
         gToolFinalMatrixApplied=false;
         gLastCalibratedToolItem=nullptr;
-        gMainhandStableHeight=1.0f;
-        gMainhandStableHeightValid=false;
-        gMainhandEquipFreezeLogged=false;
-        gFppSwingNeutralizedLogged=false;
         gBowOffhandBindingDepth=0;
         gNative3dWeaponFppDepth=0;
         gNative3dFppFamily=ToolFamily::None;
@@ -3750,10 +3365,6 @@ namespace levioffhand::render {
         gCurrentToolFamily=ToolFamily::None;
         gToolFinalMatrixApplied=false;
         gLastCalibratedToolItem=nullptr;
-        gMainhandStableHeight=1.0f;
-        gMainhandStableHeightValid=false;
-        gMainhandEquipFreezeLogged=false;
-        gFppSwingNeutralizedLogged=false;
         gBowOffhandBindingDepth=0;
         gNative3dWeaponFppDepth=0;
         gNative3dFppFamily=ToolFamily::None;
