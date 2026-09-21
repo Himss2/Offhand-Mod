@@ -186,6 +186,22 @@ The build-#596 failure was caused by validating `Player::getSelectedItem` at `0x
 Storage mutation remains the user-tested 44a design: selected hotbar only through `Player::setSelectedItem`, OFFHAND only through `setItemInHandSlot(hand=1)`, detached snapshots before mutation, and occupied MAIN=A/OFF=B uses `MAIN=EMPTY -> OFF=A -> MAIN=B`. No clear-both step, ContainerValidation, packet synthesis, right-use hook, or renderer hook is added.
 
 
+## F-swap one-empty synchronization invariant
+
+New device evidence supersedes the earlier assumption that any `ItemStack::isNull()==true` object is interchangeable across hand containers.
+
+Minecraft 1.26.51.1 native setters already perform inventory bookkeeping. RE shows LocalPlayer OFFHAND write `0xAAD0360` calls `0xF9FC7C8`, which builds an InventoryAction for container ID `119 (0x77)` before the low-level OFF slot write. `Player::setSelectedItem @ 0xF9F7850` separately owns the selected-container mutation.
+
+Therefore the swap engine must preserve container ownership of the empty transition:
+
+- MAIN -> empty uses canonical `ItemStack::EMPTY_ITEM @ 0x134C6780`, never the OFFHAND slot's null-like stack object.
+- OFFHAND -> empty uses the same canonical EMPTY_ITEM, never the selected hotbar slot's null-like stack object.
+- Detached snapshots remain mandatory before the first mutation.
+- Occupied MAIN=A / OFF=B retains the accepted 44a sequence and must not gain the rejected clear-both intermediate step.
+- No synthetic packet, ContainerValidation hook, ItemStackRequest action, RightUseRouter coupling, or renderer change is permitted for this fix.
+
+Device checks for this candidate: repeat empty MAIN/OFF -> MAIN at least 20 times without loss; repeat MAIN -> empty OFF and immediately drag the resulting OFF item to inventory/hotbar; then repeat occupied A/B swaps to verify the 44a path remains unchanged.
+
 ## Must-pass runtime matrix (not yet run on device)
 
 Start from a fresh Minecraft process for every candidate baseline:

@@ -168,3 +168,19 @@ Immediately after this call Minecraft performs `sqrt`/`sin` math and applies the
 
 This remains render-only: it does not hook `LocalPlayer::swing`, upper-use, `RightUseRouter`, inventory, hand ownership, Banner, Crossbow, Bow, Trident/Spear, or block-count handling. If the optional render getter hook is unavailable, the accepted visual baseline remains active.
 
+
+### F-swap synchronization — canonical empty-stack ownership
+
+Device testing established two remaining one-empty swap failures: OFFHAND -> empty MAIN could intermittently lose the visible item, and an item moved into OFFHAND could become impossible to drag out normally.
+
+Static RE of Minecraft 1.26.51.1 confirms that the native setters already record real inventory actions: LocalPlayer's OFFHAND setter reaches the container-119 action path, while `Player::setSelectedItem` records the selected-container transition. The isolated swap engine therefore does **not** add packets, ContainerValidation hooks, or a new transaction layer.
+
+The one suspicious mismatch was the empty stack object supplied to those setters. The previous code borrowed the empty ItemStack from the *opposite live slot* (`off` when clearing MAIN, `selected` when clearing OFF). Those objects are null-like but belong to different container/storage contexts. One-empty swaps now clear with Minecraft's canonical `ItemStack::EMPTY_ITEM` at `0x134C6780` in both directions:
+
+```text
+MAIN=A,     OFF=empty -> MAIN=EMPTY_ITEM -> OFF=A
+MAIN=empty, OFF=B     -> OFF=EMPTY_ITEM  -> MAIN=B
+```
+
+The already-working occupied 44a sequence is intentionally untouched: `MAIN=EMPTY -> OFF=old MAIN -> MAIN=old OFF`. The F button, preFrame pump, RightUseRouter, renderer, Sword/Shears ownership and block placement are unchanged.
+

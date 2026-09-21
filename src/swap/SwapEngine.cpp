@@ -291,17 +291,49 @@ bool SwapEngine::swap(void* player,const void* selected) noexcept {
 
     if(offEmpty) {
         Snapshot main(mItemStackCopyCtor,mItemStackDtor,selected);
-        if(!main.get()) return false;
-        mSetSelectedItem(player,off);
+        if(!main.get() || !mStackIsNull(mEmptyItem)) return false;
+
+        // Never use the OFFHAND slot's own empty ItemStack object as the
+        // replacement for the selected hotbar slot.  Although both report
+        // isNull(), they belong to different native container/storage
+        // contexts.  Feeding that cross-slot empty object into
+        // Player::setSelectedItem leaves Bedrock's paired inventory actions
+        // with the wrong empty-stack identity and can make the new OFFHAND
+        // stack behave like a locked/ghost slot.
+        //
+        // Use Minecraft's canonical ItemStack::EMPTY_ITEM instead; the
+        // user-tested mutation order remains unchanged:
+        //   MAIN=A, OFF=empty -> MAIN=empty -> OFF=A.
+        mSetSelectedItem(player,mEmptyItem);
         mSetItemInHandSlot(player,kOffHand,main.get());
+
+        __android_log_print(
+            ANDROID_LOG_INFO,kLogTag,
+            "[SwapEngine] MAIN->OFF committed with canonical EMPTY_ITEM"
+        );
         return true;
     }
 
     if(mainEmpty) {
         Snapshot offSnap(mItemStackCopyCtor,mItemStackDtor,off);
-        if(!offSnap.get()) return false;
-        mSetItemInHandSlot(player,kOffHand,selected);
+        if(!offSnap.get() || !mStackIsNull(mEmptyItem)) return false;
+
+        // Same rule in the reverse direction.  Do not clear OFFHAND using the
+        // selected hotbar slot's empty ItemStack object: that object is owned
+        // by the selected container, not container 119.  LocalPlayer's native
+        // OFFHAND setter records container-119 actions, so give it the
+        // canonical EMPTY_ITEM before installing the detached OFF snapshot
+        // into MAIN.
+        //
+        // Mutation order stays loss-safe:
+        //   MAIN=empty, OFF=B -> OFF=empty -> MAIN=B.
+        mSetItemInHandSlot(player,kOffHand,mEmptyItem);
         mSetSelectedItem(player,offSnap.get());
+
+        __android_log_print(
+            ANDROID_LOG_INFO,kLogTag,
+            "[SwapEngine] OFF->MAIN committed with canonical EMPTY_ITEM"
+        );
         return true;
     }
 
