@@ -175,23 +175,16 @@ Manual offhand storage/removal must remain native. Do not reintroduce ContainerV
 
 ## Isolated F-swap candidate
 
-The swap core is restored from commit `44a7277ec9f9419e3f6bfb81392c1c951b4f1b00`, the historical build where the user reported the swap itself was correct. The right-use regression seen around that historical test is deliberately excluded: this candidate does not modify `RightUseRouter.cpp`, does not drain from `getSelectedItem`, and does not change block-use or hand-ownership logic.
+Swap is split into three independent layers:
 
-Required architecture:
+- `src/ui/SwapButton.*`: ButtonBuilder UI only; currently code-styled and ready for image-backed UI later.
+- `src/swap/SwapRuntime.*`: queue + `ClientInstance::preFrameTick` pump only.
+- `src/swap/SwapEngine.*`: native selected/OFFHAND storage exchange only.
 
-- `RightUseRouter` installs first; `OffhandSwapRuntime` installs afterward as an optional extension.
-- The HUD F callback only sets `mSwapRequested`.
-- The ButtonBuilder control itself is registered regardless of whether `OffhandSwapRuntime::install()` succeeds. Native target failure may disable swap execution, but must not hide the F control; `requestSwap()` remains the fail-closed boundary.
-- Only `ClientInstance::preFrameTick` may drain the queued request.
-- MAIN selected storage is written only through `Player::setSelectedItem`.
-- OFFHAND storage is written only through `setItemInHandSlot(hand=1)`.
-- `setItemInHandSlot(hand=0)` is forbidden in the swap path.
-- Every non-empty source is copied to a detached native `ItemStack` snapshot before mutation.
-- Occupied MAIN=A / OFF=B keeps the successful 44a order: `MAIN=EMPTY` -> `OFF=A` -> `MAIN=B`.
-- The later unverified clear-both step `OFF=EMPTY` is intentionally not used.
-- No ContainerValidation hook, synthetic packet, selected-item hook, right-use hook, block-use hook, or renderer hook may be added for swap.
+The build-#596 failure was caused by validating `Player::getSelectedItem` at `0xF9F7824` after `RightUseRouter` had already hooked that entry. The new engine never validates/calls that function. Static RE of 1.26.51.1 shows the getter reads Player `+0x570`, then selected-state `+0xB0/+0xB8/+0x10`, and dispatches the container getter at vtable `+0x40`. Swap reproduces that read locally, so it no longer joins the RightUseRouter hook chain.
 
-This remains a current-build candidate until the device matrix is rerun. Sword/Shears ownership, block-count reconciliation, Banner/Crossbow rendering, and the current MAINHAND render-freeze path are regression-locked outside the swap module.
+Storage mutation remains the user-tested 44a design: selected hotbar only through `Player::setSelectedItem`, OFFHAND only through `setItemInHandSlot(hand=1)`, detached snapshots before mutation, and occupied MAIN=A/OFF=B uses `MAIN=EMPTY -> OFF=A -> MAIN=B`. No clear-both step, ContainerValidation, packet synthesis, right-use hook, or renderer hook is added.
+
 
 ## Must-pass runtime matrix (not yet run on device)
 

@@ -83,6 +83,8 @@ jobs:
             src/ui/SwapButton.cpp \
             src/swap/SwapRuntime.hpp \
             src/swap/SwapRuntime.cpp \
+            src/swap/SwapEngine.hpp \
+            src/swap/SwapEngine.cpp \
             src/render/OffhandBlockRenderPatch.cpp \
             src/render/NativeAttachmentFix.hpp \
             src/render/OffhandBlockRenderPatch.hpp \

@@ -68,6 +68,7 @@ add_library(
     src/LeviOffhandMod.cpp
     src/ui/SwapButton.cpp
     src/swap/SwapRuntime.cpp
+    src/swap/SwapEngine.cpp
     src/runtime/NativeOffhandPolicy.cpp
     src/runtime/AutoInsertRouting.cpp
     src/runtime/ActionHandContext.cpp

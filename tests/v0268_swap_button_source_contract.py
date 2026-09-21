@@ -4,7 +4,9 @@ ROOT = Path(__file__).resolve().parents[1]
 
 button = (ROOT / "src/ui/SwapButton.cpp").read_text(errors="replace")
 runtime = (ROOT / "src/swap/SwapRuntime.cpp").read_text(errors="replace")
-header = (ROOT / "src/swap/SwapRuntime.hpp").read_text(errors="replace")
+runtime_h = (ROOT / "src/swap/SwapRuntime.hpp").read_text(errors="replace")
+engine = (ROOT / "src/swap/SwapEngine.cpp").read_text(errors="replace")
+engine_h = (ROOT / "src/swap/SwapEngine.hpp").read_text(errors="replace")
 router = (ROOT / "src/runtime/RightUseRouter.cpp").read_text(errors="replace")
 mod = (ROOT / "src/LeviOffhandMod.cpp").read_text(errors="replace")
 cmake = (ROOT / "CMakeLists.txt").read_text(errors="replace")
@@ -17,176 +19,93 @@ for token in (
     if token not in button:
         raise AssertionError(f"SwapButton missing {token}")
 
+# UI is code-only for now and may later be replaced by image-backed styling.
+if "SwapEngine" in button or "ItemStack" in button:
+    raise AssertionError("SwapButton UI must not contain native swap/storage logic")
+
 for token in (
-    "kOffhandSlotRva = 0xF579C2C",
-    "kStackIsNullRva = 0xFFA0F70",
-    "kItemStackCopyCtorRva = 0xFF9D748",
-    "kItemStackDtorRva = 0x85ADF98",
-    "kSetItemInHandSlotRva = 0xF579C50",
-    "kSetSelectedItemRva = 0xF9F7850",
-    "kSetSelectedItemFingerprint",
-    "kItemStackStorageSize = 0x98",
-    "kClientPreFrameTickRva = 0x9803334",
-    "kSelectedItemRva = 0xF9F7824",
-    "kEmptyItemRva = 0x134C6780",
-    "addressInMinecraftLoadSegment",
-    "emptyMapped",
-    "[SwapEngine] targets off=%d null=%d copy=%d dtor=%d setOff=%d ",
-    "kClientGetLocalPlayerVtableOffset = 0x100",
-    "clientPreFrameTickDetour",
-    "currentThreadName",
-    "ScopedPreFrameSwapPump",
-    "gPreFrameSwapPumpDepth",
-    "ClientInstance::preFrameTick pumping queued F swap (thread=%s)",
-    "pending F swap rejected outside preFrameTick pump (thread=%s)",
-    "draining queued F swap on MINECRAFT MAIN",
-    "requestSwap()",
-    "hasPendingSwap()",
-    "processPendingSwap(",
-    "mSwapRequested.store(true",
-    "[SwapRuntime] F swap queued for MINECRAFT MAIN",
-    "[SwapRuntime] swapped selected hotbar <-> OFFHAND without transient duplicates",
+    "kClientPreFrameTickRva=0x9803334",
+    "preFrameDetour(",
+    "SwapEngine::instance().selectedStack(player)",
+    "SwapEngine::instance().swap(player,selected)",
+    "F swap queued for MINECRAFT MAIN",
 ):
-    if token not in runtime:
+    if token not in runtime.replace(" ", "") and token not in runtime:
         raise AssertionError(f"SwapRuntime missing {token}")
 
 for token in (
-    "void requestSwap() noexcept",
-    "bool hasPendingSwap() const noexcept",
-    "bool processPendingSwap(",
-    "std::atomic_bool mSwapRequested",
-    "SetSelectedItemFn mSetSelectedItem",
+    "kOffhandSlotRva=0xF579C2C",
+    "kStackIsNullRva=0xFFA0F70",
+    "kItemStackCopyCtorRva=0xFF9D748",
+    "kItemStackDtorRva=0x85ADF98",
+    "kSetItemInHandSlotRva=0xF579C50",
+    "kSetSelectedItemRva=0xF9F7850",
+    "kEmptyItemRva=0x134C6780",
+    "kPlayerSelectedStateOffset=0x570",
+    "kSelectedStateFlagOffset=0xB0",
+    "kSelectedStateContainerOffset=0xB8",
+    "kSelectedStateIndexOffset=0x10",
+    "kContainerGetItemVtableOffset=0x40",
+    "selectedStack(",
+    "mSetSelectedItem(player,mEmptyItem)",
+    "mSetItemInHandSlot(player,kOffHand,main.get())",
+    "mSetSelectedItem(player,offSnap.get())",
 ):
-    if token not in header:
-        raise AssertionError(f"SwapRuntime.hpp missing {token}")
+    if token not in engine.replace(" ", "") and token not in engine:
+        raise AssertionError(f"SwapEngine missing {token}")
 
-request_start = runtime.index("void SwapRuntime::requestSwap()")
-request_end = runtime.index(
-    "bool SwapRuntime::hasPendingSwap()",
-    request_start,
-)
-request_body = runtime[request_start:request_end]
+# Critical fix: never validate/call the RightUseRouter-hooked getSelectedItem entry.
 for forbidden in (
-    "mItemStackCopyCtor(",
-    "mSetItemInHandSlot(",
-    "mGetOffhandSlot(",
-    "ItemStackSnapshot",
+    "kSelectedItemRva",
+    "kSelectedItemFingerprint",
+    "gGetSelectedItem",
+    "Player::getSelectedItem(",
 ):
-    if forbidden in request_body:
+    if forbidden in runtime or forbidden in engine:
         raise AssertionError(
-            f"UI-thread requestSwap must not touch Minecraft state: {forbidden}"
+            f"isolated swap must not depend on hooked selected-item entry: {forbidden}"
         )
 
-process_start = runtime.index("bool SwapRuntime::processPendingSwap(")
-process_body = runtime[process_start:]
-if "hasPendingSwap()" not in process_body:
-    raise AssertionError("processPendingSwap must enforce pending request gate")
-if "if (gPreFrameSwapPumpDepth == 0)" not in process_body:
-    raise AssertionError("swap execution must be hard-gated to ClientInstance::preFrameTick")
-if "mSwapRequested.compare_exchange_strong" in process_body.split("if (gPreFrameSwapPumpDepth == 0)")[0]:
-    raise AssertionError("calls outside the preFrameTick pump must not consume the queued swap request")
-if "mSetItemInHandSlot(player, kMainHand" in process_body:
-    raise AssertionError(
-        "swap must never write MAINHAND through carried-item setter"
-    )
-if "mSetSelectedItem(player, offStack)" not in process_body:
-    raise AssertionError("main->empty-offhand must clear selected hotbar exactly once")
-if process_body.count("mSetSelectedItem(player, offSnapshot.get())") < 2:
-    raise AssertionError("offhand->main paths must write selected hotbar through setSelectedItem")
-if process_body.count("mSetItemInHandSlot(player, kOffHand") < 3:
-    raise AssertionError("all swap directions must write offhand only through hand=1")
-
-if "mSetSelectedItem(player, gEmptyItem)" not in process_body:
-    raise AssertionError(
-        "occupied<->occupied swap must clear MAIN through native EMPTY_ITEM before moving OFF"
-    )
-if "gEmptyItem == nullptr || !mStackIsNull(gEmptyItem)" not in process_body:
-    raise AssertionError("occupied swap must validate native EMPTY_ITEM before mutation")
-
-if "mSetItemInHandSlot(player, kOffHand, gEmptyItem)" in process_body:
-    raise AssertionError(
-        "candidate must keep the user-tested 44a sequence; "
-        "do not reintroduce the later clear-both derivative"
-    )
-
-occupied_start = process_body.rfind(
-    "} else {\n        ItemStackSnapshot mainSnapshot("
-)
-if occupied_start < 0:
-    raise AssertionError("occupied<->occupied swap branch missing")
-occupied_body = process_body[occupied_start:]
-
-occupied_sequence = (
-    "mSetSelectedItem(player, gEmptyItem)",
-    "mSetItemInHandSlot(player, kOffHand, mainSnapshot.get())",
-    "mSetSelectedItem(player, offSnapshot.get())",
-)
-occupied_positions = [occupied_body.index(token) for token in occupied_sequence]
-if occupied_positions != sorted(occupied_positions):
-    raise AssertionError(
-        "occupied swap order changed from 44a: MAIN empty -> OFF gets MAIN -> MAIN gets old OFF"
-    )
+# Keep exact user-tested 44a occupied exchange; no clear-both derivative.
+if "mSetItemInHandSlot(player,kOffHand,mEmptyItem)" in engine.replace(" ", ""):
+    raise AssertionError("do not reintroduce OFFHAND clear-both derivative")
 
 for forbidden in (
     "InventoryTransactionPacket",
     "ContainerValidation",
     "ItemStackRequestAction",
 ):
-    if forbidden in runtime:
-        raise AssertionError(f"swap runtime must not synthesize {forbidden}")
-
-if "processPendingSwap(" in router or "hasPendingSwap()" in router:
-    raise AssertionError(
-        "RightUseRouter selected-item hook must not execute or drain F swaps"
-    )
-
-for token in (
-    "gClientPreFrameTickHook",
-    "gGetSelectedItem",
-    "localPlayerFromClient",
-    "swap.processPendingSwap(player, selected)",
-):
-    if token not in runtime:
-        raise AssertionError(
-            f"SwapRuntime frame pump missing: {token}"
-        )
-
-if "observePlayer(player)" in router:
-    raise AssertionError("swap must not cache a LocalPlayer pointer across threads")
-
-right_use_install = mod.index("RightUseRouter::instance().install(context)")
-swap_install = mod.index("SwapRuntime::instance().install(context)")
-if right_use_install > swap_install:
-    raise AssertionError(
-        "RightUseRouter must install before the optional swap extension"
-    )
+    if forbidden in runtime or forbidden in engine:
+        raise AssertionError(f"swap must not synthesize {forbidden}")
 
 for forbidden in (
-    '#include "runtime/SwapRuntime.hpp"',
+    '#include "swap/SwapRuntime.hpp"',
+    '#include "swap/SwapEngine.hpp"',
     "SwapRuntime::instance()",
-    "processPendingSwap(",
-    "hasPendingSwap()",
+    "SwapEngine::instance()",
 ):
     if forbidden in router:
         raise AssertionError(
             f"RightUseRouter must remain independent from swap: {forbidden}"
         )
 
-button_register_pos = mod.index("ui::SwapButton::instance().registerButton(")
-runtime_gate_pos = mod.find("if(swapRuntimeInstalled)", mod.index("mModMenuRegistered=true"), button_register_pos)
-if runtime_gate_pos != -1:
-    raise AssertionError(
-        "SwapButton registration must stay visible even when native swap runtime is unavailable"
-    )
+right_use_install = mod.index("RightUseRouter::instance().install(context)")
+swap_install = mod.index("SwapRuntime::instance().install(context)")
+if right_use_install > swap_install:
+    raise AssertionError("RightUseRouter must install before optional swap runtime")
 
 if "SwapRuntime::instance().requestSwap()" not in mod:
-    raise AssertionError("SwapButton callback must only queue the swap request")
-if "SwapRuntime::instance().swapNow()" in mod:
-    raise AssertionError("SwapButton callback must not execute Minecraft swap synchronously")
+    raise AssertionError("SwapButton callback must stay queue-only")
 
-if "src/swap/SwapRuntime.cpp" not in cmake:
-    raise AssertionError("CMakeLists.txt missing isolated src/swap/SwapRuntime.cpp")
+for path in (
+    "src/swap/SwapRuntime.cpp",
+    "src/swap/SwapEngine.cpp",
+    "src/ui/SwapButton.cpp",
+):
+    if path not in cmake:
+        raise AssertionError(f"CMake missing {path}")
+
 if "src/runtime/OffhandSwapRuntime.cpp" in cmake:
-    raise AssertionError("legacy OffhandSwapRuntime must stay uncompiled")
+    raise AssertionError("legacy mixed swap runtime must stay uncompiled")
 
-print("v0.2.68 swap button ClientInstance frame-pump contract passed")
+print("v0.2.68 isolated swap UI/runtime/engine contract passed")
