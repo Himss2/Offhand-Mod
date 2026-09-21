@@ -23,15 +23,18 @@ public:
     // Native storage exchange only. Caller must run on the swap preFrame pump.
     [[nodiscard]] bool swap(void* player, const void* selectedStack) noexcept;
 
-private:
-    SwapEngine() = default;
-
+    // Native ABI aliases are public only so the engine's private snapshot
+    // helper can use the exact constructor/destructor signatures. They do not
+    // expose any swap operation to UI or RightUseRouter.
     using GetOffhandSlotFn = const void* (*)(const void*);
     using StackIsNullFn = bool (*)(const void*);
     using ItemStackCopyCtorFn = void (*)(void*, const void*);
     using ItemStackDtorFn = void (*)(void*);
     using SetItemInHandSlotFn = void (*)(void*, unsigned char, const void*);
     using SetSelectedItemFn = void (*)(void*, const void*);
+
+private:
+    SwapEngine() = default;
 
     GetOffhandSlotFn mGetOffhandSlot{nullptr};
     StackIsNullFn mStackIsNull{nullptr};

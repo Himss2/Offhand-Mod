@@ -22,9 +22,12 @@ public:
 
     [[nodiscard]] bool hasPendingSwap() const noexcept;
 
+    // Internal entry used only by this translation unit's preFrame detour.
+    // Kept public to avoid making the UI or any gameplay router a friend.
+    [[nodiscard]] bool drain(void* player,const void* selectedStack) noexcept;
+
 private:
     SwapRuntime() = default;
-    [[nodiscard]] bool drain(void* player,const void* selectedStack) noexcept;
 
     std::atomic_bool mFeatureEnabled{true};
     std::atomic_bool mInstalled{false};
