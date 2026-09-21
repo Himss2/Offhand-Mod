@@ -133,6 +133,7 @@ jobs:
 
       - name: Run v0.2.68 action routing tests
         run: |
+          bash tests/run_swap_engine_tests.sh
           bash tests/run_right_use_runtime_tests.sh
           python3 tests/v0262_native_routing_source_contract.py
           python3 tests/v0268_action_routing_source_contract.py
@@ -210,4 +211,5 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           files: dist/arm64-v8a/levi-offhand-v0.2.68.levipack
+
 
