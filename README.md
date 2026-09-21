@@ -163,7 +163,7 @@ swing-progress BL        0xB2FC394 -> 0xF286ED8
 return/caller            0xB2FC398
 ```
 
-Immediately after this call Minecraft performs `sqrt`/`sin` math and applies the MAINHAND swing transform to the local FPP matrix. The new optional hook therefore returns neutral progress `0.0f` only when the caller is exactly the verified `renderFirstPerson` return address and `OffhandPlacementAnimation` is active. Every other interpolation call forwards to vanilla.
+Immediately after this call Minecraft performs `sqrt`/`sin` math and applies the MAINHAND swing transform to the local FPP matrix. The renderer now actually installs this optional getter hook: it returns neutral progress `0.0f` only when the caller is exactly the verified `renderFirstPerson` return address and `OffhandPlacementAnimation` is active. Every other interpolation call forwards to vanilla. This runs alongside the existing MAIN arm-height freeze, so equip-height and swing-matrix motion are both neutralized without touching gameplay state.
 
 This remains render-only: it does not hook `LocalPlayer::swing`, upper-use, `RightUseRouter`, inventory, hand ownership, Banner, Crossbow, Bow, Trident/Spear, or block-count handling. If the optional render getter hook is unavailable, the accepted visual baseline remains active.
 

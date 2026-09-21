@@ -117,6 +117,25 @@ namespace levioffhand::render {
         constexpr std::size_t kMainhandHeightOffset=0x180;
         constexpr std::size_t kMainhandOldHeightOffset=0x184;
 
+        // Pure render-only MAINHAND swing progress source.
+        //
+        // Minecraft 1.26.45.1:
+        //   renderFirstPerson BL 0xADEA394 -> 0xEA8DEFC
+        //   return address       0xADEA398
+        //
+        // Minecraft 1.26.51.1:
+        //   renderFirstPerson BL 0xB2FC394 -> 0xF286ED8
+        //   return address       0xB2FC398
+        //
+        // The helper only interpolates Player swing progress; the return is
+        // immediately consumed by renderFirstPerson sqrt/sin matrix math.
+        constexpr std::uintptr_t kMainhandSwingProgressRva=0xEA8DEFC;
+        constexpr std::uintptr_t kMainhandSwingRenderReturnRva=0xADEA398;
+        constexpr std::array<std::uint8_t,16> kMainhandSwingProgressFingerprint{
+            0x02,0xEC,0x43,0xBD,0x01,0x30,0x44,0xBD,
+            0xE3,0x03,0x22,0x1E,0x42,0x38,0x21,0x1E
+        };
+
         constexpr std::uintptr_t kBowIdRva=0x126F0FB8;
         constexpr std::uintptr_t kCrossbowIdRva=0x126F0FE0;
         constexpr std::uintptr_t kTridentIdRva=0x126F11C0;
@@ -419,6 +438,12 @@ namespace levioffhand::render {
         thread_local float gMainhandStableHeight=1.0f;
         thread_local bool gMainhandStableHeightValid=false;
         thread_local bool gMainhandEquipFreezeLogged=false;
+
+
+        std::unique_ptr<pl::memory::HookHandle> gMainhandSwingProgressHook;
+        void* gMainhandSwingProgressOriginal=nullptr;
+        std::uintptr_t gMainhandSwingProgressTarget=0;
+        thread_local bool gMainhandSwingProgressFreezeLogged=false;
 
         template<typename T>
         T readValue(
@@ -2611,6 +2636,85 @@ namespace levioffhand::render {
         }
 
 
+        using MainhandSwingProgressFn=
+            float(*)(
+                const void*,
+                float
+            );
+
+        float mainhandSwingProgressDetour(
+            const void* player,
+            float partialTicks
+        ) noexcept {
+            const auto original=
+                reinterpret_cast<MainhandSwingProgressFn>(
+                    gMainhandSwingProgressOriginal
+                );
+
+            if(!original) {
+                return 0.0f;
+            }
+
+            const auto caller=
+                reinterpret_cast<std::uintptr_t>(
+                    __builtin_return_address(0)
+                );
+
+            const float placementProgress=
+                runtime::OffhandPlacementAnimation::
+                    instance().
+                    progress();
+
+            const bool placementActive=
+                placementProgress>0.0f
+                &&
+                placementProgress<1.0f;
+
+            const bool exactMainhandRenderCaller=
+                gMinecraftBase!=0
+                &&
+                caller
+                ==
+                gMinecraftBase
+                +
+                kMainhandSwingRenderReturnRva;
+
+            if(
+                OffhandBlockRenderPatch::
+                    instance().
+                    featureEnabled()
+                &&
+                placementActive
+                &&
+                exactMainhandRenderCaller
+            ) {
+                if(!gMainhandSwingProgressFreezeLogged) {
+                    gMainhandSwingProgressFreezeLogged=true;
+                    __android_log_print(
+                        ANDROID_LOG_INFO,
+                        kLogTag,
+                        "[PlacementVisual] MAINHAND swing progress frozen "
+                        "at renderFirstPerson caller=0x%llX",
+                        static_cast<unsigned long long>(
+                            kMainhandSwingRenderReturnRva
+                        )
+                    );
+                }
+
+                return 0.0f;
+            }
+
+            if(!placementActive) {
+                gMainhandSwingProgressFreezeLogged=false;
+            }
+
+            return original(
+                player,
+                partialTicks
+            );
+        }
+
+
         using FinalMatrixTopFn=
             void* (*)(
                 void*
@@ -2831,6 +2935,8 @@ namespace levioffhand::render {
             gItemStackMatchesTarget=base+kItemStackMatchesRva;
             gFinalOffhandMatrixTarget=base+kFinalOffhandMatrixTopRva;
             gRenderFirstPersonTarget=base+kRenderFirstPersonRva;
+            gMainhandSwingProgressTarget=
+                base+kMainhandSwingProgressRva;
 
             gPrepareAttachmentTarget=base+kPrepareAttachmentRva;
             gFindOwnerBoneVectorTarget=base+kFindOwnerBoneVectorRva;
@@ -2933,6 +3039,7 @@ namespace levioffhand::render {
         gHandEquipPredicateOriginal=nullptr;
         gFinalOffhandMatrixOriginal=nullptr;
         gRenderFirstPersonOriginal=nullptr;
+        gMainhandSwingProgressOriginal=nullptr;
         gPrepareAttachmentOriginalPublished.store(nullptr,std::memory_order_release);
         gResolveOwnerBoneByNameOriginalPublished.store(
             nullptr,std::memory_order_release
@@ -3210,6 +3317,53 @@ namespace levioffhand::render {
             );
         }
 
+        // Optional render-only swing freeze. This target is a read-only
+        // interpolation getter; exact return-address gating prevents any other
+        // Player swing consumer from being changed.
+        if(
+            belongsToMinecraft(gMainhandSwingProgressTarget)
+            &&
+            matchesFingerprint(
+                gMainhandSwingProgressTarget,
+                kMainhandSwingProgressFingerprint
+            )
+        ) {
+            gMainhandSwingProgressHook=
+                std::make_unique<pl::memory::HookHandle>(
+                    reinterpret_cast<void*>(
+                        gMainhandSwingProgressTarget
+                    ),
+                    reinterpret_cast<void*>(
+                        &mainhandSwingProgressDetour
+                    ),
+                    &gMainhandSwingProgressOriginal,
+                    pl::memory::HookPriority::Normal
+                );
+
+            if(
+                !gMainhandSwingProgressHook
+                ||
+                !gMainhandSwingProgressHook->installed()
+                ||
+                !gMainhandSwingProgressOriginal
+            ) {
+                if(gMainhandSwingProgressHook) {
+                    gMainhandSwingProgressHook->reset();
+                    gMainhandSwingProgressHook.reset();
+                }
+                gMainhandSwingProgressOriginal=nullptr;
+                logger.info(
+                    "Placement visual: MAINHAND swing-progress freeze unavailable; "
+                    "existing visuals retained"
+                );
+            }
+        } else {
+            logger.info(
+                "Placement visual: MAINHAND swing-progress target unavailable; "
+                "existing visuals retained"
+            );
+        }
+
         mFeatureEnabled.store(true,std::memory_order_release);
         gNativeAttachmentHooksReady.store(true,std::memory_order_seq_cst);
 
@@ -3234,6 +3388,12 @@ namespace levioffhand::render {
             && gRenderFirstPersonHook->installed()
                 ? "Placement visual: MAINHAND arm-height freeze armed"
                 : "Placement visual: MAINHAND arm-height freeze unavailable"
+        );
+        logger.info(
+            gMainhandSwingProgressHook
+            && gMainhandSwingProgressHook->installed()
+                ? "Placement visual: MAINHAND swing-progress freeze armed"
+                : "Placement visual: MAINHAND swing-progress freeze unavailable"
         );
         return true;
     }
@@ -3334,6 +3494,14 @@ namespace levioffhand::render {
         gMainhandStableHeightValid=false;
         gMainhandEquipFreezeLogged=false;
 
+        if(gMainhandSwingProgressHook) {
+            gMainhandSwingProgressHook->reset();
+            gMainhandSwingProgressHook.reset();
+        }
+        gMainhandSwingProgressOriginal=nullptr;
+        gMainhandSwingProgressTarget=0;
+        gMainhandSwingProgressFreezeLogged=false;
+
         if(gFinalOffhandMatrixHook) {
             gFinalOffhandMatrixHook->reset();
             gFinalOffhandMatrixHook.reset();
@@ -3379,6 +3547,7 @@ namespace levioffhand::render {
         gMainhandStableHeight=1.0f;
         gMainhandStableHeightValid=false;
         gMainhandEquipFreezeLogged=false;
+        gMainhandSwingProgressFreezeLogged=false;
         gBowOffhandBindingDepth=0;
         gNative3dWeaponFppDepth=0;
         gNative3dFppFamily=ToolFamily::None;
@@ -3607,6 +3776,7 @@ namespace levioffhand::render {
         gMainhandStableHeight=1.0f;
         gMainhandStableHeightValid=false;
         gMainhandEquipFreezeLogged=false;
+        gMainhandSwingProgressFreezeLogged=false;
         gBowOffhandBindingDepth=0;
         gNative3dWeaponFppDepth=0;
         gNative3dFppFamily=ToolFamily::None;

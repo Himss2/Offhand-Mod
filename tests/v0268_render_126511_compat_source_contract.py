@@ -22,6 +22,8 @@ REQUIRED_NAMED_RVAS = {
     "kItemStackMatchesRva": "0xFF86E80",
     "kHandEquipPredicateRva": "0xFFA6140",
     "kRenderFirstPersonRva": "0xB2FB6C0",
+    "kMainhandSwingProgressRva": "0xF286ED8",
+    "kMainhandSwingRenderReturnRva": "0xB2FC398",
     "kFirstPersonDataDrivenRenderRva": "0xA79F2C0",
     "kGetOffhandStackRva": "0xF579CA4",
     "kPrepareAttachmentRva": "0x9F013F0",
@@ -49,6 +51,8 @@ REQUIRED_ARCHIVED_LITERAL_MAP = {
     "0xEEA721C": "0xF7728A8",
     "0x2652B1D": "0x272F25E",
     "0xADE96B0": "0xB2FB6C0",
+    "0xEA8DEFC": "0xF286ED8",
+    "0xADEA398": "0xB2FC398",
 }
 
 
@@ -60,6 +64,8 @@ REQUIRED_CPP_TARGETS = (
     "0xFFA6140",   # hand-equip predicate
     "0xB2FC0BC",   # offhand dispatch callsite
     "0xB2FB6C0",   # ItemInHandRenderer::renderFirstPerson
+    "0xF286ED8",   # render-only MAINHAND swing-progress getter
+    "0xB2FC398",   # exact renderFirstPerson return/caller
     "0xA79F2C0",   # first-person data-driven renderer
     "0xB2FBE9C",   # first-person data-driven callsite
     "0xF579CA4",   # Actor offhand ItemStack getter
@@ -207,6 +213,53 @@ def main() -> int:
         if forbidden in freeze_body:
             raise AssertionError(
                 f"MAINHAND renderer freeze touched gameplay path {forbidden!r}"
+            )
+
+    # MAINHAND visible motion also consumes the read-only swing-progress
+    # interpolator from one exact renderFirstPerson callsite.  Neutralize only
+    # that render consumer while OFFHAND placement animation is active.
+    for token in (
+        "kMainhandSwingProgressRva=0xEA8DEFC",
+        "kMainhandSwingRenderReturnRva=0xADEA398",
+        "kMainhandSwingProgressFingerprint",
+        "mainhandSwingProgressDetour(",
+        "gMainhandSwingProgressHook",
+        "exactMainhandRenderCaller",
+        "return 0.0f;",
+        "[PlacementVisual] MAINHAND swing progress frozen",
+        "Placement visual: MAINHAND swing-progress freeze armed",
+    ):
+        if token not in compact_cpp and token not in cpp:
+            raise AssertionError(
+                f"MAINHAND render swing-progress freeze missing {token!r}"
+            )
+
+    swing_start = cpp.index("mainhandSwingProgressDetour(")
+    swing_end = cpp.index("using FinalMatrixTopFn", swing_start)
+    swing_body = cpp[swing_start:swing_end]
+    compact_swing = re.sub(r"\s+", "", swing_body)
+
+    for token in (
+        "OffhandPlacementAnimation::instance().progress()",
+        "caller==gMinecraftBase+kMainhandSwingRenderReturnRva",
+        "return0.0f;",
+        "returnoriginal(player,partialTicks);",
+    ):
+        if token not in compact_swing:
+            raise AssertionError(
+                f"MAINHAND swing-progress render guard missing {token!r}"
+            )
+
+    for forbidden in (
+        "LocalPlayer::swing",
+        "RightUseRouter",
+        "useItemOnBlock",
+        "baseUseItem",
+        "writeValue<",
+    ):
+        if forbidden in swing_body:
+            raise AssertionError(
+                f"render swing-progress freeze touched gameplay/mutation path {forbidden!r}"
             )
 
     # The renderer and attachment helper must come from the same accepted overlay.
