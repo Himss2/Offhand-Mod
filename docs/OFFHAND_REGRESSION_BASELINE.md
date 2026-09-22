@@ -262,3 +262,50 @@ must update both `README.md` and this file in the same change. Record the previo
 
 Renderer review also corrected six 1.26.51.1 callsite translations for spear admission and native owner-vector/matrix lookup. Their BL targets are verified by the binary test.
 
+
+
+## F-swap paired legacy InventoryAction candidate — 1.26.51.1
+
+This candidate starts cleanly from `debug/swap-sync-610`
+(`2d3dfdfa98fb25b08081777a8cce155a6bf7ef20`) after device testing rejected
+both the raw-container bridge and the Place-vs-Swap ItemStackRequest theory.
+
+Static RE of the exact 1.26.51.1 binary now identifies the asymmetric
+transaction boundary that explains the one-empty ghost/locked state:
+
+- LocalPlayer constructs its selected inventory container at `0xF9E0AA0`.
+  Constructor `0xF881CB0` stores the owning Player at container `+0x158`.
+- That selected container's installed vtable dispatches `setItem +0x68` to
+  `0xF9DA128 -> +0x70 -> 0xF9DA138`, which reaches transaction-aware
+  `0xF8834D4`.
+- `0xF8834D4` calls `0xF9FD618` before the local write. That helper builds
+  a legacy `InventoryAction` with source type Container, container ID `0`,
+  and the selected slot, then submits it through
+  `InventoryTransactionManager::addAction @ 0x1001EC24`.
+- LocalPlayer OFFHAND wrapper `0xF9FC7C8` normally builds the matching
+  container `119 (0x77)` InventoryAction, but when modern
+  ItemStackNetManager mode is active it branches directly to the low-level OFF
+  writer `0xF579C24` and skips that action.
+- `InventoryTransactionManager::addAction` accepts legacy actions while
+  modern networking is enabled as long as no modern request is active. It keeps
+  an unbalanced first action and sends through Player vcall `+0x718` only
+  after subsequent actions make the transaction balance.
+
+The F engine therefore no longer synthesizes ItemStackRequest actions and no
+longer uses raw container vtable writes. It keeps `Player::setSelectedItem`
+for the MAIN/HOTBAR side, constructs exactly the native OFFHAND container-119
+InventoryAction layout used at `0xF9FC818..0xF9FC874`, submits that action to
+the embedded transaction manager at Player `+0x9B8`, and writes OFF through
+the same low-level `0xF579C24` used by vanilla after bookkeeping.
+
+For occupied A/B the accepted 44a local order is preserved:
+hotbar A->EMPTY, OFF B->A, hotbar EMPTY->B. The three actions are allowed to
+remain pending until their item balance reaches zero; the engine logs
+`[SwapEngine][legacy-txn] ... settled=1` only when the transaction manager has
+sent/cleared the completed transaction.
+
+The bridge fails closed before any mutation when an unrelated legacy
+InventoryTransaction is already pending or a modern ItemStackRequest owns the
+ItemStackNetManager. RightUseRouter, NativeOffhandPolicy, SwapRuntime, HUD UI,
+renderer, Sword/Shears routing, placement, consumption and release are
+unchanged.

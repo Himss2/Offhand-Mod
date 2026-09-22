@@ -48,8 +48,16 @@ for token in (
     "kContainerGetItemVtableOffset=0x40",
     "selectedStack(",
     "mSetSelectedItem(player,mEmptyItem)",
-    "mSetItemInHandSlot(player,kOffHand,main.get())",
     "mSetSelectedItem(player,offSnap.get())",
+    "kSetOffhandRawRva=0xF579C24",
+    "kStackDescriptorFromItemRva=0xFF73E8C",
+    "kInventoryActionDtorRva=0x8D623A4",
+    "kInventoryTransactionAddActionRva=0x1001EC24",
+    "kPlayerInventoryTransactionManagerOffset=0x9B8",
+    "kPlayerItemStackNetManagerOffset=0xA00",
+    "kOffhandLegacyContainerId=0x77",
+    "OffhandInventoryAction",
+    "legacyInventoryTransactionAvailable(",
 ):
     if token not in engine.replace(" ", "") and token not in engine:
         raise AssertionError(f"SwapEngine missing {token}")
@@ -95,69 +103,96 @@ for forbidden in (
             f"isolated swap must not depend on hooked selected-item entry: {forbidden}"
         )
 
-# One-empty swap synchronization:
-# each native setter must receive Minecraft's canonical EMPTY_ITEM when
-# clearing its own storage. Never borrow the null-like ItemStack object from
-# the opposite live slot/container.
-compact_engine = engine.replace(" ", "")
+# F swap must use one normal InventoryTransaction composed from the native
+# selected-hotbar action (container 0) and one explicit OFFHAND action
+# (container 119).  Do not open an ItemStackRequest or use the public OFF setter,
+# because LocalPlayer suppresses its container-119 action in modern mode.
+compact_engine = engine.replace(" ", "").replace("\n", "")
+swap_body = engine[engine.index("bool SwapEngine::swap"):]
+
+for forbidden in (
+    "mSetItemInHandSlot(",
+    "RequestSlotInfo",
+    "LegacyRequestScope",
+    "makePlace(",
+    "makeSwap(",
+):
+    if forbidden in swap_body:
+        raise AssertionError(
+            f"F swap must not use rejected transaction boundary: {forbidden}"
+        )
+
+for token in (
+    "mStorage[4]=static_cast<std::byte>(kOffhandLegacyContainerId)",
+    "gInventoryTransactionAddAction(manager,mStorage.data(),0)",
+    "kOffhandLegacyContainerId=0x77",
+    "kInventoryActionSize=0x1E0",
+    "kInventoryActionOldDescriptorOffset=0x10",
+    "kInventoryActionNewDescriptorOffset=0x60",
+    "kInventoryActionOldStackOffset=0xB0",
+    "kInventoryActionNewStackOffset=0x148",
+):
+    if token not in compact_engine and token not in engine:
+        raise AssertionError(f"legacy OFF InventoryAction bridge missing {token}")
 
 off_empty_start = compact_engine.index("if(offEmpty){")
 main_empty_start = compact_engine.index("if(mainEmpty){", off_empty_start)
 off_empty_body = compact_engine[off_empty_start:main_empty_start]
-
 for token in (
     "mSetSelectedItem(player,mEmptyItem)",
-    "mSetItemInHandSlot(player,kOffHand,main.get())",
+    "offAction.submit(player)",
+    "gSetOffhandRaw(player,main.get())",
 ):
     if token not in off_empty_body:
-        raise AssertionError(
-            f"MAIN->OFF one-empty synchronization missing {token}"
-        )
-if "mSetSelectedItem(player,off)" in off_empty_body:
-    raise AssertionError(
-        "MAIN->OFF must not clear selected storage with OFFHAND's live empty stack object"
-    )
+        raise AssertionError(f"MAIN->OFF transaction order missing {token}")
+positions = [off_empty_body.index(token) for token in (
+    "mSetSelectedItem(player,mEmptyItem)",
+    "offAction.submit(player)",
+    "gSetOffhandRaw(player,main.get())",
+)]
+if positions != sorted(positions):
+    raise AssertionError("MAIN->OFF must record hotbar then OFF action before raw OFF write")
 
-occupied_marker = "Snapshotmain(mItemStackCopyCtor,mItemStackDtor,selected);\nSnapshot"
+occupied_marker = "Snapshotmain(mItemStackCopyCtor,mItemStackDtor,selected);Snapshot"
 occupied_start = compact_engine.index(occupied_marker, main_empty_start)
 main_empty_body = compact_engine[main_empty_start:occupied_start]
-
 for token in (
-    "mSetItemInHandSlot(player,kOffHand,mEmptyItem)",
+    "offAction.submit(player)",
+    "gSetOffhandRaw(player,mEmptyItem)",
     "mSetSelectedItem(player,offSnap.get())",
 ):
     if token not in main_empty_body:
-        raise AssertionError(
-            f"OFF->MAIN one-empty synchronization missing {token}"
-        )
-if "mSetItemInHandSlot(player,kOffHand,selected)" in main_empty_body:
-    raise AssertionError(
-        "OFF->MAIN must not clear OFFHAND with selected-slot live empty stack object"
-    )
+        raise AssertionError(f"OFF->MAIN transaction order missing {token}")
+positions = [main_empty_body.index(token) for token in (
+    "offAction.submit(player)",
+    "gSetOffhandRaw(player,mEmptyItem)",
+    "mSetSelectedItem(player,offSnap.get())",
+)]
+if positions != sorted(positions):
+    raise AssertionError("OFF->MAIN must record/write OFF before native selected setter")
 
-# Preserve the exact user-tested occupied 44a exchange. The canonical OFFHAND
-# clear above is valid only in the MAIN-empty branch; occupied A/B must not
-# reintroduce the rejected clear-both intermediate state.
 occupied_body = compact_engine[occupied_start:]
 occupied_sequence = (
     "mSetSelectedItem(player,mEmptyItem)",
-    "mSetItemInHandSlot(player,kOffHand,main.get())",
+    "offAction.submit(player)",
+    "gSetOffhandRaw(player,main.get())",
     "mSetSelectedItem(player,offSnap.get())",
 )
 positions = [occupied_body.index(token) for token in occupied_sequence]
 if positions != sorted(positions):
     raise AssertionError(
-        "occupied 44a order changed: MAIN empty -> OFF gets old MAIN -> MAIN gets old OFF"
+        "occupied 44a transaction order changed: hotbar clear -> OFF action/write -> hotbar refill"
     )
-if "mSetItemInHandSlot(player,kOffHand,mEmptyItem)" in occupied_body:
-    raise AssertionError(
-        "occupied A/B swap must not use the rejected clear-both derivative"
-    )
+
+if engine.count("legacyTransactionSettled(player)") != 3:
+    raise AssertionError("all three non-empty F paths must verify transaction settlement")
 
 for forbidden in (
     "InventoryTransactionPacket",
     "ContainerValidation",
     "ItemStackRequestAction",
+    "RequestSlotInfo",
+    "ItemStackNetManager request bridge",
 ):
     if forbidden in runtime or forbidden in engine:
         raise AssertionError(f"swap must not synthesize {forbidden}")

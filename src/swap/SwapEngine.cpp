@@ -23,9 +23,23 @@ constexpr std::uintptr_t kItemStackCopyCtorRva=0xFF9D748;
 constexpr std::uintptr_t kItemStackDtorRva=0x85ADF98;
 constexpr std::uintptr_t kSetItemInHandSlotRva=0xF579C50;
 constexpr std::uintptr_t kSetSelectedItemRva=0xF9F7850;
+constexpr std::uintptr_t kSetOffhandRawRva=0xF579C24;
+constexpr std::uintptr_t kStackDescriptorFromItemRva=0xFF73E8C;
+constexpr std::uintptr_t kInventoryActionDtorRva=0x8D623A4;
+constexpr std::uintptr_t kInventoryTransactionAddActionRva=0x1001EC24;
 constexpr std::uintptr_t kEmptyItemRva=0x134C6780;
 
 constexpr std::size_t kItemStackStorageSize=0x98;
+constexpr std::size_t kInventoryActionSize=0x1E0;
+constexpr std::size_t kInventoryActionOldDescriptorOffset=0x10;
+constexpr std::size_t kInventoryActionNewDescriptorOffset=0x60;
+constexpr std::size_t kInventoryActionOldStackOffset=0xB0;
+constexpr std::size_t kInventoryActionNewStackOffset=0x148;
+constexpr std::size_t kPlayerInventoryTransactionManagerOffset=0x9B8;
+constexpr std::size_t kInventoryTransactionPendingOffset=0x08;
+constexpr std::size_t kPlayerItemStackNetManagerOffset=0xA00;
+constexpr std::size_t kItemStackNetManagerLegacyAllowedVtableOffset=0x28;
+constexpr std::uint8_t kOffhandLegacyContainerId=0x77;
 
 // Player::getSelectedItem @ 0xF9F7824 was reverse engineered rather than
 // called. RightUseRouter hooks that entry before swap installs, so validating
@@ -76,6 +90,27 @@ constexpr std::array<std::uint8_t,48> kSetSelectedItemFingerprint{
     0xFF,0xC3,0x0E,0xD1,0x56,0xD0,0x3B,0xD5,
     0xF3,0x03,0x01,0xAA,0xF4,0x03,0x00,0xAA,
     0xC8,0x16,0x40,0xF9,0xA8,0x83,0x1F,0xF8,
+};
+constexpr std::array<std::uint8_t,8> kSetOffhandRawFingerprint{
+    0x22,0x00,0x80,0x52,0x59,0xFE,0xFF,0x17,
+};
+constexpr std::array<std::uint8_t,32> kStackDescriptorFromItemFingerprint{
+    0xFF,0xC3,0x01,0xD1,0xFD,0x7B,0x02,0xA9,
+    0xFA,0x67,0x03,0xA9,0xF8,0x5F,0x04,0xA9,
+    0xF6,0x57,0x05,0xA9,0xF4,0x4F,0x06,0xA9,
+    0xFD,0x83,0x00,0x91,0x57,0xD0,0x3B,0xD5,
+};
+constexpr std::array<std::uint8_t,32> kInventoryActionDtorFingerprint{
+    0xFF,0x43,0x01,0xD1,0xFD,0x7B,0x01,0xA9,
+    0xF8,0x5F,0x02,0xA9,0xF6,0x57,0x03,0xA9,
+    0xF4,0x4F,0x04,0xA9,0xFD,0x43,0x00,0x91,
+    0x55,0xD0,0x3B,0xD5,0xF3,0x03,0x00,0xAA,
+};
+constexpr std::array<std::uint8_t,32> kInventoryTransactionAddActionFingerprint{
+    0xFD,0x7B,0xBD,0xA9,0xF5,0x0B,0x00,0xF9,
+    0xF4,0x4F,0x02,0xA9,0xFD,0x03,0x00,0x91,
+    0xF3,0x03,0x00,0xAA,0x00,0x00,0x40,0xF9,
+    0xF4,0x03,0x02,0x2A,0xF5,0x03,0x01,0xAA,
 };
 
 struct ModuleState {
@@ -189,6 +224,115 @@ template<typename T>
 }
 
 using ContainerGetItemFn=const void* (*)(const void*,int);
+using SetOffhandRawFn=void (*)(void*,const void*);
+using StackDescriptorFromItemFn=void (*)(void*,const void*);
+using InventoryActionDtorFn=void (*)(void*);
+using InventoryTransactionAddActionFn=void (*)(void*,const void*,int);
+using LegacyActionAllowedFn=bool (*)(void*);
+
+SetOffhandRawFn gSetOffhandRaw=nullptr;
+StackDescriptorFromItemFn gStackDescriptorFromItem=nullptr;
+InventoryActionDtorFn gInventoryActionDtor=nullptr;
+InventoryTransactionAddActionFn gInventoryTransactionAddAction=nullptr;
+
+[[nodiscard]] bool legacyInventoryTransactionAvailable(void* player) noexcept {
+    if(!player) return false;
+
+    auto* txManager=
+        static_cast<std::byte*>(player)+kPlayerInventoryTransactionManagerOffset;
+    if(read<void*>(txManager,kInventoryTransactionPendingOffset,nullptr)!=nullptr) {
+        __android_log_print(
+            ANDROID_LOG_WARN,kLogTag,
+            "[SwapEngine][legacy-txn] existing pending InventoryTransaction; F swap rejected"
+        );
+        return false;
+    }
+
+    void* netManager=read<void*>(
+        player,kPlayerItemStackNetManagerOffset,nullptr
+    );
+    if(!netManager) return true;
+
+    const void* vtable=read<const void*>(netManager,0,nullptr);
+    if(!mapped(reinterpret_cast<std::uintptr_t>(vtable),0)) return false;
+
+    const auto allowed=read<LegacyActionAllowedFn>(
+        vtable,kItemStackNetManagerLegacyAllowedVtableOffset,nullptr
+    );
+    if(!allowed || !mapped(reinterpret_cast<std::uintptr_t>(allowed),PF_X)) {
+        return false;
+    }
+
+    const bool ok=allowed(netManager);
+    if(!ok) {
+        __android_log_print(
+            ANDROID_LOG_WARN,kLogTag,
+            "[SwapEngine][legacy-txn] ItemStackNetManager has active modern request; F swap rejected"
+        );
+    }
+    return ok;
+}
+
+class OffhandInventoryAction final {
+public:
+    OffhandInventoryAction(
+        SwapEngine::ItemStackCopyCtorFn copyCtor,
+        const void* before,
+        const void* after
+    ) noexcept {
+        if(!copyCtor || !gStackDescriptorFromItem || !gInventoryActionDtor ||
+           !before || !after) {
+            return;
+        }
+
+        mStorage.fill(std::byte{0});
+        mStorage[4]=static_cast<std::byte>(kOffhandLegacyContainerId);
+
+        gStackDescriptorFromItem(
+            mStorage.data()+kInventoryActionOldDescriptorOffset,before
+        );
+        gStackDescriptorFromItem(
+            mStorage.data()+kInventoryActionNewDescriptorOffset,after
+        );
+        copyCtor(
+            mStorage.data()+kInventoryActionOldStackOffset,before
+        );
+        copyCtor(
+            mStorage.data()+kInventoryActionNewStackOffset,after
+        );
+        mConstructed=true;
+    }
+
+    ~OffhandInventoryAction() noexcept {
+        if(mConstructed && gInventoryActionDtor) {
+            gInventoryActionDtor(mStorage.data());
+        }
+    }
+
+    [[nodiscard]] bool valid() const noexcept { return mConstructed; }
+
+    void submit(void* player) const noexcept {
+        if(!mConstructed || !player || !gInventoryTransactionAddAction) return;
+        auto* manager=
+            static_cast<std::byte*>(player)+
+            kPlayerInventoryTransactionManagerOffset;
+        gInventoryTransactionAddAction(manager,mStorage.data(),0);
+    }
+
+private:
+    alignas(16) std::array<std::byte,kInventoryActionSize> mStorage{};
+    bool mConstructed{false};
+};
+
+[[nodiscard]] bool legacyTransactionSettled(const void* player) noexcept {
+    if(!player) return false;
+    const auto* manager=
+        static_cast<const std::byte*>(player)+
+        kPlayerInventoryTransactionManagerOffset;
+    return read<const void*>(
+        manager,kInventoryTransactionPendingOffset,nullptr
+    )==nullptr;
+}
 
 class Snapshot final {
 public:
@@ -232,9 +376,21 @@ bool SwapEngine::install(pl::mod::ModContext& context) noexcept {
     const auto copy=resolve(kItemStackCopyCtorRva,kItemStackCopyCtorFingerprint);
     const auto dtor=resolve(kItemStackDtorRva,kItemStackDtorFingerprint);
     const auto setOff=resolve(kSetItemInHandSlotRva,kSetItemInHandSlotFingerprint);
+    const auto setOffRaw=resolve(kSetOffhandRawRva,kSetOffhandRawFingerprint);
+    const auto descriptor=resolve(
+        kStackDescriptorFromItemRva,kStackDescriptorFromItemFingerprint
+    );
+    const auto actionDtor=resolve(
+        kInventoryActionDtorRva,kInventoryActionDtorFingerprint
+    );
+    const auto addAction=resolve(
+        kInventoryTransactionAddActionRva,
+        kInventoryTransactionAddActionFingerprint
+    );
 
     const bool stableBuild=
-        off!=0 && nul!=0 && copy!=0 && dtor!=0 && setOff!=0;
+        off!=0 && nul!=0 && copy!=0 && dtor!=0 && setOff!=0 &&
+        setOffRaw!=0 && descriptor!=0 && actionDtor!=0 && addAction!=0;
 
     bool setSelectedChainedLive=false;
     const auto setSel=
@@ -248,12 +404,14 @@ bool SwapEngine::install(pl::mod::ModContext& context) noexcept {
 
     __android_log_print(
         ANDROID_LOG_INFO,kLogTag,
-        "[SwapEngine] targets off=%d null=%d copy=%d dtor=%d setOff=%d setSelected=%d setSelectedLive=%d emptyMapped=%d",
-        off!=0,nul!=0,copy!=0,dtor!=0,setOff!=0,setSel!=0,
+        "[SwapEngine] targets off=%d null=%d copy=%d dtor=%d setOff=%d setOffRaw=%d descriptor=%d actionDtor=%d addAction=%d setSelected=%d setSelectedLive=%d emptyMapped=%d",
+        off!=0,nul!=0,copy!=0,dtor!=0,setOff!=0,setOffRaw!=0,
+        descriptor!=0,actionDtor!=0,addAction!=0,setSel!=0,
         setSelectedChainedLive?1:0,emptyMapped
     );
 
-    if(!off||!nul||!copy||!dtor||!setOff||!setSel||!emptyMapped) {
+    if(!off||!nul||!copy||!dtor||!setOff||!setOffRaw||!descriptor||
+       !actionDtor||!addAction||!setSel||!emptyMapped) {
         context.logger().error(
             "Swap engine: native storage target validation failed"
         );
@@ -266,6 +424,13 @@ bool SwapEngine::install(pl::mod::ModContext& context) noexcept {
     mItemStackDtor=reinterpret_cast<ItemStackDtorFn>(dtor);
     mSetItemInHandSlot=reinterpret_cast<SetItemInHandSlotFn>(setOff);
     mSetSelectedItem=reinterpret_cast<SetSelectedItemFn>(setSel);
+    gSetOffhandRaw=reinterpret_cast<SetOffhandRawFn>(setOffRaw);
+    gStackDescriptorFromItem=
+        reinterpret_cast<StackDescriptorFromItemFn>(descriptor);
+    gInventoryActionDtor=
+        reinterpret_cast<InventoryActionDtorFn>(actionDtor);
+    gInventoryTransactionAddAction=
+        reinterpret_cast<InventoryTransactionAddActionFn>(addAction);
     mEmptyItem=reinterpret_cast<const void*>(empty);
 
     if(setSelectedChainedLive) {
@@ -282,7 +447,8 @@ bool SwapEngine::install(pl::mod::ModContext& context) noexcept {
     }
 
     context.logger().info(
-        "Swap engine storage ready; selected stack uses direct native layout reader"
+        "Swap engine ready; F exchange uses paired legacy InventoryAction "
+        "hotbar(0) + offhand(119), with native selected setter and raw OFF write"
     );
     return true;
 }
@@ -294,12 +460,18 @@ void SwapEngine::uninstall() noexcept {
     mItemStackDtor=nullptr;
     mSetItemInHandSlot=nullptr;
     mSetSelectedItem=nullptr;
+    gSetOffhandRaw=nullptr;
+    gStackDescriptorFromItem=nullptr;
+    gInventoryActionDtor=nullptr;
+    gInventoryTransactionAddAction=nullptr;
     mEmptyItem=nullptr;
 }
 
 bool SwapEngine::ready() const noexcept {
     return mGetOffhandSlot && mStackIsNull && mItemStackCopyCtor &&
-        mItemStackDtor && mSetItemInHandSlot && mSetSelectedItem && mEmptyItem;
+        mItemStackDtor && mSetItemInHandSlot && mSetSelectedItem &&
+        gSetOffhandRaw && gStackDescriptorFromItem && gInventoryActionDtor &&
+        gInventoryTransactionAddAction && mEmptyItem;
 }
 
 const void* SwapEngine::selectedStack(const void* player) const noexcept {
@@ -339,29 +511,63 @@ bool SwapEngine::swap(void* player,const void* selected) noexcept {
 
     if(mainEmpty && offEmpty) return true;
 
+    // Never join an unrelated inventory transaction or an active modern
+    // ItemStackRequest.  The native InventoryTransactionManager can accept
+    // legacy InventoryAction records while modern item-stack networking is
+    // enabled, but only while no modern request owns the manager.
+    if(!legacyInventoryTransactionAvailable(player)) return false;
+
     if(offEmpty) {
         Snapshot main(mItemStackCopyCtor,mItemStackDtor,selected);
         if(!main.get() || !mStackIsNull(mEmptyItem)) return false;
 
-        // Clear the selected slot with Minecraft's canonical EMPTY_ITEM.
-        // Do not reuse OFFHAND's live null-like stack object across container
-        // ownership boundaries; the selected setter records its own native
-        // inventory transition before OFFHAND receives the detached snapshot.
+        OffhandInventoryAction offAction(
+            mItemStackCopyCtor,off,main.get()
+        );
+        if(!offAction.valid()) return false;
+
+        // Selected container +0x68 is transaction-aware on LocalPlayer:
+        // A -> EMPTY records legacy container 0 and performs the local clear.
         mSetSelectedItem(player,mEmptyItem);
-        mSetItemInHandSlot(player,kOffHand,main.get());
-        return true;
+
+        // LocalPlayer's public OFF setter suppresses container-119 actions when
+        // modern ItemStackNetManager mode is active. Supply exactly that
+        // missing action, then call the same raw OFF writer used by vanilla.
+        offAction.submit(player);
+        gSetOffhandRaw(player,main.get());
+
+        const bool settled=legacyTransactionSettled(player);
+        __android_log_print(
+            settled?ANDROID_LOG_INFO:ANDROID_LOG_ERROR,kLogTag,
+            "[SwapEngine][legacy-txn] MAIN->OFF settled=%d hotbar=0 offhand=119",
+            settled?1:0
+        );
+        return settled;
     }
 
     if(mainEmpty) {
         Snapshot offSnap(mItemStackCopyCtor,mItemStackDtor,off);
         if(!offSnap.get() || !mStackIsNull(mEmptyItem)) return false;
 
-        // LocalPlayer::setOffhandSlot records container 119 (0x77) before the
-        // low-level hand write. Give that transition canonical EMPTY_ITEM,
-        // not the selected hotbar slot's live null-like object.
-        mSetItemInHandSlot(player,kOffHand,mEmptyItem);
+        OffhandInventoryAction offAction(
+            mItemStackCopyCtor,off,mEmptyItem
+        );
+        if(!offAction.valid()) return false;
+
+        // First half: B -> EMPTY in container 119, then the exact low-level
+        // OFF writer.  The transaction remains pending until selected storage
+        // contributes EMPTY -> B through its normal container-0 path.
+        offAction.submit(player);
+        gSetOffhandRaw(player,mEmptyItem);
         mSetSelectedItem(player,offSnap.get());
-        return true;
+
+        const bool settled=legacyTransactionSettled(player);
+        __android_log_print(
+            settled?ANDROID_LOG_INFO:ANDROID_LOG_ERROR,kLogTag,
+            "[SwapEngine][legacy-txn] OFF->MAIN settled=%d hotbar=0 offhand=119",
+            settled?1:0
+        );
+        return settled;
     }
 
     Snapshot main(mItemStackCopyCtor,mItemStackDtor,selected);
@@ -370,12 +576,28 @@ bool SwapEngine::swap(void* player,const void* selected) noexcept {
         return false;
     }
 
-    // Preserve the exact occupied<->occupied sequence from the user-tested
-    // 44a swap implementation. Do not add the later clear-both derivative.
+    OffhandInventoryAction offAction(
+        mItemStackCopyCtor,off,main.get()
+    );
+    if(!offAction.valid()) return false;
+
+    // Preserve the accepted 44a local mutation order while making the
+    // InventoryTransaction balanced:
+    //   hotbar A->EMPTY, OFF B->A, hotbar EMPTY->B.
+    // InventoryTransactionManager retains the first two unbalanced records
+    // and sends only after the third record balances the transaction.
     mSetSelectedItem(player,mEmptyItem);
-    mSetItemInHandSlot(player,kOffHand,main.get());
+    offAction.submit(player);
+    gSetOffhandRaw(player,main.get());
     mSetSelectedItem(player,offSnap.get());
-    return true;
+
+    const bool settled=legacyTransactionSettled(player);
+    __android_log_print(
+        settled?ANDROID_LOG_INFO:ANDROID_LOG_ERROR,kLogTag,
+        "[SwapEngine][legacy-txn] occupied settled=%d hotbar=0 offhand=119",
+        settled?1:0
+    );
+    return settled;
 }
 
 } // namespace levioffhand::swap
