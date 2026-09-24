@@ -9,6 +9,8 @@
 #include <elf.h>
 #include <link.h>
 
+#include <pl/memory/Signature.hpp>
+
 namespace levioffhand::swap {
 namespace {
 
@@ -31,6 +33,20 @@ constexpr std::uintptr_t kInventoryTransactionAddActionRva=0x1001EC24;
 // RE 1.26.51.1: writes generated negative legacy request id to manager+0x50
 // and returns an engaged optional std::function cleanup scope.
 constexpr std::uintptr_t kTryBeginClientLegacyRequestRva=0xF88D960;
+
+// Player-aware wrapper used by native gameplay to open the client legacy
+// predictive lifecycle before legacy player-container mutations.
+constexpr std::uintptr_t kTryBeginClientLegacyTransactionRva=0xF88A434;
+
+// ItemStackNetManagerClient::_addLegacyTransactionRequestSetItemSlot.
+// The second argument is ItemStackNetManagerScreen&, NOT Player*.
+constexpr std::uintptr_t kRecordLegacySlotRva=0xF88CE8C;
+
+// Resolve the manager's real active screen through the native method instead
+// of decoding libc++ deque internals or casting ClientScreenData.
+constexpr char kGetTopScreenSymbol[]=
+    "_ZN23ItemStackNetManagerBase13_getTopScreenEv";
+
 constexpr std::uintptr_t kEmptyItemRva=0x134C6780;
 
 constexpr std::size_t kItemStackStorageSize=0x98;
@@ -50,6 +66,11 @@ constexpr std::size_t kNativeLegacyScopeSize=0x38;
 constexpr std::size_t kNativeFunctionInvokeVtableOffset=0x30;
 constexpr std::size_t kNativeFunctionDestroyVtableOffset=0x20;
 constexpr std::uint8_t kOffhandLegacyContainerId=0x77;
+
+// SharedTypes::Legacy::ContainerType values.
+constexpr int kInventoryContainerType=-1;
+constexpr int kHandContainerType=19;
+constexpr int kOffhandLocalSlot=0;
 
 // Player::getSelectedItem @ 0xF9F7824 was reverse engineered rather than
 // called. RightUseRouter hooks that entry before swap installs, so validating
@@ -128,6 +149,19 @@ constexpr std::array<std::uint8_t,32> kTryBeginClientLegacyRequestFingerprint{
     0xF6,0x57,0x02,0xA9,0xF4,0x4F,0x03,0xA9,
     0xFD,0x03,0x00,0x91,0xF4,0x03,0x00,0xAA,
     0xF3,0x03,0x08,0xAA,0x2A,0xF4,0xFF,0x97,
+};
+
+constexpr std::array<std::uint8_t,32> kTryBeginClientLegacyTransactionFingerprint{
+    0xFD,0x7B,0xBE,0xA9,0xF4,0x4F,0x01,0xA9,
+    0xFD,0x03,0x00,0x91,0xF3,0x03,0x08,0xAA,
+    0xA0,0x01,0x00,0xB4,0xF4,0x03,0x00,0xAA,
+    0xDA,0x81,0xF3,0x97,0x40,0x01,0x00,0x36,
+};
+constexpr std::array<std::uint8_t,32> kRecordLegacySlotFingerprint{
+    0xFF,0xC3,0x00,0xD1,0xFD,0x7B,0x01,0xA9,
+    0xF4,0x4F,0x02,0xA9,0xFD,0x43,0x00,0x91,
+    0x53,0xD0,0x3B,0xD5,0x49,0x1C,0x00,0x12,
+    0xE8,0x03,0x01,0xAA,0x6A,0x16,0x40,0xF9,
 };
 
 struct ModuleState {
@@ -257,13 +291,20 @@ struct NativeClientLegacyScope final {
 };
 using TryBeginClientLegacyRequestFn=
     NativeClientLegacyScope (*)(void*);
+using TryBeginClientLegacyTransactionFn=
+    NativeClientLegacyScope (*)(void*);
 using NativeScopeCallableFn=void (*)(void*);
+using RecordLegacySlotFn=void (*)(void*,void*,int,int);
+using GetTopScreenFn=void* (*)(void*);
 
 SetOffhandRawFn gSetOffhandRaw=nullptr;
 StackDescriptorFromItemFn gStackDescriptorFromItem=nullptr;
 InventoryActionDtorFn gInventoryActionDtor=nullptr;
 InventoryTransactionAddActionFn gInventoryTransactionAddAction=nullptr;
 TryBeginClientLegacyRequestFn gTryBeginClientLegacyRequest=nullptr;
+TryBeginClientLegacyTransactionFn gTryBeginClientLegacyTransaction=nullptr;
+RecordLegacySlotFn gRecordLegacySlot=nullptr;
+GetTopScreenFn gGetTopScreen=nullptr;
 
 [[nodiscard]] bool finishNativeClientLegacyScope(
     NativeClientLegacyScope& scope
@@ -379,6 +420,161 @@ TryBeginClientLegacyRequestFn gTryBeginClientLegacyRequest=nullptr;
 
     return ownsRequest && cleanupOk && afterId==0;
 }
+
+[[nodiscard]] int selectedHotbarSlot(const void* player) noexcept {
+    if(!player) return -1;
+    const void* state=read<const void*>(
+        player,kPlayerSelectedStateOffset,nullptr
+    );
+    if(!state) return -1;
+    if(read<std::uint8_t>(state,kSelectedStateFlagOffset,0xFF)!=0) return -1;
+    const int slot=read<int>(state,kSelectedStateIndexOffset,-1);
+    return slot>=0 && slot<=8 ? slot : -1;
+}
+
+class LegacyScreenSlotScope final {
+public:
+    explicit LegacyScreenSlotScope(void* player) noexcept {
+        if(!player || !gTryBeginClientLegacyTransaction ||
+           !gRecordLegacySlot || !gGetTopScreen) {
+            return;
+        }
+
+        mManager=read<void*>(
+            player,kPlayerItemStackNetManagerOffset,nullptr
+        );
+        if(!mManager) return;
+
+        const int beforeId=read<int>(
+            mManager,kItemStackNetManagerLegacyRequestIdOffset,0
+        );
+        if(beforeId!=0) {
+            __android_log_print(
+                ANDROID_LOG_WARN,kLogTag,
+                "[SwapEngine][legacy-screen-slots] busy before open req=%d",
+                beforeId
+            );
+            return;
+        }
+
+        mScope=gTryBeginClientLegacyTransaction(player);
+        mRequestId=read<int>(
+            mManager,kItemStackNetManagerLegacyRequestIdOffset,0
+        );
+
+        const auto engaged=read<std::uint8_t>(
+            mScope.storage.data(),kNativeLegacyScopeEngagedOffset,0
+        );
+        void* callable=read<void*>(
+            mScope.storage.data(),kNativeLegacyScopeCallableOffset,nullptr
+        );
+        if(engaged==0 || !callable ||
+           mRequestId>-2 || (mRequestId&1)!=0) {
+            finishNativeClientLegacyScope(mScope);
+            mRequestId=0;
+            return;
+        }
+
+        const void* callableVtable=read<const void*>(callable,0,nullptr);
+        const auto invoke=read<NativeScopeCallableFn>(
+            callableVtable,kNativeFunctionInvokeVtableOffset,nullptr
+        );
+        if(!callableVtable ||
+           !mapped(reinterpret_cast<std::uintptr_t>(callableVtable),0) ||
+           !invoke || !mapped(reinterpret_cast<std::uintptr_t>(invoke),PF_X)) {
+            finishNativeClientLegacyScope(mScope);
+            mRequestId=0;
+            return;
+        }
+
+        mScreen=gGetTopScreen(mManager);
+        if(!mScreen) {
+            finishNativeClientLegacyScope(mScope);
+            mRequestId=0;
+            return;
+        }
+        const void* screenVtable=read<const void*>(mScreen,0,nullptr);
+        if(!screenVtable ||
+           !mapped(reinterpret_cast<std::uintptr_t>(screenVtable),0)) {
+            mScreen=nullptr;
+            finishNativeClientLegacyScope(mScope);
+            mRequestId=0;
+            return;
+        }
+
+        mValid=true;
+        __android_log_print(
+            ANDROID_LOG_INFO,kLogTag,
+            "[SwapEngine][legacy-screen-slots] open req=%d screen=%p",
+            mRequestId,mScreen
+        );
+    }
+
+    ~LegacyScreenSlotScope() noexcept {
+        finish();
+    }
+
+    [[nodiscard]] bool valid() const noexcept {
+        return mValid && mManager && mScreen && mRequestId<=-2;
+    }
+
+    [[nodiscard]] void* screen() const noexcept {
+        return valid()?mScreen:nullptr;
+    }
+
+    [[nodiscard]] bool recordChangedSlot(
+        void* screen,
+        int containerType,
+        int slot
+    ) const noexcept {
+        if(!valid() || screen!=mScreen || slot<0 || !gRecordLegacySlot) {
+            return false;
+        }
+        const int activeId=read<int>(
+            mManager,kItemStackNetManagerLegacyRequestIdOffset,0
+        );
+        if(activeId!=mRequestId) return false;
+
+        gRecordLegacySlot(
+            mManager,screen,containerType,slot
+        );
+        __android_log_print(
+            ANDROID_LOG_INFO,kLogTag,
+            "[SwapEngine][legacy-screen-slots] req=%d type=%d slot=%d",
+            mRequestId,containerType,slot
+        );
+        return true;
+    }
+
+    [[nodiscard]] bool finish() noexcept {
+        if(mFinished) return mClosed;
+        mFinished=true;
+        if(!mValid) return false;
+
+        const bool cleanupOk=finishNativeClientLegacyScope(mScope);
+        const int afterId=read<int>(
+            mManager,kItemStackNetManagerLegacyRequestIdOffset,0
+        );
+        mClosed=cleanupOk && afterId==0;
+
+        __android_log_print(
+            mClosed?ANDROID_LOG_INFO:ANDROID_LOG_ERROR,kLogTag,
+            "[SwapEngine][legacy-screen-slots] close req=%d->%d cleanup=%d",
+            mRequestId,afterId,cleanupOk?1:0
+        );
+        mValid=false;
+        return mClosed;
+    }
+
+private:
+    NativeClientLegacyScope mScope{};
+    void* mManager{nullptr};
+    void* mScreen{nullptr};
+    int mRequestId{0};
+    bool mValid{false};
+    bool mFinished{false};
+    bool mClosed{false};
+};
 
 [[nodiscard]] bool legacyInventoryTransactionAvailable(void* player) noexcept {
     if(!player) return false;
@@ -536,11 +732,24 @@ bool SwapEngine::install(pl::mod::ModContext& context) noexcept {
         kTryBeginClientLegacyRequestRva,
         kTryBeginClientLegacyRequestFingerprint
     );
+    const auto tryLegacyTransaction=resolve(
+        kTryBeginClientLegacyTransactionRva,
+        kTryBeginClientLegacyTransactionFingerprint
+    );
+    const auto recordLegacySlot=resolve(
+        kRecordLegacySlotRva,kRecordLegacySlotFingerprint
+    );
+    const auto getTopScreen=pl::memory::resolveSignature(
+        kGetTopScreenSymbol,kMinecraftLibrary
+    );
+    const bool getTopScreenValid=
+        getTopScreen!=0 && mapped(getTopScreen,PF_X);
 
     const bool stableBuild=
         off!=0 && nul!=0 && copy!=0 && dtor!=0 && setOff!=0 &&
         setOffRaw!=0 && descriptor!=0 && actionDtor!=0 && addAction!=0 &&
-        tryLegacy!=0;
+        tryLegacy!=0 && tryLegacyTransaction!=0 && recordLegacySlot!=0 &&
+        getTopScreenValid;
 
     bool setSelectedChainedLive=false;
     const auto setSel=
@@ -554,14 +763,16 @@ bool SwapEngine::install(pl::mod::ModContext& context) noexcept {
 
     __android_log_print(
         ANDROID_LOG_INFO,kLogTag,
-        "[SwapEngine] targets off=%d null=%d copy=%d dtor=%d setOff=%d setOffRaw=%d descriptor=%d actionDtor=%d addAction=%d tryClientLegacy=%d setSelected=%d setSelectedLive=%d emptyMapped=%d",
+        "[SwapEngine] targets off=%d null=%d copy=%d dtor=%d setOff=%d setOffRaw=%d descriptor=%d actionDtor=%d addAction=%d tryClientLegacy=%d tryPlayerLegacy=%d recordLegacySlot=%d topScreen=%d setSelected=%d setSelectedLive=%d emptyMapped=%d",
         off!=0,nul!=0,copy!=0,dtor!=0,setOff!=0,setOffRaw!=0,
-        descriptor!=0,actionDtor!=0,addAction!=0,tryLegacy!=0,setSel!=0,
-        setSelectedChainedLive?1:0,emptyMapped
+        descriptor!=0,actionDtor!=0,addAction!=0,tryLegacy!=0,
+        tryLegacyTransaction!=0,recordLegacySlot!=0,getTopScreenValid?1:0,
+        setSel!=0,setSelectedChainedLive?1:0,emptyMapped
     );
 
     if(!off||!nul||!copy||!dtor||!setOff||!setOffRaw||!descriptor||
-       !actionDtor||!addAction||!tryLegacy||!setSel||!emptyMapped) {
+       !actionDtor||!addAction||!tryLegacy||!tryLegacyTransaction||
+       !recordLegacySlot||!getTopScreenValid||!setSel||!emptyMapped) {
         context.logger().error(
             "Swap engine: native storage target validation failed"
         );
@@ -583,6 +794,14 @@ bool SwapEngine::install(pl::mod::ModContext& context) noexcept {
         reinterpret_cast<InventoryTransactionAddActionFn>(addAction);
     gTryBeginClientLegacyRequest=
         reinterpret_cast<TryBeginClientLegacyRequestFn>(tryLegacy);
+    gTryBeginClientLegacyTransaction=
+        reinterpret_cast<TryBeginClientLegacyTransactionFn>(
+            tryLegacyTransaction
+        );
+    gRecordLegacySlot=
+        reinterpret_cast<RecordLegacySlotFn>(recordLegacySlot);
+    gGetTopScreen=
+        reinterpret_cast<GetTopScreenFn>(getTopScreen);
     mEmptyItem=reinterpret_cast<const void*>(empty);
 
     if(setSelectedChainedLive) {
@@ -617,6 +836,9 @@ void SwapEngine::uninstall() noexcept {
     gInventoryActionDtor=nullptr;
     gInventoryTransactionAddAction=nullptr;
     gTryBeginClientLegacyRequest=nullptr;
+    gTryBeginClientLegacyTransaction=nullptr;
+    gRecordLegacySlot=nullptr;
+    gGetTopScreen=nullptr;
     mEmptyItem=nullptr;
 }
 
@@ -625,7 +847,8 @@ bool SwapEngine::ready() const noexcept {
         mItemStackDtor && mSetItemInHandSlot && mSetSelectedItem &&
         gSetOffhandRaw && gStackDescriptorFromItem && gInventoryActionDtor &&
         gInventoryTransactionAddAction && gTryBeginClientLegacyRequest &&
-        mEmptyItem;
+        gTryBeginClientLegacyTransaction && gRecordLegacySlot &&
+        gGetTopScreen && mEmptyItem;
 }
 
 const void* SwapEngine::selectedStack(const void* player) const noexcept {
@@ -671,6 +894,33 @@ bool SwapEngine::swap(void* player,const void* selected) noexcept {
     // enabled, but only while no modern request owns the manager.
     if(!legacyInventoryTransactionAvailable(player)) return false;
 
+    const int selectedSlot=selectedHotbarSlot(player);
+    if(selectedSlot<0) return false;
+
+    LegacyScreenSlotScope screenSlots(player);
+    if(!screenSlots.valid()) {
+        __android_log_print(
+            ANDROID_LOG_ERROR,kLogTag,
+            "[SwapEngine][legacy-screen-slots] no native screen/request; F swap rejected before mutation"
+        );
+        return false;
+    }
+    void* screen=screenSlots.screen();
+    if(
+        !screenSlots.recordChangedSlot(
+            screen,kInventoryContainerType,selectedSlot
+        ) ||
+        !screenSlots.recordChangedSlot(
+            screen,kHandContainerType,kOffhandLocalSlot
+        )
+    ) {
+        __android_log_print(
+            ANDROID_LOG_ERROR,kLogTag,
+            "[SwapEngine][legacy-screen-slots] paired slot registration failed before mutation"
+        );
+        return false;
+    }
+
     if(offEmpty) {
         Snapshot main(mItemStackCopyCtor,mItemStackDtor,selected);
         if(!main.get() || !mStackIsNull(mEmptyItem)) return false;
@@ -691,8 +941,9 @@ bool SwapEngine::swap(void* player,const void* selected) noexcept {
         gSetOffhandRaw(player,main.get());
 
         const bool settled=legacyTransactionSettled(player);
+        const bool slotsClosed=screenSlots.finish();
         const bool normalized=
-            settled &&
+            settled && slotsClosed &&
             normalizeDestinationHandWithNativeLegacyRequest(
                 player,kOffHand,main.get(),mSetItemInHandSlot
             );
@@ -700,10 +951,10 @@ bool SwapEngine::swap(void* player,const void* selected) noexcept {
         __android_log_print(
             settled && normalized ? ANDROID_LOG_INFO : ANDROID_LOG_ERROR,
             kLogTag,
-            "[SwapEngine][native-client-normalize] MAIN->OFF settled=%d normalized=%d hand=1",
-            settled?1:0,normalized?1:0
+            "[SwapEngine][native-client-normalize] MAIN->OFF settled=%d slotsClosed=%d normalized=%d hand=1",
+            settled?1:0,slotsClosed?1:0,normalized?1:0
         );
-        return settled;
+        return settled && slotsClosed;
     }
 
     if(mainEmpty) {
@@ -723,8 +974,9 @@ bool SwapEngine::swap(void* player,const void* selected) noexcept {
         mSetSelectedItem(player,offSnap.get());
 
         const bool settled=legacyTransactionSettled(player);
+        const bool slotsClosed=screenSlots.finish();
         const bool normalized=
-            settled &&
+            settled && slotsClosed &&
             normalizeDestinationHandWithNativeLegacyRequest(
                 player,0,offSnap.get(),mSetItemInHandSlot
             );
@@ -732,10 +984,10 @@ bool SwapEngine::swap(void* player,const void* selected) noexcept {
         __android_log_print(
             settled && normalized ? ANDROID_LOG_INFO : ANDROID_LOG_ERROR,
             kLogTag,
-            "[SwapEngine][native-client-normalize] OFF->MAIN settled=%d normalized=%d hand=0",
-            settled?1:0,normalized?1:0
+            "[SwapEngine][native-client-normalize] OFF->MAIN settled=%d slotsClosed=%d normalized=%d hand=0",
+            settled?1:0,slotsClosed?1:0,normalized?1:0
         );
-        return settled;
+        return settled && slotsClosed;
     }
 
     Snapshot main(mItemStackCopyCtor,mItemStackDtor,selected);
@@ -760,12 +1012,13 @@ bool SwapEngine::swap(void* player,const void* selected) noexcept {
     mSetSelectedItem(player,offSnap.get());
 
     const bool settled=legacyTransactionSettled(player);
+    const bool slotsClosed=screenSlots.finish();
     __android_log_print(
-        settled?ANDROID_LOG_INFO:ANDROID_LOG_ERROR,kLogTag,
-        "[SwapEngine][legacy-txn] occupied settled=%d hotbar=0 offhand=119",
-        settled?1:0
+        settled && slotsClosed?ANDROID_LOG_INFO:ANDROID_LOG_ERROR,kLogTag,
+        "[SwapEngine][legacy-txn] occupied settled=%d slotsClosed=%d hotbar=0 offhand=119",
+        settled?1:0,slotsClosed?1:0
     );
-    return settled;
+    return settled && slotsClosed;
 }
 
 } // namespace levioffhand::swap
