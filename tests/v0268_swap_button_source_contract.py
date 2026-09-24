@@ -312,3 +312,29 @@ if "mSetItemInHandSlot(" in compact_swap:
     raise AssertionError(
         "screen-slot bookkeeping must not change the #662 OFF storage writer"
     )
+
+# Native legacy scope cleanup must honor std::function storage mode.
+# The Player-aware 0xF88A434 wrapper can return either an inline or heap
+# callable; using +0x20 unconditionally is not a valid destruction contract.
+for marker in (
+    "kNativeFunctionDestroyInlineVtableOffset=0x20",
+    "kNativeFunctionDestroyHeapVtableOffset=0x28",
+    "inlineCallable=",
+    "mCallable==static_cast<void*>(scope.storage.data())",
+):
+    if marker not in engine.replace(" ", "") and marker not in engine:
+        raise AssertionError(
+            f"safe native legacy-scope cleanup missing {marker}"
+        )
+
+finish_start = engine.index("[[nodiscard]] bool finishNativeClientLegacyScope")
+finish_end = engine.index(
+    "[[nodiscard]] bool normalizeDestinationHandWithNativeLegacyRequest",
+    finish_start
+)
+finish_body = engine[finish_start:finish_end]
+if "kNativeFunctionDestroyHeapVtableOffset" not in finish_body:
+    raise AssertionError(
+        "legacy-scope cleanup must select heap destroy slot when callable is external"
+    )
+
