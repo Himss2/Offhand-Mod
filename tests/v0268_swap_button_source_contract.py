@@ -103,15 +103,28 @@ for forbidden in (
             f"isolated swap must not depend on hooked selected-item entry: {forbidden}"
         )
 
-# F swap must use one normal InventoryTransaction composed from the native
-# selected-hotbar action (container 0) and one explicit OFFHAND action
-# (container 119).  Do not open an ItemStackRequest or use the public OFF setter,
-# because LocalPlayer suppresses its container-119 action in modern mode.
+# F swap must preserve the proven 44a mutation order, but the mutation
+# itself now runs inside Minecraft's Player-aware client legacy predictive
+# guard. OFF writes must use the public native hand setter while the negative
+# request id is alive; post-settlement healer pulses and raw OFF writes are
+# forbidden from the swap body.
 compact_engine = engine.replace(" ", "").replace("\n", "")
 swap_body = engine[engine.index("bool SwapEngine::swap"):]
 
+for token in (
+    "kTryBeginClientLegacyTransactionRva=0xF88A434",
+    "ClientLegacyPredictiveGuard",
+    "gTryBeginClientLegacyTransaction(player)",
+    "[SwapEngine][predictive-guard]",
+    "[SwapEngine][native-predictive-swap]",
+):
+    if token not in compact_engine and token not in engine:
+        raise AssertionError(f"native predictive swap missing {token}")
+
 for forbidden in (
-    "mSetItemInHandSlot(",
+    "normalizeDestinationHandWithNativeLegacyRequest(",
+    "offAction.submit(player)",
+    "gSetOffhandRaw(player",
     "RequestSlotInfo",
     "LegacyRequestScope",
     "makePlace(",
@@ -119,73 +132,54 @@ for forbidden in (
 ):
     if forbidden in swap_body:
         raise AssertionError(
-            f"F swap must not use rejected transaction boundary: {forbidden}"
+            f"swap body reintroduced rejected/post-heal boundary: {forbidden}"
         )
 
-for token in (
-    "mStorage[4]=static_cast<std::byte>(kOffhandLegacyContainerId)",
-    "gInventoryTransactionAddAction(manager,mStorage.data(),0)",
-    "kOffhandLegacyContainerId=0x77",
-    "kInventoryActionSize=0x1E0",
-    "kInventoryActionOldDescriptorOffset=0x10",
-    "kInventoryActionNewDescriptorOffset=0x60",
-    "kInventoryActionOldStackOffset=0xB0",
-    "kInventoryActionNewStackOffset=0x148",
-):
-    if token not in compact_engine and token not in engine:
-        raise AssertionError(f"legacy OFF InventoryAction bridge missing {token}")
+guard_pos = compact_engine.index(
+    "NativeClientLegacyScopenativeScope=gTryBeginClientLegacyTransaction(player)"
+)
+off_pos = compact_engine.index("if(offEmpty)")
+if guard_pos > off_pos:
+    raise AssertionError("predictive guard must open before any swap mutation")
 
 off_empty_start = compact_engine.index("if(offEmpty){")
-main_empty_start = compact_engine.index("if(mainEmpty){", off_empty_start)
+main_empty_start = compact_engine.index("}elseif(mainEmpty){", off_empty_start)
 off_empty_body = compact_engine[off_empty_start:main_empty_start]
-for token in (
+off_sequence=(
     "mSetSelectedItem(player,mEmptyItem)",
-    "offAction.submit(player)",
-    "gSetOffhandRaw(player,main.get())",
-):
-    if token not in off_empty_body:
-        raise AssertionError(f"MAIN->OFF transaction order missing {token}")
-positions = [off_empty_body.index(token) for token in (
-    "mSetSelectedItem(player,mEmptyItem)",
-    "offAction.submit(player)",
-    "gSetOffhandRaw(player,main.get())",
-)]
+    "mSetItemInHandSlot(player,kOffHand,main.get())",
+)
+positions=[off_empty_body.index(x) for x in off_sequence]
 if positions != sorted(positions):
-    raise AssertionError("MAIN->OFF must record hotbar then OFF action before raw OFF write")
+    raise AssertionError("MAIN->OFF order must remain MAIN clear -> native OFF write")
 
-occupied_marker = "Snapshotmain(mItemStackCopyCtor,mItemStackDtor,selected);Snapshot"
+occupied_marker = "}else{Snapshotmain("
 occupied_start = compact_engine.index(occupied_marker, main_empty_start)
 main_empty_body = compact_engine[main_empty_start:occupied_start]
-for token in (
-    "offAction.submit(player)",
-    "gSetOffhandRaw(player,mEmptyItem)",
-    "mSetSelectedItem(player,offSnap.get())",
-):
-    if token not in main_empty_body:
-        raise AssertionError(f"OFF->MAIN transaction order missing {token}")
-positions = [main_empty_body.index(token) for token in (
-    "offAction.submit(player)",
-    "gSetOffhandRaw(player,mEmptyItem)",
-    "mSetSelectedItem(player,offSnap.get())",
-)]
-if positions != sorted(positions):
-    raise AssertionError("OFF->MAIN must record/write OFF before native selected setter")
-
-occupied_body = compact_engine[occupied_start:]
-occupied_sequence = (
-    "mSetSelectedItem(player,mEmptyItem)",
-    "offAction.submit(player)",
-    "gSetOffhandRaw(player,main.get())",
+main_sequence=(
+    "mSetItemInHandSlot(player,kOffHand,mEmptyItem)",
     "mSetSelectedItem(player,offSnap.get())",
 )
-positions = [occupied_body.index(token) for token in occupied_sequence]
+positions=[main_empty_body.index(x) for x in main_sequence]
+if positions != sorted(positions):
+    raise AssertionError("OFF->MAIN order must remain native OFF clear -> MAIN fill")
+
+occupied_body = compact_engine[occupied_start:]
+occupied_sequence=(
+    "mSetSelectedItem(player,mEmptyItem)",
+    "mSetItemInHandSlot(player,kOffHand,main.get())",
+    "mSetSelectedItem(player,offSnap.get())",
+)
+positions=[occupied_body.index(x) for x in occupied_sequence]
 if positions != sorted(positions):
     raise AssertionError(
-        "occupied 44a transaction order changed: hotbar clear -> OFF action/write -> hotbar refill"
+        "occupied 44a order changed: MAIN clear -> native OFF write -> MAIN refill"
     )
 
-if engine.count("legacyTransactionSettled(player)") != 3:
-    raise AssertionError("all three non-empty F paths must verify transaction settlement")
+finish_pos=compact_engine.index("constboolrequestClosed=guard.finish()")
+settle_pos=compact_engine.index("constboolsettled=legacyTransactionSettled(player)",finish_pos)
+if finish_pos > settle_pos:
+    raise AssertionError("predictive request must close before final settlement check")
 
 for forbidden in (
     "InventoryTransactionPacket",
@@ -194,7 +188,7 @@ for forbidden in (
     "RequestSlotInfo",
     "ItemStackNetManager request bridge",
 ):
-    if forbidden in runtime or forbidden in engine:
+    if forbidden in runtime or forbidden in swap_body:
         raise AssertionError(f"swap must not synthesize {forbidden}")
 
 for forbidden in (

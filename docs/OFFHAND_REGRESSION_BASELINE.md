@@ -309,3 +309,12 @@ InventoryTransaction is already pending or a modern ItemStackRequest owns the
 ItemStackNetManager. RightUseRouter, NativeOffhandPolicy, SwapRuntime, HUD UI,
 renderer, Sword/Shears routing, placement, consumption and release are
 unchanged.
+
+
+### September 24 native predictive swap ownership candidate
+
+Build #662 proved that post-settlement normalization is too late: the ItemStack contents move correctly, but the destination slot can remain locked until a later native MAIN block-placement writeback reconciles ownership. The swap mutation now opens Minecraft 1.26.51.1's Player-aware client legacy predictive wrapper at `0xF88A434` **before** changing either hand.
+
+The proven 44a ordering is preserved. MAIN uses `Player::setSelectedItem`; OFF uses `Actor::setItemInHandSlot(hand=1)` while the native negative-even request id is active. The previous swap-body synthetic container-119 action/raw OFF write and the #662 post-settlement healer are no longer used. This is intentionally isolated to swap storage ownership; RightUseRouter, renderer, Sword/Shears routing, placement, consumption and release are unchanged.
+
+Device acceptance criteria: immediately after MAIN→OFF, OFF→MAIN, and occupied A/B swaps, both resulting slots must be removable through normal inventory UI without requiring right-click/block placement first; repeated swaps must not duplicate, lose, ghost, or roll back items.

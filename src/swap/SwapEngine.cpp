@@ -27,10 +27,11 @@ constexpr std::uintptr_t kSetOffhandRawRva=0xF579C24;
 constexpr std::uintptr_t kStackDescriptorFromItemRva=0xFF73E8C;
 constexpr std::uintptr_t kInventoryActionDtorRva=0x8D623A4;
 constexpr std::uintptr_t kInventoryTransactionAddActionRva=0x1001EC24;
-// ItemStackNetManagerClient::tryBeginClientLegacyTransactionRequest().
-// RE 1.26.51.1: writes generated negative legacy request id to manager+0x50
-// and returns an engaged optional std::function cleanup scope.
-constexpr std::uintptr_t kTryBeginClientLegacyRequestRva=0xF88D960;
+// Player-aware client legacy predictive wrapper.
+// RE 1.26.51.1: 0xF88A434 accepts Player*, resolves the active
+// ItemStackNetManagerClient, opens the negative-even legacy request id, and
+// returns the native cleanup scope used by gameplay before hand writeback.
+constexpr std::uintptr_t kTryBeginClientLegacyTransactionRva=0xF88A434;
 constexpr std::uintptr_t kEmptyItemRva=0x134C6780;
 
 constexpr std::size_t kItemStackStorageSize=0x98;
@@ -123,11 +124,11 @@ constexpr std::array<std::uint8_t,32> kInventoryTransactionAddActionFingerprint{
     0xF4,0x03,0x02,0x2A,0xF5,0x03,0x01,0xAA,
 };
 
-constexpr std::array<std::uint8_t,32> kTryBeginClientLegacyRequestFingerprint{
-    0xFD,0x7B,0xBC,0xA9,0xF8,0x5F,0x01,0xA9,
-    0xF6,0x57,0x02,0xA9,0xF4,0x4F,0x03,0xA9,
-    0xFD,0x03,0x00,0x91,0xF4,0x03,0x00,0xAA,
-    0xF3,0x03,0x08,0xAA,0x2A,0xF4,0xFF,0x97,
+constexpr std::array<std::uint8_t,32> kTryBeginClientLegacyTransactionFingerprint{
+    0xFD,0x7B,0xBE,0xA9,0xF4,0x4F,0x01,0xA9,
+    0xFD,0x03,0x00,0x91,0xF3,0x03,0x08,0xAA,
+    0xA0,0x01,0x00,0xB4,0xF4,0x03,0x00,0xAA,
+    0xDA,0x81,0xF3,0x97,0x40,0x01,0x00,0x36,
 };
 
 struct ModuleState {
@@ -247,15 +248,11 @@ using InventoryActionDtorFn=void (*)(void*);
 using InventoryTransactionAddActionFn=void (*)(void*,const void*,int);
 using LegacyActionAllowedFn=bool (*)(void*);
 
-// Opaque 0x38-byte return object. On AArch64 an aggregate this size is
-// returned indirectly through x8, exactly matching the native function ABI.
-// We intentionally keep it trivial and invoke the native cleanup callable
-// ourselves instead of depending on the game's libc++ std::function layout
-// at compile time.
+// Native 0x38-byte predictive scope returned by the Player-aware wrapper.
 struct NativeClientLegacyScope final {
     alignas(16) std::array<std::byte,kNativeLegacyScopeSize> storage{};
 };
-using TryBeginClientLegacyRequestFn=
+using TryBeginClientLegacyTransactionFn=
     NativeClientLegacyScope (*)(void*);
 using NativeScopeCallableFn=void (*)(void*);
 
@@ -263,122 +260,119 @@ SetOffhandRawFn gSetOffhandRaw=nullptr;
 StackDescriptorFromItemFn gStackDescriptorFromItem=nullptr;
 InventoryActionDtorFn gInventoryActionDtor=nullptr;
 InventoryTransactionAddActionFn gInventoryTransactionAddAction=nullptr;
-TryBeginClientLegacyRequestFn gTryBeginClientLegacyRequest=nullptr;
+TryBeginClientLegacyTransactionFn gTryBeginClientLegacyTransaction=nullptr;
 
-[[nodiscard]] bool finishNativeClientLegacyScope(
-    NativeClientLegacyScope& scope
-) noexcept {
-    const auto engaged=read<std::uint8_t>(
-        scope.storage.data(),
-        kNativeLegacyScopeEngagedOffset,
-        0
-    );
-    void* callable=read<void*>(
-        scope.storage.data(),
-        kNativeLegacyScopeCallableOffset,
-        nullptr
-    );
-    if(engaged==0 || !callable) return false;
+class ClientLegacyPredictiveGuard final {
+public:
+    ClientLegacyPredictiveGuard(
+        NativeClientLegacyScope& scope,
+        void* player
+    ) noexcept : mScope(scope) {
+        if(!player) return;
 
-    const void* vtable=read<const void*>(callable,0,nullptr);
-    if(!mapped(reinterpret_cast<std::uintptr_t>(vtable),0)) return false;
-
-    const auto invoke=read<NativeScopeCallableFn>(
-        vtable,kNativeFunctionInvokeVtableOffset,nullptr
-    );
-    const auto destroy=read<NativeScopeCallableFn>(
-        vtable,kNativeFunctionDestroyVtableOffset,nullptr
-    );
-    if(!invoke || !mapped(reinterpret_cast<std::uintptr_t>(invoke),PF_X)) {
-        return false;
-    }
-
-    // Native lambda operator() ends the legacy request and clears manager+0x50.
-    invoke(callable);
-
-    // Both 1.26.51.1 inline lambdas have trivial inline destructors, but call
-    // the native destroy slot when available to preserve std::function rules.
-    if(destroy && mapped(reinterpret_cast<std::uintptr_t>(destroy),PF_X)) {
-        destroy(callable);
-    }
-
-    std::memset(scope.storage.data(),0,scope.storage.size());
-    return true;
-}
-
-[[nodiscard]] bool normalizeDestinationHandWithNativeLegacyRequest(
-    void* player,
-    unsigned char hand,
-    const void* stack,
-    SwapEngine::SetItemInHandSlotFn setHand
-) noexcept {
-    if(!player || !stack || !setHand || !gTryBeginClientLegacyRequest) {
-        return false;
-    }
-
-    void* manager=read<void*>(
-        player,kPlayerItemStackNetManagerOffset,nullptr
-    );
-    if(!manager) return false;
-
-    const int beforeId=read<int>(
-        manager,kItemStackNetManagerLegacyRequestIdOffset,0
-    );
-    if(beforeId!=0) {
-        __android_log_print(
-            ANDROID_LOG_WARN,kLogTag,
-            "[SwapEngine][native-client-legacy] busy before normalize hand=%u req=%d",
-            static_cast<unsigned>(hand),beforeId
+        mManager=read<void*>(
+            player,kPlayerItemStackNetManagerOffset,nullptr
         );
-        return false;
+        if(!mManager) return;
+
+        mDuringId=read<int>(
+            mManager,kItemStackNetManagerLegacyRequestIdOffset,0
+        );
+
+        const auto engaged=read<std::uint8_t>(
+            mScope.storage.data(),
+            kNativeLegacyScopeEngagedOffset,
+            0
+        );
+        mCallable=read<void*>(
+            mScope.storage.data(),
+            kNativeLegacyScopeCallableOffset,
+            nullptr
+        );
+        if(engaged==0 || !mCallable ||
+           mDuringId>-2 || (mDuringId&1)!=0) {
+            return;
+        }
+
+        const void* vtable=read<const void*>(mCallable,0,nullptr);
+        if(!mapped(reinterpret_cast<std::uintptr_t>(vtable),0)) return;
+
+        mInvoke=read<NativeScopeCallableFn>(
+            vtable,kNativeFunctionInvokeVtableOffset,nullptr
+        );
+
+        const bool inlineCallable=
+            mCallable==static_cast<void*>(mScope.storage.data());
+        mDestroy=read<NativeScopeCallableFn>(
+            vtable,
+            inlineCallable
+                ? kNativeFunctionDestroyVtableOffset
+                : kNativeFunctionDestroyVtableOffset+8,
+            nullptr
+        );
+
+        mValid=
+            mInvoke && mapped(reinterpret_cast<std::uintptr_t>(mInvoke),PF_X) &&
+            mDestroy && mapped(reinterpret_cast<std::uintptr_t>(mDestroy),PF_X);
+
+        __android_log_print(
+            mValid?ANDROID_LOG_INFO:ANDROID_LOG_ERROR,
+            kLogTag,
+            "[SwapEngine][predictive-guard] active=%d reqId=%d valid=%d",
+            engaged?1:0,mDuringId,mValid?1:0
+        );
     }
 
-    // Direct initialization is intentional: the native function writes an
-    // inline std::function whose self pointer targets this exact return object.
-    NativeClientLegacyScope scope=
-        gTryBeginClientLegacyRequest(manager);
-
-    const int duringId=read<int>(
-        manager,kItemStackNetManagerLegacyRequestIdOffset,0
-    );
-
-    const auto engaged=read<std::uint8_t>(
-        scope.storage.data(),
-        kNativeLegacyScopeEngagedOffset,
-        0
-    );
-    void* callable=read<void*>(
-        scope.storage.data(),
-        kNativeLegacyScopeCallableOffset,
-        nullptr
-    );
-
-    const bool ownsRequest=
-        engaged!=0 && callable!=nullptr && duringId<0;
-
-    if(ownsRequest) {
-        setHand(player,hand,stack);
+    ~ClientLegacyPredictiveGuard() noexcept {
+        finish();
     }
 
-    const bool cleanupOk=finishNativeClientLegacyScope(scope);
-    const int afterId=read<int>(
-        manager,kItemStackNetManagerLegacyRequestIdOffset,0
-    );
+    [[nodiscard]] bool valid() const noexcept {
+        return mValid;
+    }
 
-    __android_log_print(
-        ownsRequest && cleanupOk && afterId==0
-            ? ANDROID_LOG_INFO
-            : ANDROID_LOG_ERROR,
-        kLogTag,
-        "[SwapEngine][native-client-legacy] hand=%u owned=%d cleanup=%d req=%d->%d->%d",
-        static_cast<unsigned>(hand),
-        ownsRequest?1:0,
-        cleanupOk?1:0,
-        beforeId,duringId,afterId
-    );
+    [[nodiscard]] bool finish() noexcept {
+        if(mFinished) return mClosedCleanly;
+        mFinished=true;
 
-    return ownsRequest && cleanupOk && afterId==0;
-}
+        if(mValid && mInvoke && mCallable) {
+            mInvoke(mCallable);
+        }
+        if(mValid && mDestroy && mCallable) {
+            mDestroy(mCallable);
+        }
+
+        const int afterId=mManager
+            ? read<int>(
+                mManager,kItemStackNetManagerLegacyRequestIdOffset,0
+            )
+            : mDuringId;
+        mClosedCleanly=mValid && afterId==0;
+
+        __android_log_print(
+            mClosedCleanly?ANDROID_LOG_INFO:ANDROID_LOG_ERROR,
+            kLogTag,
+            "[SwapEngine][predictive-guard] close reqId=%d->%d clean=%d",
+            mDuringId,afterId,mClosedCleanly?1:0
+        );
+
+        mCallable=nullptr;
+        mInvoke=nullptr;
+        mDestroy=nullptr;
+        return mClosedCleanly;
+    }
+
+private:
+    NativeClientLegacyScope& mScope;
+    void* mManager{nullptr};
+    void* mCallable{nullptr};
+    NativeScopeCallableFn mInvoke{nullptr};
+    NativeScopeCallableFn mDestroy{nullptr};
+    int mDuringId{0};
+    bool mValid{false};
+    bool mFinished{false};
+    bool mClosedCleanly{false};
+};
 
 [[nodiscard]] bool legacyInventoryTransactionAvailable(void* player) noexcept {
     if(!player) return false;
@@ -533,8 +527,8 @@ bool SwapEngine::install(pl::mod::ModContext& context) noexcept {
         kInventoryTransactionAddActionFingerprint
     );
     const auto tryLegacy=resolve(
-        kTryBeginClientLegacyRequestRva,
-        kTryBeginClientLegacyRequestFingerprint
+        kTryBeginClientLegacyTransactionRva,
+        kTryBeginClientLegacyTransactionFingerprint
     );
 
     const bool stableBuild=
@@ -581,8 +575,8 @@ bool SwapEngine::install(pl::mod::ModContext& context) noexcept {
         reinterpret_cast<InventoryActionDtorFn>(actionDtor);
     gInventoryTransactionAddAction=
         reinterpret_cast<InventoryTransactionAddActionFn>(addAction);
-    gTryBeginClientLegacyRequest=
-        reinterpret_cast<TryBeginClientLegacyRequestFn>(tryLegacy);
+    gTryBeginClientLegacyTransaction=
+        reinterpret_cast<TryBeginClientLegacyTransactionFn>(tryLegacy);
     mEmptyItem=reinterpret_cast<const void*>(empty);
 
     if(setSelectedChainedLive) {
@@ -599,8 +593,8 @@ bool SwapEngine::install(pl::mod::ModContext& context) noexcept {
     }
 
     context.logger().info(
-        "Swap engine ready; F exchange uses paired legacy InventoryAction "
-        "hotbar(0) + offhand(119), with native selected setter and raw OFF write"
+        "Swap engine ready; F exchange uses native client predictive guard + "
+        "native selected/OFF hand setters"
     );
     return true;
 }
@@ -616,7 +610,7 @@ void SwapEngine::uninstall() noexcept {
     gStackDescriptorFromItem=nullptr;
     gInventoryActionDtor=nullptr;
     gInventoryTransactionAddAction=nullptr;
-    gTryBeginClientLegacyRequest=nullptr;
+    gTryBeginClientLegacyTransaction=nullptr;
     mEmptyItem=nullptr;
 }
 
@@ -624,7 +618,7 @@ bool SwapEngine::ready() const noexcept {
     return mGetOffhandSlot && mStackIsNull && mItemStackCopyCtor &&
         mItemStackDtor && mSetItemInHandSlot && mSetSelectedItem &&
         gSetOffhandRaw && gStackDescriptorFromItem && gInventoryActionDtor &&
-        gInventoryTransactionAddAction && gTryBeginClientLegacyRequest &&
+        gInventoryTransactionAddAction && gTryBeginClientLegacyTransaction &&
         mEmptyItem;
 }
 
@@ -665,107 +659,79 @@ bool SwapEngine::swap(void* player,const void* selected) noexcept {
 
     if(mainEmpty && offEmpty) return true;
 
-    // Never join an unrelated inventory transaction or an active modern
-    // ItemStackRequest.  The native InventoryTransactionManager can accept
-    // legacy InventoryAction records while modern item-stack networking is
-    // enabled, but only while no modern request owns the manager.
-    if(!legacyInventoryTransactionAvailable(player)) return false;
+    if(!legacyInventoryTransactionAvailable(player) ||
+       !gTryBeginClientLegacyTransaction) {
+        return false;
+    }
+
+    // The old #630/#662 path moved correct ItemStacks but performed the OFF
+    // mutation through a synthetic container-119 action + raw writer, then
+    // tried to heal ownership after settlement. Manual inventory and the
+    // right-click path that unlocks a stuck MAIN slot both perform their hand
+    // write while a native negative-even client legacy request is alive.
+    //
+    // Keep the proven 44a mutation order, but execute the actual OFF write
+    // through Actor::setItemInHandSlot inside that same predictive scope.
+    // This lets LocalPlayer own container-119 bookkeeping and predictive
+    // reconciliation at the moment the destination slot changes.
+    NativeClientLegacyScope nativeScope=
+        gTryBeginClientLegacyTransaction(player);
+    ClientLegacyPredictiveGuard guard(nativeScope,player);
+    if(!guard.valid()) {
+        __android_log_print(
+            ANDROID_LOG_ERROR,kLogTag,
+            "[SwapEngine] predictive guard unavailable; swap rejected before mutation"
+        );
+        return false;
+    }
+
+    bool mutated=false;
+    const char* direction="?";
 
     if(offEmpty) {
         Snapshot main(mItemStackCopyCtor,mItemStackDtor,selected);
         if(!main.get() || !mStackIsNull(mEmptyItem)) return false;
 
-        OffhandInventoryAction offAction(
-            mItemStackCopyCtor,off,main.get()
-        );
-        if(!offAction.valid()) return false;
-
-        // Selected container +0x68 is transaction-aware on LocalPlayer:
-        // A -> EMPTY records legacy container 0 and performs the local clear.
+        direction="MAIN->OFF";
         mSetSelectedItem(player,mEmptyItem);
-
-        // LocalPlayer's public OFF setter suppresses container-119 actions when
-        // modern ItemStackNetManager mode is active. Supply exactly that
-        // missing action, then call the same raw OFF writer used by vanilla.
-        offAction.submit(player);
-        gSetOffhandRaw(player,main.get());
-
-        const bool settled=legacyTransactionSettled(player);
-        const bool normalized=
-            settled &&
-            normalizeDestinationHandWithNativeLegacyRequest(
-                player,kOffHand,main.get(),mSetItemInHandSlot
-            );
-
-        __android_log_print(
-            settled && normalized ? ANDROID_LOG_INFO : ANDROID_LOG_ERROR,
-            kLogTag,
-            "[SwapEngine][native-client-normalize] MAIN->OFF settled=%d normalized=%d hand=1",
-            settled?1:0,normalized?1:0
-        );
-        return settled;
-    }
-
-    if(mainEmpty) {
+        mSetItemInHandSlot(player,kOffHand,main.get());
+        mutated=true;
+    } else if(mainEmpty) {
         Snapshot offSnap(mItemStackCopyCtor,mItemStackDtor,off);
         if(!offSnap.get() || !mStackIsNull(mEmptyItem)) return false;
 
-        OffhandInventoryAction offAction(
-            mItemStackCopyCtor,off,mEmptyItem
-        );
-        if(!offAction.valid()) return false;
-
-        // First half: B -> EMPTY in container 119, then the exact low-level
-        // OFF writer.  The transaction remains pending until selected storage
-        // contributes EMPTY -> B through its normal container-0 path.
-        offAction.submit(player);
-        gSetOffhandRaw(player,mEmptyItem);
+        direction="OFF->MAIN";
+        mSetItemInHandSlot(player,kOffHand,mEmptyItem);
         mSetSelectedItem(player,offSnap.get());
+        mutated=true;
+    } else {
+        Snapshot main(mItemStackCopyCtor,mItemStackDtor,selected);
+        Snapshot offSnap(mItemStackCopyCtor,mItemStackDtor,off);
+        if(!main.get() || !offSnap.get() || !mStackIsNull(mEmptyItem)) {
+            return false;
+        }
 
-        const bool settled=legacyTransactionSettled(player);
-        const bool normalized=
-            settled &&
-            normalizeDestinationHandWithNativeLegacyRequest(
-                player,0,offSnap.get(),mSetItemInHandSlot
-            );
-
-        __android_log_print(
-            settled && normalized ? ANDROID_LOG_INFO : ANDROID_LOG_ERROR,
-            kLogTag,
-            "[SwapEngine][native-client-normalize] OFF->MAIN settled=%d normalized=%d hand=0",
-            settled?1:0,normalized?1:0
-        );
-        return settled;
+        direction="OCCUPIED";
+        // Preserve the accepted 44a order exactly.
+        mSetSelectedItem(player,mEmptyItem);
+        mSetItemInHandSlot(player,kOffHand,main.get());
+        mSetSelectedItem(player,offSnap.get());
+        mutated=true;
     }
 
-    Snapshot main(mItemStackCopyCtor,mItemStackDtor,selected);
-    Snapshot offSnap(mItemStackCopyCtor,mItemStackDtor,off);
-    if(!main.get() || !offSnap.get() || !mStackIsNull(mEmptyItem)) {
-        return false;
-    }
-
-    OffhandInventoryAction offAction(
-        mItemStackCopyCtor,off,main.get()
-    );
-    if(!offAction.valid()) return false;
-
-    // Preserve the accepted 44a local mutation order while making the
-    // InventoryTransaction balanced:
-    //   hotbar A->EMPTY, OFF B->A, hotbar EMPTY->B.
-    // InventoryTransactionManager retains the first two unbalanced records
-    // and sends only after the third record balances the transaction.
-    mSetSelectedItem(player,mEmptyItem);
-    offAction.submit(player);
-    gSetOffhandRaw(player,main.get());
-    mSetSelectedItem(player,offSnap.get());
-
+    const bool requestClosed=guard.finish();
     const bool settled=legacyTransactionSettled(player);
+
     __android_log_print(
-        settled?ANDROID_LOG_INFO:ANDROID_LOG_ERROR,kLogTag,
-        "[SwapEngine][legacy-txn] occupied settled=%d hotbar=0 offhand=119",
-        settled?1:0
+        mutated && requestClosed && settled
+            ? ANDROID_LOG_INFO
+            : ANDROID_LOG_ERROR,
+        kLogTag,
+        "[SwapEngine][native-predictive-swap] %s mutated=%d requestClosed=%d settled=%d",
+        direction,mutated?1:0,requestClosed?1:0,settled?1:0
     );
-    return settled;
+
+    return mutated && requestClosed && settled;
 }
 
 } // namespace levioffhand::swap
