@@ -27,6 +27,10 @@ constexpr std::uintptr_t kSetOffhandRawRva=0xF579C24;
 constexpr std::uintptr_t kStackDescriptorFromItemRva=0xFF73E8C;
 constexpr std::uintptr_t kInventoryActionDtorRva=0x8D623A4;
 constexpr std::uintptr_t kInventoryTransactionAddActionRva=0x1001EC24;
+// ItemStackNetManagerClient::tryBeginClientLegacyTransactionRequest().
+// RE 1.26.51.1: writes generated negative legacy request id to manager+0x50
+// and returns an engaged optional std::function cleanup scope.
+constexpr std::uintptr_t kTryBeginClientLegacyRequestRva=0xF88D960;
 constexpr std::uintptr_t kEmptyItemRva=0x134C6780;
 
 constexpr std::size_t kItemStackStorageSize=0x98;
@@ -39,6 +43,12 @@ constexpr std::size_t kPlayerInventoryTransactionManagerOffset=0x9B8;
 constexpr std::size_t kInventoryTransactionPendingOffset=0x08;
 constexpr std::size_t kPlayerItemStackNetManagerOffset=0xA00;
 constexpr std::size_t kItemStackNetManagerLegacyAllowedVtableOffset=0x28;
+constexpr std::size_t kItemStackNetManagerLegacyRequestIdOffset=0x50;
+constexpr std::size_t kNativeLegacyScopeCallableOffset=0x20;
+constexpr std::size_t kNativeLegacyScopeEngagedOffset=0x30;
+constexpr std::size_t kNativeLegacyScopeSize=0x38;
+constexpr std::size_t kNativeFunctionInvokeVtableOffset=0x30;
+constexpr std::size_t kNativeFunctionDestroyVtableOffset=0x20;
 constexpr std::uint8_t kOffhandLegacyContainerId=0x77;
 
 // Player::getSelectedItem @ 0xF9F7824 was reverse engineered rather than
@@ -111,6 +121,13 @@ constexpr std::array<std::uint8_t,32> kInventoryTransactionAddActionFingerprint{
     0xF4,0x4F,0x02,0xA9,0xFD,0x03,0x00,0x91,
     0xF3,0x03,0x00,0xAA,0x00,0x00,0x40,0xF9,
     0xF4,0x03,0x02,0x2A,0xF5,0x03,0x01,0xAA,
+};
+
+constexpr std::array<std::uint8_t,32> kTryBeginClientLegacyRequestFingerprint{
+    0xFD,0x7B,0xBC,0xA9,0xF8,0x5F,0x01,0xA9,
+    0xF6,0x57,0x02,0xA9,0xF4,0x4F,0x03,0xA9,
+    0xFD,0x03,0x00,0x91,0xF4,0x03,0x00,0xAA,
+    0xF3,0x03,0x08,0xAA,0x2A,0xF4,0xFF,0x97,
 };
 
 struct ModuleState {
@@ -230,10 +247,138 @@ using InventoryActionDtorFn=void (*)(void*);
 using InventoryTransactionAddActionFn=void (*)(void*,const void*,int);
 using LegacyActionAllowedFn=bool (*)(void*);
 
+// Opaque 0x38-byte return object. On AArch64 an aggregate this size is
+// returned indirectly through x8, exactly matching the native function ABI.
+// We intentionally keep it trivial and invoke the native cleanup callable
+// ourselves instead of depending on the game's libc++ std::function layout
+// at compile time.
+struct NativeClientLegacyScope final {
+    alignas(16) std::array<std::byte,kNativeLegacyScopeSize> storage{};
+};
+using TryBeginClientLegacyRequestFn=
+    NativeClientLegacyScope (*)(void*);
+using NativeScopeCallableFn=void (*)(void*);
+
 SetOffhandRawFn gSetOffhandRaw=nullptr;
 StackDescriptorFromItemFn gStackDescriptorFromItem=nullptr;
 InventoryActionDtorFn gInventoryActionDtor=nullptr;
 InventoryTransactionAddActionFn gInventoryTransactionAddAction=nullptr;
+TryBeginClientLegacyRequestFn gTryBeginClientLegacyRequest=nullptr;
+
+[[nodiscard]] bool finishNativeClientLegacyScope(
+    NativeClientLegacyScope& scope
+) noexcept {
+    const auto engaged=read<std::uint8_t>(
+        scope.storage.data(),
+        kNativeLegacyScopeEngagedOffset,
+        0
+    );
+    void* callable=read<void*>(
+        scope.storage.data(),
+        kNativeLegacyScopeCallableOffset,
+        nullptr
+    );
+    if(engaged==0 || !callable) return false;
+
+    const void* vtable=read<const void*>(callable,0,nullptr);
+    if(!mapped(reinterpret_cast<std::uintptr_t>(vtable),0)) return false;
+
+    const auto invoke=read<NativeScopeCallableFn>(
+        vtable,kNativeFunctionInvokeVtableOffset,nullptr
+    );
+    const auto destroy=read<NativeScopeCallableFn>(
+        vtable,kNativeFunctionDestroyVtableOffset,nullptr
+    );
+    if(!invoke || !mapped(reinterpret_cast<std::uintptr_t>(invoke),PF_X)) {
+        return false;
+    }
+
+    // Native lambda operator() ends the legacy request and clears manager+0x50.
+    invoke(callable);
+
+    // Both 1.26.51.1 inline lambdas have trivial inline destructors, but call
+    // the native destroy slot when available to preserve std::function rules.
+    if(destroy && mapped(reinterpret_cast<std::uintptr_t>(destroy),PF_X)) {
+        destroy(callable);
+    }
+
+    std::memset(scope.storage.data(),0,scope.storage.size());
+    return true;
+}
+
+[[nodiscard]] bool normalizeDestinationHandWithNativeLegacyRequest(
+    void* player,
+    unsigned char hand,
+    const void* stack,
+    SwapEngine::SetItemInHandSlotFn setHand
+) noexcept {
+    if(!player || !stack || !setHand || !gTryBeginClientLegacyRequest) {
+        return false;
+    }
+
+    void* manager=read<void*>(
+        player,kPlayerItemStackNetManagerOffset,nullptr
+    );
+    if(!manager) return false;
+
+    const int beforeId=read<int>(
+        manager,kItemStackNetManagerLegacyRequestIdOffset,0
+    );
+    if(beforeId!=0) {
+        __android_log_print(
+            ANDROID_LOG_WARN,kLogTag,
+            "[SwapEngine][native-client-legacy] busy before normalize hand=%u req=%d",
+            static_cast<unsigned>(hand),beforeId
+        );
+        return false;
+    }
+
+    // Direct initialization is intentional: the native function writes an
+    // inline std::function whose self pointer targets this exact return object.
+    NativeClientLegacyScope scope=
+        gTryBeginClientLegacyRequest(manager);
+
+    const int duringId=read<int>(
+        manager,kItemStackNetManagerLegacyRequestIdOffset,0
+    );
+
+    const auto engaged=read<std::uint8_t>(
+        scope.storage.data(),
+        kNativeLegacyScopeEngagedOffset,
+        0
+    );
+    void* callable=read<void*>(
+        scope.storage.data(),
+        kNativeLegacyScopeCallableOffset,
+        nullptr
+    );
+
+    const bool ownsRequest=
+        engaged!=0 && callable!=nullptr && duringId<0;
+
+    if(ownsRequest) {
+        setHand(player,hand,stack);
+    }
+
+    const bool cleanupOk=finishNativeClientLegacyScope(scope);
+    const int afterId=read<int>(
+        manager,kItemStackNetManagerLegacyRequestIdOffset,0
+    );
+
+    __android_log_print(
+        ownsRequest && cleanupOk && afterId==0
+            ? ANDROID_LOG_INFO
+            : ANDROID_LOG_ERROR,
+        kLogTag,
+        "[SwapEngine][native-client-legacy] hand=%u owned=%d cleanup=%d req=%d->%d->%d",
+        static_cast<unsigned>(hand),
+        ownsRequest?1:0,
+        cleanupOk?1:0,
+        beforeId,duringId,afterId
+    );
+
+    return ownsRequest && cleanupOk && afterId==0;
+}
 
 [[nodiscard]] bool legacyInventoryTransactionAvailable(void* player) noexcept {
     if(!player) return false;
@@ -387,10 +532,15 @@ bool SwapEngine::install(pl::mod::ModContext& context) noexcept {
         kInventoryTransactionAddActionRva,
         kInventoryTransactionAddActionFingerprint
     );
+    const auto tryLegacy=resolve(
+        kTryBeginClientLegacyRequestRva,
+        kTryBeginClientLegacyRequestFingerprint
+    );
 
     const bool stableBuild=
         off!=0 && nul!=0 && copy!=0 && dtor!=0 && setOff!=0 &&
-        setOffRaw!=0 && descriptor!=0 && actionDtor!=0 && addAction!=0;
+        setOffRaw!=0 && descriptor!=0 && actionDtor!=0 && addAction!=0 &&
+        tryLegacy!=0;
 
     bool setSelectedChainedLive=false;
     const auto setSel=
@@ -404,14 +554,14 @@ bool SwapEngine::install(pl::mod::ModContext& context) noexcept {
 
     __android_log_print(
         ANDROID_LOG_INFO,kLogTag,
-        "[SwapEngine] targets off=%d null=%d copy=%d dtor=%d setOff=%d setOffRaw=%d descriptor=%d actionDtor=%d addAction=%d setSelected=%d setSelectedLive=%d emptyMapped=%d",
+        "[SwapEngine] targets off=%d null=%d copy=%d dtor=%d setOff=%d setOffRaw=%d descriptor=%d actionDtor=%d addAction=%d tryClientLegacy=%d setSelected=%d setSelectedLive=%d emptyMapped=%d",
         off!=0,nul!=0,copy!=0,dtor!=0,setOff!=0,setOffRaw!=0,
-        descriptor!=0,actionDtor!=0,addAction!=0,setSel!=0,
+        descriptor!=0,actionDtor!=0,addAction!=0,tryLegacy!=0,setSel!=0,
         setSelectedChainedLive?1:0,emptyMapped
     );
 
     if(!off||!nul||!copy||!dtor||!setOff||!setOffRaw||!descriptor||
-       !actionDtor||!addAction||!setSel||!emptyMapped) {
+       !actionDtor||!addAction||!tryLegacy||!setSel||!emptyMapped) {
         context.logger().error(
             "Swap engine: native storage target validation failed"
         );
@@ -431,6 +581,8 @@ bool SwapEngine::install(pl::mod::ModContext& context) noexcept {
         reinterpret_cast<InventoryActionDtorFn>(actionDtor);
     gInventoryTransactionAddAction=
         reinterpret_cast<InventoryTransactionAddActionFn>(addAction);
+    gTryBeginClientLegacyRequest=
+        reinterpret_cast<TryBeginClientLegacyRequestFn>(tryLegacy);
     mEmptyItem=reinterpret_cast<const void*>(empty);
 
     if(setSelectedChainedLive) {
@@ -464,6 +616,7 @@ void SwapEngine::uninstall() noexcept {
     gStackDescriptorFromItem=nullptr;
     gInventoryActionDtor=nullptr;
     gInventoryTransactionAddAction=nullptr;
+    gTryBeginClientLegacyRequest=nullptr;
     mEmptyItem=nullptr;
 }
 
@@ -471,7 +624,8 @@ bool SwapEngine::ready() const noexcept {
     return mGetOffhandSlot && mStackIsNull && mItemStackCopyCtor &&
         mItemStackDtor && mSetItemInHandSlot && mSetSelectedItem &&
         gSetOffhandRaw && gStackDescriptorFromItem && gInventoryActionDtor &&
-        gInventoryTransactionAddAction && mEmptyItem;
+        gInventoryTransactionAddAction && gTryBeginClientLegacyRequest &&
+        mEmptyItem;
 }
 
 const void* SwapEngine::selectedStack(const void* player) const noexcept {
@@ -537,10 +691,17 @@ bool SwapEngine::swap(void* player,const void* selected) noexcept {
         gSetOffhandRaw(player,main.get());
 
         const bool settled=legacyTransactionSettled(player);
+        const bool normalized=
+            settled &&
+            normalizeDestinationHandWithNativeLegacyRequest(
+                player,kOffHand,main.get(),mSetItemInHandSlot
+            );
+
         __android_log_print(
-            settled?ANDROID_LOG_INFO:ANDROID_LOG_ERROR,kLogTag,
-            "[SwapEngine][legacy-txn] MAIN->OFF settled=%d hotbar=0 offhand=119",
-            settled?1:0
+            settled && normalized ? ANDROID_LOG_INFO : ANDROID_LOG_ERROR,
+            kLogTag,
+            "[SwapEngine][native-client-normalize] MAIN->OFF settled=%d normalized=%d hand=1",
+            settled?1:0,normalized?1:0
         );
         return settled;
     }
@@ -562,10 +723,17 @@ bool SwapEngine::swap(void* player,const void* selected) noexcept {
         mSetSelectedItem(player,offSnap.get());
 
         const bool settled=legacyTransactionSettled(player);
+        const bool normalized=
+            settled &&
+            normalizeDestinationHandWithNativeLegacyRequest(
+                player,0,offSnap.get(),mSetItemInHandSlot
+            );
+
         __android_log_print(
-            settled?ANDROID_LOG_INFO:ANDROID_LOG_ERROR,kLogTag,
-            "[SwapEngine][legacy-txn] OFF->MAIN settled=%d hotbar=0 offhand=119",
-            settled?1:0
+            settled && normalized ? ANDROID_LOG_INFO : ANDROID_LOG_ERROR,
+            kLogTag,
+            "[SwapEngine][native-client-normalize] OFF->MAIN settled=%d normalized=%d hand=0",
+            settled?1:0,normalized?1:0
         );
         return settled;
     }

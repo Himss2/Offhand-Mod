@@ -228,3 +228,45 @@ if "src/runtime/OffhandSwapRuntime.cpp" in cmake:
     raise AssertionError("legacy mixed swap runtime must stay uncompiled")
 
 print("v0.2.68 isolated swap UI/runtime/engine contract passed")
+
+# Native 1.26.51.1 client legacy request normalization discovered from #659.
+for marker in (
+    "kTryBeginClientLegacyRequestRva=0xF88D960",
+    "[SwapEngine][native-client-normalize] MAIN->OFF",
+    "[SwapEngine][native-client-normalize] OFF->MAIN",
+    "[SwapEngine][native-client-legacy] hand=",
+):
+    if marker not in engine.replace(" ", "") and marker not in engine:
+        raise AssertionError(f"native client legacy normalization missing {marker}")
+
+swap_body = engine[engine.index("bool SwapEngine::swap"):]
+compact = swap_body.replace(" ", "").replace("\n", "")
+off_start = compact.index("if(offEmpty){")
+main_start = compact.index("if(mainEmpty){", off_start)
+occ_start = compact.index("Snapshotmain(", main_start)
+off_body = compact[off_start:main_start]
+main_body = compact[main_start:occ_start]
+occupied_body = compact[occ_start:]
+
+for body, sequence in (
+    (off_body, (
+        "mSetSelectedItem(player,mEmptyItem)",
+        "offAction.submit(player)",
+        "gSetOffhandRaw(player,main.get())",
+        "legacyTransactionSettled(player)",
+        "normalizeDestinationHandWithNativeLegacyRequest(",
+    )),
+    (main_body, (
+        "offAction.submit(player)",
+        "gSetOffhandRaw(player,mEmptyItem)",
+        "mSetSelectedItem(player,offSnap.get())",
+        "legacyTransactionSettled(player)",
+        "normalizeDestinationHandWithNativeLegacyRequest(",
+    )),
+):
+    positions=[body.index(x) for x in sequence]
+    if positions != sorted(positions):
+        raise AssertionError("native client legacy normalization must run after #630 settlement")
+
+if "normalizeDestinationHandWithNativeLegacyRequest(" in occupied_body:
+    raise AssertionError("occupied #630 path must remain untouched")
