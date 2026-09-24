@@ -103,28 +103,15 @@ for forbidden in (
             f"isolated swap must not depend on hooked selected-item entry: {forbidden}"
         )
 
-# F swap must preserve the proven 44a mutation order, but the mutation
-# itself now runs inside Minecraft's Player-aware client legacy predictive
-# guard. OFF writes must use the public native hand setter while the negative
-# request id is alive; post-settlement healer pulses and raw OFF writes are
-# forbidden from the swap body.
+# F swap must use one normal InventoryTransaction composed from the native
+# selected-hotbar action (container 0) and one explicit OFFHAND action
+# (container 119).  Do not open an ItemStackRequest or use the public OFF setter,
+# because LocalPlayer suppresses its container-119 action in modern mode.
 compact_engine = engine.replace(" ", "").replace("\n", "")
 swap_body = engine[engine.index("bool SwapEngine::swap"):]
 
-for token in (
-    "kTryBeginClientLegacyTransactionRva=0xF88A434",
-    "ClientLegacyPredictiveGuard",
-    "gTryBeginClientLegacyTransaction(player)",
-    "[SwapEngine][predictive-guard]",
-    "[SwapEngine][native-predictive-swap]",
-):
-    if token not in compact_engine and token not in engine:
-        raise AssertionError(f"native predictive swap missing {token}")
-
 for forbidden in (
-    "normalizeDestinationHandWithNativeLegacyRequest(",
-    "offAction.submit(player)",
-    "gSetOffhandRaw(player",
+    "mSetItemInHandSlot(",
     "RequestSlotInfo",
     "LegacyRequestScope",
     "makePlace(",
@@ -132,54 +119,73 @@ for forbidden in (
 ):
     if forbidden in swap_body:
         raise AssertionError(
-            f"swap body reintroduced rejected/post-heal boundary: {forbidden}"
+            f"F swap must not use rejected transaction boundary: {forbidden}"
         )
 
-guard_pos = compact_engine.index(
-    "NativeClientLegacyScopenativeScope=gTryBeginClientLegacyTransaction(player)"
-)
-off_pos = compact_engine.index("if(offEmpty)")
-if guard_pos > off_pos:
-    raise AssertionError("predictive guard must open before any swap mutation")
+for token in (
+    "mStorage[4]=static_cast<std::byte>(kOffhandLegacyContainerId)",
+    "gInventoryTransactionAddAction(manager,mStorage.data(),0)",
+    "kOffhandLegacyContainerId=0x77",
+    "kInventoryActionSize=0x1E0",
+    "kInventoryActionOldDescriptorOffset=0x10",
+    "kInventoryActionNewDescriptorOffset=0x60",
+    "kInventoryActionOldStackOffset=0xB0",
+    "kInventoryActionNewStackOffset=0x148",
+):
+    if token not in compact_engine and token not in engine:
+        raise AssertionError(f"legacy OFF InventoryAction bridge missing {token}")
 
 off_empty_start = compact_engine.index("if(offEmpty){")
-main_empty_start = compact_engine.index("}elseif(mainEmpty){", off_empty_start)
+main_empty_start = compact_engine.index("if(mainEmpty){", off_empty_start)
 off_empty_body = compact_engine[off_empty_start:main_empty_start]
-off_sequence=(
+for token in (
     "mSetSelectedItem(player,mEmptyItem)",
-    "mSetItemInHandSlot(player,kOffHand,main.get())",
-)
-positions=[off_empty_body.index(x) for x in off_sequence]
+    "offAction.submit(player)",
+    "gSetOffhandRaw(player,main.get())",
+):
+    if token not in off_empty_body:
+        raise AssertionError(f"MAIN->OFF transaction order missing {token}")
+positions = [off_empty_body.index(token) for token in (
+    "mSetSelectedItem(player,mEmptyItem)",
+    "offAction.submit(player)",
+    "gSetOffhandRaw(player,main.get())",
+)]
 if positions != sorted(positions):
-    raise AssertionError("MAIN->OFF order must remain MAIN clear -> native OFF write")
+    raise AssertionError("MAIN->OFF must record hotbar then OFF action before raw OFF write")
 
-occupied_marker = "}else{Snapshotmain("
+occupied_marker = "Snapshotmain(mItemStackCopyCtor,mItemStackDtor,selected);Snapshot"
 occupied_start = compact_engine.index(occupied_marker, main_empty_start)
 main_empty_body = compact_engine[main_empty_start:occupied_start]
-main_sequence=(
-    "mSetItemInHandSlot(player,kOffHand,mEmptyItem)",
+for token in (
+    "offAction.submit(player)",
+    "gSetOffhandRaw(player,mEmptyItem)",
     "mSetSelectedItem(player,offSnap.get())",
-)
-positions=[main_empty_body.index(x) for x in main_sequence]
+):
+    if token not in main_empty_body:
+        raise AssertionError(f"OFF->MAIN transaction order missing {token}")
+positions = [main_empty_body.index(token) for token in (
+    "offAction.submit(player)",
+    "gSetOffhandRaw(player,mEmptyItem)",
+    "mSetSelectedItem(player,offSnap.get())",
+)]
 if positions != sorted(positions):
-    raise AssertionError("OFF->MAIN order must remain native OFF clear -> MAIN fill")
+    raise AssertionError("OFF->MAIN must record/write OFF before native selected setter")
 
 occupied_body = compact_engine[occupied_start:]
-occupied_sequence=(
+occupied_sequence = (
     "mSetSelectedItem(player,mEmptyItem)",
-    "mSetItemInHandSlot(player,kOffHand,main.get())",
+    "offAction.submit(player)",
+    "gSetOffhandRaw(player,main.get())",
     "mSetSelectedItem(player,offSnap.get())",
 )
-positions=[occupied_body.index(x) for x in occupied_sequence]
+positions = [occupied_body.index(token) for token in occupied_sequence]
 if positions != sorted(positions):
     raise AssertionError(
-        "occupied 44a order changed: MAIN clear -> native OFF write -> MAIN refill"
+        "occupied 44a transaction order changed: hotbar clear -> OFF action/write -> hotbar refill"
     )
 
-finish_pos=compact_engine.index("constboolrequestClosed=guard.finish()")
-settle_pos=compact_engine.index("constboolsettled=legacyTransactionSettled(player)",finish_pos)
-if finish_pos > settle_pos:
-    raise AssertionError("predictive request must close before final settlement check")
+if engine.count("legacyTransactionSettled(player)") != 3:
+    raise AssertionError("all three non-empty F paths must verify transaction settlement")
 
 for forbidden in (
     "InventoryTransactionPacket",
@@ -188,7 +194,7 @@ for forbidden in (
     "RequestSlotInfo",
     "ItemStackNetManager request bridge",
 ):
-    if forbidden in runtime or forbidden in swap_body:
+    if forbidden in runtime or forbidden in engine:
         raise AssertionError(f"swap must not synthesize {forbidden}")
 
 for forbidden in (
@@ -222,3 +228,45 @@ if "src/runtime/OffhandSwapRuntime.cpp" in cmake:
     raise AssertionError("legacy mixed swap runtime must stay uncompiled")
 
 print("v0.2.68 isolated swap UI/runtime/engine contract passed")
+
+# Native 1.26.51.1 client legacy request normalization discovered from #659.
+for marker in (
+    "kTryBeginClientLegacyRequestRva=0xF88D960",
+    "[SwapEngine][native-client-normalize] MAIN->OFF",
+    "[SwapEngine][native-client-normalize] OFF->MAIN",
+    "[SwapEngine][native-client-legacy] hand=",
+):
+    if marker not in engine.replace(" ", "") and marker not in engine:
+        raise AssertionError(f"native client legacy normalization missing {marker}")
+
+swap_body = engine[engine.index("bool SwapEngine::swap"):]
+compact = swap_body.replace(" ", "").replace("\n", "")
+off_start = compact.index("if(offEmpty){")
+main_start = compact.index("if(mainEmpty){", off_start)
+occ_start = compact.index("Snapshotmain(", main_start)
+off_body = compact[off_start:main_start]
+main_body = compact[main_start:occ_start]
+occupied_body = compact[occ_start:]
+
+for body, sequence in (
+    (off_body, (
+        "mSetSelectedItem(player,mEmptyItem)",
+        "offAction.submit(player)",
+        "gSetOffhandRaw(player,main.get())",
+        "legacyTransactionSettled(player)",
+        "normalizeDestinationHandWithNativeLegacyRequest(",
+    )),
+    (main_body, (
+        "offAction.submit(player)",
+        "gSetOffhandRaw(player,mEmptyItem)",
+        "mSetSelectedItem(player,offSnap.get())",
+        "legacyTransactionSettled(player)",
+        "normalizeDestinationHandWithNativeLegacyRequest(",
+    )),
+):
+    positions=[body.index(x) for x in sequence]
+    if positions != sorted(positions):
+        raise AssertionError("native client legacy normalization must run after #630 settlement")
+
+if "normalizeDestinationHandWithNativeLegacyRequest(" in occupied_body:
+    raise AssertionError("occupied #630 path must remain untouched")
