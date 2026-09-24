@@ -338,3 +338,27 @@ if "kNativeFunctionDestroyHeapVtableOffset" not in finish_body:
         "legacy-scope cleanup must select heap destroy slot when callable is external"
     )
 
+# Never dereference the native callable vtable before proving it belongs to a
+# mapped module region. This is especially important for the Player-aware
+# legacy scope because failure occurs before any swap mutation.
+screen_scope_start = engine.index("class LegacyScreenSlotScope")
+screen_scope_end = engine.index(
+    "[[nodiscard]] bool legacyInventoryTransactionAvailable",
+    screen_scope_start
+)
+screen_scope_body = engine[screen_scope_start:screen_scope_end]
+vtable_decl = screen_scope_body.index(
+    "const void* callableVtable=read<const void*>(callable,0,nullptr);"
+)
+mapped_guard = screen_scope_body.index(
+    "mapped(reinterpret_cast<std::uintptr_t>(callableVtable),0)"
+)
+invoke_read = screen_scope_body.index(
+    "read<NativeScopeCallableFn>(",
+    vtable_decl
+)
+if mapped_guard > invoke_read:
+    raise AssertionError(
+        "legacy screen scope dereferences callable vtable before mapped guard"
+    )
+
