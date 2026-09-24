@@ -320,7 +320,7 @@ for marker in (
     "kNativeFunctionDestroyInlineVtableOffset=0x20",
     "kNativeFunctionDestroyHeapVtableOffset=0x28",
     "inlineCallable=",
-    "mCallable==static_cast<void*>(scope.storage.data())",
+    "callable==static_cast<void*>(scope.storage.data())",
 ):
     if marker not in engine.replace(" ", "") and marker not in engine:
         raise AssertionError(

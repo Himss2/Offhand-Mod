@@ -64,7 +64,8 @@ constexpr std::size_t kNativeLegacyScopeCallableOffset=0x20;
 constexpr std::size_t kNativeLegacyScopeEngagedOffset=0x30;
 constexpr std::size_t kNativeLegacyScopeSize=0x38;
 constexpr std::size_t kNativeFunctionInvokeVtableOffset=0x30;
-constexpr std::size_t kNativeFunctionDestroyVtableOffset=0x20;
+constexpr std::size_t kNativeFunctionDestroyInlineVtableOffset=0x20;
+constexpr std::size_t kNativeFunctionDestroyHeapVtableOffset=0x28;
 constexpr std::uint8_t kOffhandLegacyContainerId=0x77;
 
 // SharedTypes::Legacy::ContainerType values.
@@ -327,21 +328,29 @@ GetTopScreenFn gGetTopScreen=nullptr;
     const auto invoke=read<NativeScopeCallableFn>(
         vtable,kNativeFunctionInvokeVtableOffset,nullptr
     );
+    const bool inlineCallable=
+        callable==static_cast<void*>(scope.storage.data());
     const auto destroy=read<NativeScopeCallableFn>(
-        vtable,kNativeFunctionDestroyVtableOffset,nullptr
+        vtable,
+        inlineCallable
+            ? kNativeFunctionDestroyInlineVtableOffset
+            : kNativeFunctionDestroyHeapVtableOffset,
+        nullptr
     );
-    if(!invoke || !mapped(reinterpret_cast<std::uintptr_t>(invoke),PF_X)) {
+    if(
+        !invoke ||
+        !mapped(reinterpret_cast<std::uintptr_t>(invoke),PF_X) ||
+        !destroy ||
+        !mapped(reinterpret_cast<std::uintptr_t>(destroy),PF_X)
+    ) {
         return false;
     }
 
-    // Native lambda operator() ends the legacy request and clears manager+0x50.
+    // Match the libc++ std::function lifecycle recovered from native callers:
+    // run the scope callback first (ends request / clears manager+0x50), then
+    // destroy the callable through the correct inline-or-heap vtable slot.
     invoke(callable);
-
-    // Both 1.26.51.1 inline lambdas have trivial inline destructors, but call
-    // the native destroy slot when available to preserve std::function rules.
-    if(destroy && mapped(reinterpret_cast<std::uintptr_t>(destroy),PF_X)) {
-        destroy(callable);
-    }
+    destroy(callable);
 
     std::memset(scope.storage.data(),0,scope.storage.size());
     return true;
@@ -476,12 +485,19 @@ public:
         }
 
         const void* callableVtable=read<const void*>(callable,0,nullptr);
+        if(
+            !callableVtable ||
+            !mapped(reinterpret_cast<std::uintptr_t>(callableVtable),0)
+        ) {
+            finishNativeClientLegacyScope(mScope);
+            mRequestId=0;
+            return;
+        }
+
         const auto invoke=read<NativeScopeCallableFn>(
             callableVtable,kNativeFunctionInvokeVtableOffset,nullptr
         );
-        if(!callableVtable ||
-           !mapped(reinterpret_cast<std::uintptr_t>(callableVtable),0) ||
-           !invoke || !mapped(reinterpret_cast<std::uintptr_t>(invoke),PF_X)) {
+        if(!invoke || !mapped(reinterpret_cast<std::uintptr_t>(invoke),PF_X)) {
             finishNativeClientLegacyScope(mScope);
             mRequestId=0;
             return;

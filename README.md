@@ -246,3 +246,16 @@ InventoryTransaction is already pending or a modern ItemStackRequest owns the
 ItemStackNetManager. RightUseRouter, NativeOffhandPolicy, SwapRuntime, HUD UI,
 renderer, Sword/Shears routing, placement, consumption and release are
 unchanged.
+
+
+### 2026-09-24 screen-aware F-swap bookkeeping candidate
+
+The production baseline remains build #667/#662. This candidate changes only the F-swap transaction bookkeeping in `SwapEngine`; `RightUseRouter`, block placement, renderer, `NativeOffhandPolicy`, auto-insert routing, HUD input and the proven #662 local storage order are unchanged.
+
+Root-cause evidence now points to missing ItemStackNetManager touched-slot ownership rather than an ItemStack copy problem. The earlier #645 experiment called `ItemStackNetManagerClient::_addLegacyTransactionRequestSetItemSlot` with the wrong second argument (a `Player*`). Current generated LeviLamina headers confirm the native signature is `(ItemStackNetManagerScreen&, ContainerType, int)`.
+
+The candidate opens the exact Player-aware legacy request wrapper at `0xF88A434`, resolves the active native top screen, and registers both affected player-container slots before the unchanged #662 mutation: `ContainerType::Inventory (-1)` with selected hotbar slot 0-8, and `ContainerType::Hand (19)` with offhand local slot 0. It then closes that native scope before the existing #662 post-normalization. No public OFF setter is introduced into the swap body, and the raw OFF writer/container-119 action path stays unchanged.
+
+Native scope cleanup follows the recovered libc++ `std::function` storage mode: inline callable destruction uses vtable `+0x20`, heap callable destruction uses `+0x28`. Callable vtables are mapping-validated before any method dereference.
+
+This remains a device-test candidate until MAIN→OFF, OFF→MAIN and occupied A/B swaps prove: no loss/duplication/rollback, both resulting slots detach normally without right-click healing, and existing OFF block placement/right-use behavior remains unchanged.
