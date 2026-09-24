@@ -270,3 +270,45 @@ for body, sequence in (
 
 if "normalizeDestinationHandWithNativeLegacyRequest(" in occupied_body:
     raise AssertionError("occupied #630 path must remain untouched")
+
+
+# Regression: F swap must participate in the same ItemStackNetManager
+# legacy touched-slot bookkeeping used by native player-container mutations.
+# The old #645 diagnosis was invalid because it passed Player* where
+# _addLegacyTransactionRequestSetItemSlot requires ItemStackNetManagerScreen&.
+for marker in (
+    "kTryBeginClientLegacyTransactionRva=0xF88A434",
+    "kRecordLegacySlotRva=0xF88CE8C",
+    "kInventoryContainerType=-1",
+    "kHandContainerType=19",
+    "_ZN23ItemStackNetManagerBase13_getTopScreenEv",
+    "recordChangedSlot(",
+    "[SwapEngine][legacy-screen-slots]",
+):
+    if marker not in engine.replace(" ", "") and marker not in engine:
+        raise AssertionError(
+            f"screen-aware legacy touched-slot bookkeeping missing {marker}"
+        )
+
+swap_body = engine[engine.index("bool SwapEngine::swap"):]
+compact_swap = swap_body.replace(" ", "").replace("\n", "")
+
+for required in (
+    "recordChangedSlot(screen,kInventoryContainerType,selectedSlot)",
+    "recordChangedSlot(screen,kHandContainerType,kOffhandLocalSlot)",
+):
+    if required not in compact_swap:
+        raise AssertionError(f"paired legacy slot bookkeeping missing {required}")
+
+if "recordChangedSlot(player" in compact_swap:
+    raise AssertionError(
+        "Player* must never be passed as ItemStackNetManagerScreen&"
+    )
+
+# Preserve the working #662 storage/action architecture. The bookkeeping fix
+# must not reintroduce the public hand setter that caused build #666 duplication
+# and broke OFF block placement.
+if "mSetItemInHandSlot(" in compact_swap:
+    raise AssertionError(
+        "screen-slot bookkeeping must not change the #662 OFF storage writer"
+    )
