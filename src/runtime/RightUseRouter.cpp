@@ -364,6 +364,27 @@ template <std::size_t N>
         !gStackDiffersForUse(lhs, rhs);
 }
 
+[[nodiscard]] bool useInputRepresentsSelected(
+    const void* input,
+    const void* selected
+) noexcept {
+    if (input == nullptr || selected == nullptr) {
+        return false;
+    }
+
+    // The upper use dispatcher may materialize EMPTY_ITEM differently from
+    // Player::getSelectedItem when MAINHAND is empty.  Native stack-difference
+    // comparison is allowed to report those two empty representations as
+    // different, but semantically they are the same MAINHAND context.  Treat
+    // only the both-empty case as equivalent; non-empty items still require
+    // the exact native use-stack match.
+    if (stackIsNull(input) && stackIsNull(selected)) {
+        return true;
+    }
+
+    return stacksMatch(input, selected);
+}
+
 [[nodiscard]] const void* itemFromStack(const void* stack) noexcept {
     if (stackIsNull(stack)) {
         return nullptr;
@@ -939,7 +960,7 @@ bool RightUseRouter::baseUseItemDetour(
     // so pointer identity with Player::getSelectedItem is invalid.
     if (
         itemStack == nullptr || mainStack == nullptr ||
-        !stacksMatch(itemStack, mainStack) ||
+        !useInputRepresentsSelected(itemStack, mainStack) ||
         offStack == nullptr || stackIsNull(offStack)
     ) {
         return original(gameMode, itemStack, hand);

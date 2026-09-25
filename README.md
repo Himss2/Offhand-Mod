@@ -130,6 +130,18 @@ The candidate changes FPP to **native-first, fallback-only**:
 Swap, manual inventory, right-use, placement and all non-Bow/Crossbow item visuals are unchanged.
 
 
+### OFFHAND eating candidate — manual and F-swap equivalent
+
+This candidate keeps the current gameplay/storage baseline and changes only the OFFHAND self-use entry condition in `RightUseRouter`.
+
+Minecraft's upper use dispatcher can pass a local/canonical empty ItemStack that is not byte-equivalent to the empty stack returned by `Player::getSelectedItem`. The previous strict `stacksMatch()` gate could therefore reject the click before OFFHAND food was attempted when MAINHAND was empty.
+
+The router now treats **input empty + selected MAIN empty** as the same MAINHAND context. Non-empty MAIN items still require the exact native stack match and keep Java-style priority. OFFHAND food is then started through the existing detached stack + native `hand=1` path, and native completion is written back only through `Actor::setItemInHandSlot(hand=1)`.
+
+The mechanism is intentionally origin-agnostic: `RightUseRouter` has no dependency on SwapEngine/SwapRuntime and reads only the live OFFHAND slot at click time. An item placed manually into slot 34 and the same item produced there by F swap therefore enter the same start/session/completion path.
+
+Required device checks: eat from manually inserted OFFHAND food and from F-swapped OFFHAND food with MAIN empty; repeat with Sword/Axe/Pickaxe in MAIN; verify stack decrement, last-item removal, bowl/bottle replacement where applicable, cancellation, and that MAIN is never consumed.
+
 1. Bow offhand FPP: exactly one Bow is visible on the left/offhand side.
 2. Bow offhand TPP: exactly one Bow is attached to the left hand; inventory/player preview must remain unaffected.
 3. Trident offhand FPP: one native 3D Trident is visible on the left and follows normal/raise/use animation without a generic 2D duplicate.

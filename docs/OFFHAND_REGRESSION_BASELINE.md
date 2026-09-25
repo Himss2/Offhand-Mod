@@ -263,6 +263,24 @@ Candidate ownership rule:
 
 Required device checks: Bow and Crossbow with no visual pack, then with Actions & Stuff/XNova/HMI-style packs. Each must render exactly one offhand model. Also verify Bow/Crossbow use animations and the build-#711/#714 F-swap/manual inventory behavior remain unchanged.
 
+## OFFHAND food consumption — origin-agnostic candidate
+
+Current main before this candidate: `12447d1ad3a6d9ad96ef817636aea58b295cab20`. Swap/storage behavior is not modified.
+
+The existing native consumption lifecycle is retained:
+
+- OFF self-use calls `GameMode::baseUseItem` with a detached OFFHAND snapshot and native `hand=1`;
+- active use is pinned only when Minecraft's in-use stack matches the live OFFHAND stack;
+- completion scopes `Player::setSelectedItem` writeback to `Actor::setItemInHandSlot(hand=1)`;
+- empty results and container replacements remain OFFHAND-owned;
+- stale/replaced OFF stacks cancel instead of consuming MAIN.
+
+New entry fix: when the upper dispatcher input and selected MAIN stack are both native-null/empty, they are treated as the same MAIN context even if `ItemStackBase::_differsForUse` distinguishes their representations. This permits OFFHAND food to start with an empty MAIN while preserving exact matching for every non-empty MAIN stack.
+
+Origin invariant: no swap API, swap flag, or transfer history may participate in right-use. Manual slot-34 insertion and F-swap are equivalent once they produce the same live OFFHAND stack.
+
+Host tests `eat_offhand_manual` and `eat_offhand_swap_result` must both execute start -> active session -> completion and produce OFF count 16 -> 15 with zero MAIN writes. Device testing remains mandatory because host tests do not emulate Bedrock's network inventory transaction.
+
 ## Documentation rule
 
 Any change that touches:

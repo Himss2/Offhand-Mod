@@ -140,6 +140,17 @@ def main() -> int:
     )
     require(header, "unsigned char hand")
 
+    require(
+        router,
+        "useInputRepresentsSelected(",
+        "stackIsNull(input) && stackIsNull(selected)",
+        "!useInputRepresentsSelected(itemStack, mainStack)",
+    )
+    if '#include "swap/' in router or "SwapEngine::" in router or "SwapRuntime::" in router:
+        raise AssertionError(
+            "RightUseRouter must consume the live OFFHAND slot without depending on swap origin"
+        )
+
     base_use = function_body(router, "RightUseRouter::baseUseItemDetour(")
     require(
         base_use,

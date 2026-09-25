@@ -274,6 +274,59 @@ int main(int argc, char** argv) {
         mainTable[0x290/8] = reinterpret_cast<void*>(testBase + 0xFF78D40);
         RightUseRouter::useItemOnBlockDetour(&gameMode, &mainStack, nullptr, 0, nullptr, 0, 0, false);
         ok &= check(calls == std::vector<unsigned char>{0}, "defer Bow MAIN self-use to upper dispatcher before OFF block-use");
+    } else if (
+        test == "eat_offhand_manual" ||
+        test == "eat_offhand_swap_result"
+    ) {
+        // MAIN is empty. The upper dispatcher is allowed to hand baseUseItem a
+        // different EMPTY_ITEM representation than Player::getSelectedItem.
+        // OFFHAND origin must be irrelevant once the live slot contains food.
+        mainStack.count = 0;
+        Stack dispatcherEmpty = mainStack;
+        dispatcherEmpty.id = 0;
+
+        if (test == "eat_offhand_swap_result") {
+            // Model the post-swap state through the native hand-slot writer,
+            // then forget how the item arrived. RightUseRouter must observe
+            // only the resulting live OFFHAND stack.
+            Stack swappedFood = offStack;
+            offStack.count = 0;
+            setHand(&player, 1, &swappedFood);
+            offhandSetterCalls = 0;
+        }
+
+        startUse = true;
+        const bool started = RightUseRouter::baseUseItemDetour(
+            &gameMode, &dispatcherEmpty, 0
+        );
+        ok &= check(started, "empty MAIN must allow OFFHAND food self-use");
+        ok &= check(
+            calls == std::vector<unsigned char>{1},
+            "OFFHAND food must start directly with native hand=1"
+        );
+        ok &= check(
+            gSessionPlayer == &player && usingItem,
+            "OFFHAND food must pin the native use session"
+        );
+
+        RightUseRouter::completeUsingItemDetour(&player);
+
+        ok &= check(
+            completions == 1 && mainWrites == 0 && offhandSetterCalls == 1,
+            "food completion must write OFF exactly once and never MAIN"
+        );
+        ok &= check(
+            mainStack.count == 0,
+            "empty MAIN must remain untouched after OFFHAND eating"
+        );
+        ok &= check(
+            offStack.id == 20 && offStack.count == 15,
+            "OFFHAND food must decrement 16 -> 15"
+        );
+        ok &= check(
+            gSessionPlayer == nullptr,
+            "OFFHAND food session must end after completion"
+        );
     } else if (test == "air_snapshot") {
         startUse = true;
         RightUseRouter::baseUseItemDetour(&gameMode, &mainStack, 0);
