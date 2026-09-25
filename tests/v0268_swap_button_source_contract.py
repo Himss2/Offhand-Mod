@@ -592,3 +592,52 @@ for body,name in ((main_body_perf,"OFF->MAIN"),(occ_body_perf,"OCCUPIED")):
     if "returnslotsClosed;" not in body:
         raise AssertionError(f"{name} must accept cleanly closed predictive scope")
 
+
+
+# Regression: a user F intent must survive a transient busy transaction.
+# Build #721 consumes mSwapRequested before entering SwapEngine. A still-pending
+# legacy transaction / active modern request is temporary and must be reported
+# separately from ABI/state rejection so SwapRuntime can keep exactly one
+# coalesced intent queued for a later frame. Storage mutation order is not part
+# of this fix and remains protected above.
+for marker in (
+    "enum class SwapResult",
+    "Success",
+    "RetryLater",
+    "Rejected",
+):
+    if marker not in engine_h:
+        raise AssertionError(f"typed swap result missing {marker}")
+
+if "SwapResult swap(void* player, const void* selectedStack)" not in engine_h:
+    raise AssertionError("SwapEngine::swap must expose typed transient/fatal result")
+
+for marker in (
+    "LegacyTransactionState",
+    "Available",
+    "Busy",
+    "Invalid",
+):
+    if marker not in engine:
+        raise AssertionError(f"legacy transaction state classification missing {marker}")
+
+if "SwapResult::RetryLater" not in engine:
+    raise AssertionError("transient transaction busy path must return RetryLater")
+
+if "SwapResult::Rejected" not in engine:
+    raise AssertionError("non-transient pre-mutation failures must remain rejected")
+
+runtime_compact_retry = runtime.replace(" ", "").replace("\n", "")
+if "constautores=SwapEngine::instance().swap(player,selected);" not in runtime_compact_retry:
+    raise AssertionError("SwapRuntime must inspect the typed SwapEngine result")
+
+if "res==SwapResult::RetryLater" not in runtime_compact_retry:
+    raise AssertionError("SwapRuntime must distinguish transient busy result")
+
+if "mSwapRequested.store(true,std::memory_order_release)" not in runtime_compact_retry:
+    raise AssertionError("transient busy F intent must be re-queued")
+
+# Never retry arbitrary post-mutation/ABI failures. Blindly re-queueing every
+# false/rejected result could repeat a partially-mutated exchange.
+if "res!=SwapResult::Success" in runtime_compact_retry and "mSwapRequested.store(true" in runtime_compact_retry:
+    raise AssertionError("SwapRuntime must not blindly retry every non-success result")
