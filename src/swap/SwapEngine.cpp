@@ -71,7 +71,12 @@ constexpr std::uint8_t kOffhandLegacyContainerId=0x77;
 // SharedTypes::Legacy::ContainerType values.
 constexpr int kInventoryContainerType=-1;
 constexpr int kHandContainerType=19;
-constexpr int kOffhandLocalSlot=0;
+// IMPORTANT: these are different domains.
+// Legacy InventoryAction container 119 addresses OFFHAND as slot 0.
+// Predictive ContainerType::Hand addresses the native SimplePlayerContainer,
+// where slot 0 is MAINHAND and slot 1 is OFFHAND.
+constexpr int kOffhandLegacySlot=0;
+constexpr int kHandOffhandSlot=1;
 
 // Player::getSelectedItem @ 0xF9F7824 was reverse engineered rather than
 // called. RightUseRouter hooks that entry before swap installs, so validating
@@ -937,7 +942,7 @@ bool SwapEngine::swap(void* player,const void* selected) noexcept {
         );
     const bool offRecorded=
         screenSlots.recordChangedSlot(
-            screen,kHandContainerType,kOffhandLocalSlot
+            screen,kHandContainerType,kHandOffhandSlot
         );
     const bool screenBookkeeping=mainRecorded && offRecorded;
 
@@ -957,7 +962,7 @@ bool SwapEngine::swap(void* player,const void* selected) noexcept {
         LegacyInventoryAction offAction(
             mItemStackCopyCtor,
             kOffhandLegacyContainerId,
-            kOffhandLocalSlot,
+            kOffhandLegacySlot,
             off,
             main.get()
         );
@@ -973,8 +978,8 @@ bool SwapEngine::swap(void* player,const void* selected) noexcept {
         offAction.submit(player);
         gSetOffhandRaw(player,main.get());
 
-        const bool settled=legacyTransactionSettled(player);
         const bool slotsClosed=screenSlots.finish();
+        const bool settled=legacyTransactionSettled(player);
 
         __android_log_print(
             settled && slotsClosed ? ANDROID_LOG_INFO : ANDROID_LOG_ERROR,
@@ -992,7 +997,7 @@ bool SwapEngine::swap(void* player,const void* selected) noexcept {
         LegacyInventoryAction offAction(
             mItemStackCopyCtor,
             kOffhandLegacyContainerId,
-            kOffhandLocalSlot,
+            kOffhandLegacySlot,
             off,
             mEmptyItem
         );
@@ -1020,8 +1025,8 @@ bool SwapEngine::swap(void* player,const void* selected) noexcept {
         hotbarFillAction.submit(player);
         mSetSelectedItem(player,offSnap.get());
 
-        const bool settled=legacyTransactionSettled(player);
         const bool slotsClosed=screenSlots.finish();
+        const bool settled=legacyTransactionSettled(player);
 
         __android_log_print(
             settled && slotsClosed ? ANDROID_LOG_INFO : ANDROID_LOG_ERROR,
@@ -1069,8 +1074,8 @@ bool SwapEngine::swap(void* player,const void* selected) noexcept {
     hotbarFillAction.submit(player);
     mSetSelectedItem(player,offSnap.get());
 
-    const bool settled=legacyTransactionSettled(player);
     const bool slotsClosed=screenSlots.finish();
+    const bool settled=legacyTransactionSettled(player);
     __android_log_print(
         settled && slotsClosed?ANDROID_LOG_INFO:ANDROID_LOG_ERROR,kLogTag,
         "[SwapEngine][re-balanced] OCCUPIED settled=%d slotsClosed=%d explicitHotbarFill=1",
