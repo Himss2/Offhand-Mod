@@ -167,8 +167,9 @@ def main() -> int:
         helper,
         "gUseTickSelectedOriginal(player)",
         "gSessionPlayer == player",
-        "activeUseMatches(player, offStack)",
+        "stacksMatch(activeStack, offStack)",
         "activeUseMatches(player, mainStack)",
+        "const bool offActive = nativeUsing && offMatches;",
         "return offStack",
     )
     require(
