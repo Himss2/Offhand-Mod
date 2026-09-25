@@ -41,12 +41,6 @@ constexpr std::uintptr_t kTryBeginClientLegacyTransactionRva=0xF88A434;
 // The second argument is ItemStackNetManagerScreen&, NOT Player*.
 constexpr std::uintptr_t kRecordLegacySlotRva=0xF88CE8C;
 
-// Exact 1.26.51.1 current-screen resolver recovered from the uploaded
-// libminecraftpe.so (Build ID 712509dc14ccc233e91f267937dfb46ecdcc4b68).
-// ItemStackNetManagerClient::_tryBeginClientLegacyTransactionRequest @
-// 0xF88D960 directly BLs this target at 0xF88D97C before writing manager+0x50.
-constexpr std::uintptr_t kGetTopScreenRva=0xF88AA24;
-
 constexpr std::uintptr_t kEmptyItemRva=0x134C6780;
 
 constexpr std::size_t kItemStackStorageSize=0x98;
@@ -59,6 +53,11 @@ constexpr std::size_t kInventoryActionSlotOffset=0x0C;
 constexpr std::size_t kPlayerInventoryTransactionManagerOffset=0x9B8;
 constexpr std::size_t kInventoryTransactionPendingOffset=0x08;
 constexpr std::size_t kPlayerItemStackNetManagerOffset=0xA00;
+// Exact ItemStackNetManagerBase screen-stack layout used inline by
+// setPlayerContainer @ 0xF88A770..0xF88A7A4.
+constexpr std::size_t kItemStackNetManagerScreenStackOffset=0x38;
+constexpr std::size_t kScreenStackMapOffset=0x08;
+constexpr std::size_t kScreenStackIndexOffset=0x20;
 constexpr std::size_t kItemStackNetManagerLegacyAllowedVtableOffset=0x28;
 constexpr std::size_t kItemStackNetManagerLegacyRequestIdOffset=0x50;
 constexpr std::size_t kNativeLegacyScopeCallableOffset=0x20;
@@ -164,12 +163,6 @@ constexpr std::array<std::uint8_t,32> kRecordLegacySlotFingerprint{
     0xF4,0x4F,0x02,0xA9,0xFD,0x43,0x00,0x91,
     0x53,0xD0,0x3B,0xD5,0x49,0x1C,0x00,0x12,
     0xE8,0x03,0x01,0xAA,0x6A,0x16,0x40,0xF9,
-};
-constexpr std::array<std::uint8_t,32> kGetTopScreenFingerprint{
-    0xFF,0x43,0x01,0xD1,0xFD,0x7B,0x03,0xA9,
-    0xF4,0x4F,0x04,0xA9,0xFD,0xC3,0x00,0x91,
-    0x54,0xD0,0x3B,0xD5,0xF3,0x03,0x00,0xAA,
-    0xE0,0x23,0x00,0x91,0x88,0x16,0x40,0xF9,
 };
 
 struct ModuleState {
@@ -303,7 +296,6 @@ using TryBeginClientLegacyTransactionFn=
     NativeClientLegacyScope (*)(void*);
 using NativeScopeCallableFn=void (*)(void*);
 using RecordLegacySlotFn=void (*)(void*,void*,int,int);
-using GetTopScreenFn=void* (*)(void*);
 
 SetOffhandRawFn gSetOffhandRaw=nullptr;
 StackDescriptorFromItemFn gStackDescriptorFromItem=nullptr;
@@ -312,7 +304,6 @@ InventoryTransactionAddActionFn gInventoryTransactionAddAction=nullptr;
 TryBeginClientLegacyRequestFn gTryBeginClientLegacyRequest=nullptr;
 TryBeginClientLegacyTransactionFn gTryBeginClientLegacyTransaction=nullptr;
 RecordLegacySlotFn gRecordLegacySlot=nullptr;
-GetTopScreenFn gGetTopScreen=nullptr;
 
 [[nodiscard]] bool finishNativeClientLegacyScope(
     NativeClientLegacyScope& scope
@@ -370,6 +361,50 @@ GetTopScreenFn gGetTopScreen=nullptr;
     return true;
 }
 
+[[nodiscard]] void* currentLegacyRequestScreen(void* manager) noexcept {
+    if(!manager) return nullptr;
+
+    // setPlayerContainer @ 0xF88A770..0xF88A7A4:
+    //   x8  = [manager+0x38]
+    //   idx = [x8+0x20]
+    //   map = [x8+0x08]
+    //   block = map[((idx >> 6) & 0x3fffffffffffff8)]
+    //   screen = block[idx & 0x1ff]
+    void* screenStack=read<void*>(
+        manager,kItemStackNetManagerScreenStackOffset,nullptr
+    );
+    if(!screenStack) return nullptr;
+
+    void* map=read<void*>(screenStack,kScreenStackMapOffset,nullptr);
+    if(!map) return nullptr;
+
+    const auto index=read<std::uint64_t>(
+        screenStack,kScreenStackIndexOffset,0
+    );
+    const auto blockOffset=
+        (index>>6) & std::uint64_t{0x03FFFFFFFFFFFFF8ULL};
+    const auto entryOffset=
+        (index & std::uint64_t{0x1FF}) * sizeof(void*);
+
+    void* block=read<void*>(map,static_cast<std::size_t>(blockOffset),nullptr);
+    if(!block) return nullptr;
+
+    void* screen=read<void*>(
+        block,static_cast<std::size_t>(entryOffset),nullptr
+    );
+
+    __android_log_print(
+        screen?ANDROID_LOG_INFO:ANDROID_LOG_ERROR,
+        kLogTag,
+        "[SwapEngine][legacy-screen-slots] direct screen=%p index=%llu blockOff=0x%llX entryOff=0x%llX",
+        screen,
+        static_cast<unsigned long long>(index),
+        static_cast<unsigned long long>(blockOffset),
+        static_cast<unsigned long long>(entryOffset)
+    );
+    return screen;
+}
+
 [[nodiscard]] int selectedHotbarSlot(const void* player) noexcept {
     if(!player) return -1;
     const void* state=read<const void*>(
@@ -387,7 +422,7 @@ public:
         NativeClientLegacyScope& scope,
         void* player
     ) noexcept : mScope(scope) {
-        if(!player || !gRecordLegacySlot || !gGetTopScreen) {
+        if(!player || !gRecordLegacySlot) {
             (void)finishNativeClientLegacyScope(mScope);
             mFinished=true;
             return;
@@ -439,7 +474,7 @@ public:
             return;
         }
 
-        mScreen=gGetTopScreen(mManager);
+        mScreen=currentLegacyRequestScreen(mManager);
         if(!mScreen) {
             finishNativeClientLegacyScope(mScope);
             mRequestId=0;
@@ -701,10 +736,6 @@ bool SwapEngine::install(pl::mod::ModContext& context) noexcept {
     const auto recordLegacySlot=resolve(
         kRecordLegacySlotRva,kRecordLegacySlotFingerprint
     );
-    const auto getTopScreen=resolve(
-        kGetTopScreenRva,kGetTopScreenFingerprint
-    );
-    const bool getTopScreenValid=getTopScreen!=0;
 
     // Only the proven #662 targets decide whether the F runtime is usable.
     // Screen-aware predictive bookkeeping is optional until its runtime
@@ -727,10 +758,10 @@ bool SwapEngine::install(pl::mod::ModContext& context) noexcept {
 
     __android_log_print(
         ANDROID_LOG_INFO,kLogTag,
-        "[SwapEngine] targets off=%d null=%d copy=%d dtor=%d setOff=%d setOffRaw=%d descriptor=%d actionDtor=%d addAction=%d tryClientLegacy=%d tryPlayerLegacy=%d recordLegacySlot=%d topScreen=%d setSelected=%d setSelectedLive=%d emptyMapped=%d",
+        "[SwapEngine] targets off=%d null=%d copy=%d dtor=%d setOff=%d setOffRaw=%d descriptor=%d actionDtor=%d addAction=%d tryClientLegacy=%d tryPlayerLegacy=%d recordLegacySlot=%d directScreenStack=1 setSelected=%d setSelectedLive=%d emptyMapped=%d",
         off!=0,nul!=0,copy!=0,dtor!=0,setOff!=0,setOffRaw!=0,
         descriptor!=0,actionDtor!=0,addAction!=0,tryLegacy!=0,
-        tryLegacyTransaction!=0,recordLegacySlot!=0,getTopScreenValid?1:0,
+        tryLegacyTransaction!=0,recordLegacySlot!=0,
         setSel!=0,setSelectedChainedLive?1:0,emptyMapped
     );
 
@@ -763,8 +794,6 @@ bool SwapEngine::install(pl::mod::ModContext& context) noexcept {
         );
     gRecordLegacySlot=
         reinterpret_cast<RecordLegacySlotFn>(recordLegacySlot);
-    gGetTopScreen=
-        reinterpret_cast<GetTopScreenFn>(getTopScreen);
     mEmptyItem=reinterpret_cast<const void*>(empty);
 
     if(setSelectedChainedLive) {
@@ -801,7 +830,6 @@ void SwapEngine::uninstall() noexcept {
     gTryBeginClientLegacyRequest=nullptr;
     gTryBeginClientLegacyTransaction=nullptr;
     gRecordLegacySlot=nullptr;
-    gGetTopScreen=nullptr;
     mEmptyItem=nullptr;
 }
 
@@ -867,15 +895,13 @@ bool SwapEngine::swap(void* player,const void* selected) noexcept {
     // ever stops matching a future binary.
     if(
         !gTryBeginClientLegacyTransaction ||
-        !gRecordLegacySlot ||
-        !gGetTopScreen
+        !gRecordLegacySlot
     ) {
         __android_log_print(
             ANDROID_LOG_ERROR,kLogTag,
-            "[SwapEngine][legacy-screen-slots] exact RE helper unavailable; swap rejected before mutation tryPlayer=%d record=%d topScreen=%d",
+            "[SwapEngine][legacy-screen-slots] exact RE helper unavailable; swap rejected before mutation tryPlayer=%d record=%d",
             gTryBeginClientLegacyTransaction?1:0,
-            gRecordLegacySlot?1:0,
-            gGetTopScreen?1:0
+            gRecordLegacySlot?1:0
         );
         return false;
     }
