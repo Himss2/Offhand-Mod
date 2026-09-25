@@ -55,6 +55,7 @@ constexpr std::size_t kInventoryActionOldDescriptorOffset=0x10;
 constexpr std::size_t kInventoryActionNewDescriptorOffset=0x60;
 constexpr std::size_t kInventoryActionOldStackOffset=0xB0;
 constexpr std::size_t kInventoryActionNewStackOffset=0x148;
+constexpr std::size_t kInventoryActionSlotOffset=0x0C;
 constexpr std::size_t kPlayerInventoryTransactionManagerOffset=0x9B8;
 constexpr std::size_t kInventoryTransactionPendingOffset=0x08;
 constexpr std::size_t kPlayerItemStackNetManagerOffset=0xA00;
@@ -66,6 +67,7 @@ constexpr std::size_t kNativeLegacyScopeSize=0x38;
 constexpr std::size_t kNativeFunctionInvokeVtableOffset=0x30;
 constexpr std::size_t kNativeFunctionDestroyInlineVtableOffset=0x20;
 constexpr std::size_t kNativeFunctionDestroyHeapVtableOffset=0x28;
+constexpr std::uint8_t kHotbarLegacyContainerId=0x00;
 constexpr std::uint8_t kOffhandLegacyContainerId=0x77;
 
 // SharedTypes::Legacy::ContainerType values.
@@ -362,80 +364,6 @@ GetTopScreenFn gGetTopScreen=nullptr;
     return true;
 }
 
-[[nodiscard]] bool normalizeDestinationHandWithNativeLegacyRequest(
-    void* player,
-    unsigned char hand,
-    const void* stack,
-    SwapEngine::SetItemInHandSlotFn setHand
-) noexcept {
-    if(!player || !stack || !setHand || !gTryBeginClientLegacyRequest) {
-        return false;
-    }
-
-    void* manager=read<void*>(
-        player,kPlayerItemStackNetManagerOffset,nullptr
-    );
-    if(!manager) return false;
-
-    const int beforeId=read<int>(
-        manager,kItemStackNetManagerLegacyRequestIdOffset,0
-    );
-    if(beforeId!=0) {
-        __android_log_print(
-            ANDROID_LOG_WARN,kLogTag,
-            "[SwapEngine][native-client-legacy] busy before normalize hand=%u req=%d",
-            static_cast<unsigned>(hand),beforeId
-        );
-        return false;
-    }
-
-    // Direct initialization is intentional: the native function writes an
-    // inline std::function whose self pointer targets this exact return object.
-    NativeClientLegacyScope scope=
-        gTryBeginClientLegacyRequest(manager);
-
-    const int duringId=read<int>(
-        manager,kItemStackNetManagerLegacyRequestIdOffset,0
-    );
-
-    const auto engaged=read<std::uint8_t>(
-        scope.storage.data(),
-        kNativeLegacyScopeEngagedOffset,
-        0
-    );
-    void* callable=read<void*>(
-        scope.storage.data(),
-        kNativeLegacyScopeCallableOffset,
-        nullptr
-    );
-
-    const bool ownsRequest=
-        engaged!=0 && callable!=nullptr && duringId<0;
-
-    if(ownsRequest) {
-        setHand(player,hand,stack);
-    }
-
-    const bool cleanupOk=finishNativeClientLegacyScope(scope);
-    const int afterId=read<int>(
-        manager,kItemStackNetManagerLegacyRequestIdOffset,0
-    );
-
-    __android_log_print(
-        ownsRequest && cleanupOk && afterId==0
-            ? ANDROID_LOG_INFO
-            : ANDROID_LOG_ERROR,
-        kLogTag,
-        "[SwapEngine][native-client-legacy] hand=%u owned=%d cleanup=%d req=%d->%d->%d",
-        static_cast<unsigned>(hand),
-        ownsRequest?1:0,
-        cleanupOk?1:0,
-        beforeId,duringId,afterId
-    );
-
-    return ownsRequest && cleanupOk && afterId==0;
-}
-
 [[nodiscard]] int selectedHotbarSlot(const void* player) noexcept {
     if(!player) return -1;
     const void* state=read<const void*>(
@@ -636,20 +564,30 @@ private:
     return ok;
 }
 
-class OffhandInventoryAction final {
+class LegacyInventoryAction final {
 public:
-    OffhandInventoryAction(
+    LegacyInventoryAction(
         SwapEngine::ItemStackCopyCtorFn copyCtor,
+        std::uint8_t containerId,
+        int slot,
         const void* before,
         const void* after
     ) noexcept {
         if(!copyCtor || !gStackDescriptorFromItem || !gInventoryActionDtor ||
-           !before || !after) {
+           !before || !after || slot<0) {
             return;
         }
 
         mStorage.fill(std::byte{0});
-        mStorage[4]=static_cast<std::byte>(kOffhandLegacyContainerId);
+
+        // Exact 1.26.51.1 InventoryAction layout recovered from
+        // 0xF9FD618 / caller 0xF8835BC.
+        mStorage[4]=static_cast<std::byte>(containerId);
+        std::memcpy(
+            mStorage.data()+kInventoryActionSlotOffset,
+            &slot,
+            sizeof(slot)
+        );
 
         gStackDescriptorFromItem(
             mStorage.data()+kInventoryActionOldDescriptorOffset,before
@@ -666,7 +604,7 @@ public:
         mConstructed=true;
     }
 
-    ~OffhandInventoryAction() noexcept {
+    ~LegacyInventoryAction() noexcept {
         if(mConstructed && gInventoryActionDtor) {
             gInventoryActionDtor(mStorage.data());
         }
@@ -841,8 +779,8 @@ bool SwapEngine::install(pl::mod::ModContext& context) noexcept {
     }
 
     context.logger().info(
-        "Swap engine ready; F exchange uses paired legacy InventoryAction "
-        "hotbar(0) + offhand(119), with native selected setter and raw OFF write"
+        "Swap engine ready; F exchange uses RE-balanced legacy actions + "
+        "predictive touched-slot bookkeeping while preserving #662 storage writers"
     );
     return true;
 }
@@ -957,8 +895,12 @@ bool SwapEngine::swap(void* player,const void* selected) noexcept {
         Snapshot main(mItemStackCopyCtor,mItemStackDtor,selected);
         if(!main.get() || !mStackIsNull(mEmptyItem)) return false;
 
-        OffhandInventoryAction offAction(
-            mItemStackCopyCtor,off,main.get()
+        LegacyInventoryAction offAction(
+            mItemStackCopyCtor,
+            kOffhandLegacyContainerId,
+            kOffhandLocalSlot,
+            off,
+            main.get()
         );
         if(!offAction.valid()) return false;
 
@@ -975,17 +917,12 @@ bool SwapEngine::swap(void* player,const void* selected) noexcept {
         const bool settled=legacyTransactionSettled(player);
         const bool slotsClosed=
             !screenBookkeeping || screenSlots.finish();
-        const bool normalized=
-            settled && slotsClosed &&
-            normalizeDestinationHandWithNativeLegacyRequest(
-                player,kOffHand,main.get(),mSetItemInHandSlot
-            );
 
         __android_log_print(
-            settled && normalized ? ANDROID_LOG_INFO : ANDROID_LOG_ERROR,
+            settled && slotsClosed ? ANDROID_LOG_INFO : ANDROID_LOG_ERROR,
             kLogTag,
-            "[SwapEngine][native-client-normalize] MAIN->OFF settled=%d slotsClosed=%d normalized=%d hand=1",
-            settled?1:0,slotsClosed?1:0,normalized?1:0
+            "[SwapEngine][re-balanced] MAIN->OFF settled=%d slotsClosed=%d nativeMainClearFallback=1",
+            settled?1:0,slotsClosed?1:0
         );
         return settled && slotsClosed;
     }
@@ -994,32 +931,46 @@ bool SwapEngine::swap(void* player,const void* selected) noexcept {
         Snapshot offSnap(mItemStackCopyCtor,mItemStackDtor,off);
         if(!offSnap.get() || !mStackIsNull(mEmptyItem)) return false;
 
-        OffhandInventoryAction offAction(
-            mItemStackCopyCtor,off,mEmptyItem
+        LegacyInventoryAction offAction(
+            mItemStackCopyCtor,
+            kOffhandLegacyContainerId,
+            kOffhandLocalSlot,
+            off,
+            mEmptyItem
         );
         if(!offAction.valid()) return false;
 
         // First half: B -> EMPTY in container 119, then the exact low-level
         // OFF writer.  The transaction remains pending until selected storage
         // contributes EMPTY -> B through its normal container-0 path.
+        LegacyInventoryAction hotbarFillAction(
+            mItemStackCopyCtor,
+            kHotbarLegacyContainerId,
+            selectedSlot,
+            mEmptyItem,
+            offSnap.get()
+        );
+        if(!hotbarFillAction.valid()) return false;
+
         offAction.submit(player);
         gSetOffhandRaw(player,mEmptyItem);
+
+        // RE: when MAIN destination is NONEMPTY and the Player-aware legacy
+        // request is active, selected-container path 0xF9DA2DC succeeds via
+        // setPlayerContainer @ 0xF88A664 and skips legacy fallback 0xF8834D4.
+        // Supply exactly that missing HOTBAR EMPTY->B action ourselves.
+        hotbarFillAction.submit(player);
         mSetSelectedItem(player,offSnap.get());
 
         const bool settled=legacyTransactionSettled(player);
         const bool slotsClosed=
             !screenBookkeeping || screenSlots.finish();
-        const bool normalized=
-            settled && slotsClosed &&
-            normalizeDestinationHandWithNativeLegacyRequest(
-                player,0,offSnap.get(),mSetItemInHandSlot
-            );
 
         __android_log_print(
-            settled && normalized ? ANDROID_LOG_INFO : ANDROID_LOG_ERROR,
+            settled && slotsClosed ? ANDROID_LOG_INFO : ANDROID_LOG_ERROR,
             kLogTag,
-            "[SwapEngine][native-client-normalize] OFF->MAIN settled=%d slotsClosed=%d normalized=%d hand=0",
-            settled?1:0,slotsClosed?1:0,normalized?1:0
+            "[SwapEngine][re-balanced] OFF->MAIN settled=%d slotsClosed=%d explicitHotbarFill=1",
+            settled?1:0,slotsClosed?1:0
         );
         return settled && slotsClosed;
     }
@@ -1030,26 +981,43 @@ bool SwapEngine::swap(void* player,const void* selected) noexcept {
         return false;
     }
 
-    OffhandInventoryAction offAction(
-        mItemStackCopyCtor,off,main.get()
+    LegacyInventoryAction offAction(
+        mItemStackCopyCtor,
+        kOffhandLegacyContainerId,
+        kOffhandLocalSlot,
+        off,
+        main.get()
     );
     if(!offAction.valid()) return false;
 
-    // Preserve the accepted 44a local mutation order while making the
-    // InventoryTransaction balanced:
-    //   hotbar A->EMPTY, OFF B->A, hotbar EMPTY->B.
-    // InventoryTransactionManager retains the first two unbalanced records
-    // and sends only after the third record balances the transaction.
+    LegacyInventoryAction hotbarFillAction(
+        mItemStackCopyCtor,
+        kHotbarLegacyContainerId,
+        selectedSlot,
+        mEmptyItem,
+        offSnap.get()
+    );
+    if(!hotbarFillAction.valid()) return false;
+
+    // Preserve the accepted 44a local mutation order:
+    //   MAIN A->EMPTY, OFF B->A, MAIN EMPTY->B.
+    // RE detail:
+    // - A->EMPTY makes native setPlayerContainer return false, so selected
+    //   storage itself contributes the HOTBAR A->EMPTY legacy fallback action.
+    // - EMPTY->B succeeds through setPlayerContainer and skips that fallback,
+    //   therefore the final HOTBAR legacy action is submitted explicitly.
     mSetSelectedItem(player,mEmptyItem);
     offAction.submit(player);
     gSetOffhandRaw(player,main.get());
+    hotbarFillAction.submit(player);
     mSetSelectedItem(player,offSnap.get());
 
     const bool settled=legacyTransactionSettled(player);
-    const bool slotsClosed=screenSlots.finish();
+    const bool slotsClosed=
+        !screenBookkeeping || screenSlots.finish();
     __android_log_print(
         settled && slotsClosed?ANDROID_LOG_INFO:ANDROID_LOG_ERROR,kLogTag,
-        "[SwapEngine][legacy-txn] occupied settled=%d slotsClosed=%d hotbar=0 offhand=119",
+        "[SwapEngine][re-balanced] OCCUPIED settled=%d slotsClosed=%d explicitHotbarFill=1",
         settled?1:0,slotsClosed?1:0
     );
     return settled && slotsClosed;
