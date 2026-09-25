@@ -761,11 +761,14 @@ bool SwapEngine::install(pl::mod::ModContext& context) noexcept {
     const bool getTopScreenValid=
         getTopScreen!=0 && mapped(getTopScreen,PF_X);
 
+    // Only the proven #662 targets decide whether the F runtime is usable.
+    // Screen-aware predictive bookkeeping is optional until its runtime
+    // availability is proven on-device; a missing helper must never hide or
+    // disable the F button/runtime again.
     const bool stableBuild=
         off!=0 && nul!=0 && copy!=0 && dtor!=0 && setOff!=0 &&
         setOffRaw!=0 && descriptor!=0 && actionDtor!=0 && addAction!=0 &&
-        tryLegacy!=0 && tryLegacyTransaction!=0 && recordLegacySlot!=0 &&
-        getTopScreenValid;
+        tryLegacy!=0;
 
     bool setSelectedChainedLive=false;
     const auto setSel=
@@ -787,8 +790,7 @@ bool SwapEngine::install(pl::mod::ModContext& context) noexcept {
     );
 
     if(!off||!nul||!copy||!dtor||!setOff||!setOffRaw||!descriptor||
-       !actionDtor||!addAction||!tryLegacy||!tryLegacyTransaction||
-       !recordLegacySlot||!getTopScreenValid||!setSel||!emptyMapped) {
+       !actionDtor||!addAction||!tryLegacy||!setSel||!emptyMapped) {
         context.logger().error(
             "Swap engine: native storage target validation failed"
         );
@@ -859,12 +861,13 @@ void SwapEngine::uninstall() noexcept {
 }
 
 bool SwapEngine::ready() const noexcept {
+    // Keep runtime readiness identical to the working #662 baseline.
+    // Optional screen bookkeeping is probed inside swap() instead.
     return mGetOffhandSlot && mStackIsNull && mItemStackCopyCtor &&
         mItemStackDtor && mSetItemInHandSlot && mSetSelectedItem &&
         gSetOffhandRaw && gStackDescriptorFromItem && gInventoryActionDtor &&
         gInventoryTransactionAddAction && gTryBeginClientLegacyRequest &&
-        gTryBeginClientLegacyTransaction && gRecordLegacySlot &&
-        gGetTopScreen && mEmptyItem;
+        mEmptyItem;
 }
 
 const void* SwapEngine::selectedStack(const void* player) const noexcept {
@@ -913,28 +916,36 @@ bool SwapEngine::swap(void* player,const void* selected) noexcept {
     const int selectedSlot=selectedHotbarSlot(player);
     if(selectedSlot<0) return false;
 
+    // Optional predictive bookkeeping. Failure here must not regress the
+    // working #662 F runtime: when any helper/screen is unavailable we execute
+    // the exact baseline mutation and log which optional capability was absent.
     LegacyScreenSlotScope screenSlots(player);
-    if(!screenSlots.valid()) {
+    bool screenBookkeeping=false;
+    if(screenSlots.valid()) {
+        void* screen=screenSlots.screen();
+        screenBookkeeping=
+            screenSlots.recordChangedSlot(
+                screen,kInventoryContainerType,selectedSlot
+            ) &&
+            screenSlots.recordChangedSlot(
+                screen,kHandContainerType,kOffhandLocalSlot
+            );
+
+        if(!screenBookkeeping) {
+            (void)screenSlots.finish();
+            __android_log_print(
+                ANDROID_LOG_WARN,kLogTag,
+                "[SwapEngine][legacy-screen-slots] registration failed; using #662 baseline"
+            );
+        }
+    } else {
         __android_log_print(
-            ANDROID_LOG_ERROR,kLogTag,
-            "[SwapEngine][legacy-screen-slots] no native screen/request; F swap rejected before mutation"
+            ANDROID_LOG_WARN,kLogTag,
+            "[SwapEngine][legacy-screen-slots] unavailable; using #662 baseline tryPlayer=%d record=%d topScreen=%d",
+            gTryBeginClientLegacyTransaction?1:0,
+            gRecordLegacySlot?1:0,
+            gGetTopScreen?1:0
         );
-        return false;
-    }
-    void* screen=screenSlots.screen();
-    if(
-        !screenSlots.recordChangedSlot(
-            screen,kInventoryContainerType,selectedSlot
-        ) ||
-        !screenSlots.recordChangedSlot(
-            screen,kHandContainerType,kOffhandLocalSlot
-        )
-    ) {
-        __android_log_print(
-            ANDROID_LOG_ERROR,kLogTag,
-            "[SwapEngine][legacy-screen-slots] paired slot registration failed before mutation"
-        );
-        return false;
     }
 
     if(offEmpty) {
@@ -957,7 +968,8 @@ bool SwapEngine::swap(void* player,const void* selected) noexcept {
         gSetOffhandRaw(player,main.get());
 
         const bool settled=legacyTransactionSettled(player);
-        const bool slotsClosed=screenSlots.finish();
+        const bool slotsClosed=
+            !screenBookkeeping || screenSlots.finish();
         const bool normalized=
             settled && slotsClosed &&
             normalizeDestinationHandWithNativeLegacyRequest(
@@ -990,7 +1002,8 @@ bool SwapEngine::swap(void* player,const void* selected) noexcept {
         mSetSelectedItem(player,offSnap.get());
 
         const bool settled=legacyTransactionSettled(player);
-        const bool slotsClosed=screenSlots.finish();
+        const bool slotsClosed=
+            !screenBookkeeping || screenSlots.finish();
         const bool normalized=
             settled && slotsClosed &&
             normalizeDestinationHandWithNativeLegacyRequest(
