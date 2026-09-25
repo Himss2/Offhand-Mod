@@ -189,8 +189,10 @@ if positions != sorted(positions):
         "occupied 44a transaction order changed: hotbar clear -> OFF action/write -> hotbar refill"
     )
 
-if engine.count("legacyTransactionSettled(player)") != 3:
-    raise AssertionError("all three non-empty F paths must verify transaction settlement")
+if "legacyTransactionSettled(player)" in engine:
+    raise AssertionError(
+        "same-frame legacy settlement must not define swap success on the async client path"
+    )
 
 for forbidden in (
     "InventoryTransactionPacket",
