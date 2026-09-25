@@ -7,7 +7,9 @@
 #include <cstdint>
 #include <cstring>
 #include <dlfcn.h>
+#include <memory>
 
+#include <pl/memory/Hook.hpp>
 #include <pl/memory/Patch.hpp>
 #include <pl/memory/Signature.hpp>
 
@@ -41,6 +43,22 @@ constexpr char kLogTag[] = "Levi Offhand";
  */
 constexpr std::uintptr_t kItemDefaultFlagsRva126451 = 0xF65A3BC;
 constexpr std::uintptr_t kAllowOffhandQueryRva126511 = 0xFFA60F0;
+
+// Exact 1.26.51.1 manual inventory path recovered from device tracing.
+// CraftingContainerManagerController::manual inventory operation @ 0xF927118
+// mutates destination then source through 0xF97F9E8 before it builds the
+// native request.  Promoting the moved Item at this native setter boundary
+// keeps the operation fully vanilla while ensuring predictive reconciliation
+// sees the real Item policy, not only our getAllowOffHand query patch.
+constexpr std::uintptr_t kManualContainerSetItemRva126511 = 0xF97F9E8;
+constexpr std::uintptr_t kManualDestinationSetReturnRva126511 = 0xF927828;
+constexpr std::uintptr_t kManualSourceSetReturnRva126511 = 0xF927984;
+constexpr std::uintptr_t kNativeSetAllowOffhandRva126511 = 0xFF82E5C;
+
+constexpr std::size_t kItemStackItemHolderOffset = 0x08;
+constexpr std::size_t kItemOffhandPolicyOffset = 0x1C8;
+constexpr std::uint8_t kNativeOffhandAllowedPolicy = 1;
+
 constexpr std::uintptr_t kLegacyPatchOffsetFromSignature = 0x0C;
 
 constexpr char kItemConstructorFlagSignature126451[] =
@@ -65,6 +83,31 @@ constexpr char kAllowOffhandQuerySignature126511[] =
     "C8 00 00 B4 "
     "08 21 47 39 "
     "08 05 00 12";
+
+// ContainerController manual set path.  Static RE found only two direct calls
+// in the high-level manual operation: BL @ 0xF927824 (destination) and
+// BL @ 0xF927980 (source).
+constexpr char kManualContainerSetItemSignature126511[] =
+    "FF 43 07 D1 "
+    "FD 7B 17 A9 "
+    "FC 6F 18 A9 "
+    "FA 67 19 A9 "
+    "F8 5F 1A A9 "
+    "F6 57 1B A9 "
+    "F4 4F 1C A9 "
+    "FD C3 05 91";
+
+// Item::setAllowOffHand(bool) @ 0xFF82E5C. It updates the low two policy
+// bits at Item+0x1C8 while preserving the remaining bits.
+constexpr char kNativeSetAllowOffhandSignature126511[] =
+    "09 20 47 39 "
+    "28 00 80 52 "
+    "3F 00 00 72 "
+    "08 15 88 1A "
+    "29 15 1E 12 "
+    "28 01 08 2A "
+    "08 20 07 39 "
+    "C0 03 5F D6";
 
 constexpr char kVanillaW9Instruction[] = "09 0A 80 52";
 constexpr char kPatchedW9Instruction[] = "09 1A 80 52";
@@ -130,6 +173,232 @@ template <std::size_t N>
 
 [[nodiscard]] bool isLegacyConstructorTarget(std::uintptr_t address) noexcept {
     return targetRva(address) == kItemDefaultFlagsRva126451;
+}
+
+using ManualContainerSetItemFn = int (*)(
+    void*,
+    const void*,
+    int,
+    const void*,
+    int,
+    int
+);
+using NativeSetAllowOffhandFn = void (*)(void*, bool);
+
+std::unique_ptr<pl::memory::HookHandle> gManualContainerSetHook;
+void* gManualContainerSetOriginal = nullptr;
+NativeSetAllowOffhandFn gNativeSetAllowOffhand = nullptr;
+std::atomic_bool gLoggedManualPromotion{false};
+
+template <typename T>
+[[nodiscard]] T readObject(
+    const void* base,
+    std::size_t offset,
+    T fallback = {}
+) noexcept {
+    if (base == nullptr) {
+        return fallback;
+    }
+    T value{};
+    std::memcpy(
+        &value,
+        static_cast<const std::byte*>(base) + offset,
+        sizeof(value)
+    );
+    return value;
+}
+
+[[nodiscard]] bool promoteStackNativeOffhand(
+    const void* stack
+) noexcept {
+    if (stack == nullptr || gNativeSetAllowOffhand == nullptr) {
+        return false;
+    }
+
+    // Exact 1.26.51.1 ItemStack layout:
+    // stack+0x08 -> ItemWeakPtr holder -> Item*.
+    void* holder = readObject<void*>(
+        stack,
+        kItemStackItemHolderOffset,
+        nullptr
+    );
+    if (holder == nullptr) {
+        return false;
+    }
+
+    void* item = readObject<void*>(holder, 0, nullptr);
+    if (item == nullptr) {
+        return false;
+    }
+
+    // Item lives on the heap, so validate its vtable instead of requiring the
+    // Item object address itself to belong to libminecraftpe.so.
+    const void* itemVtable = readObject<const void*>(item, 0, nullptr);
+    if (!belongsToMinecraft(reinterpret_cast<std::uintptr_t>(itemVtable))) {
+        return false;
+    }
+
+    const std::uint8_t before = readObject<std::uint8_t>(
+        item,
+        kItemOffhandPolicyOffset,
+        0xFF
+    );
+    if ((before & 0x3u) == kNativeOffhandAllowedPolicy) {
+        return true;
+    }
+
+    gNativeSetAllowOffhand(item, true);
+
+    const std::uint8_t after = readObject<std::uint8_t>(
+        item,
+        kItemOffhandPolicyOffset,
+        0xFF
+    );
+    const bool allowed =
+        (after & 0x3u) == kNativeOffhandAllowedPolicy;
+
+    if (allowed) {
+        bool expected = false;
+        if (gLoggedManualPromotion.compare_exchange_strong(
+                expected,
+                true,
+                std::memory_order_relaxed
+            )) {
+            __android_log_print(
+                ANDROID_LOG_INFO,
+                kLogTag,
+                "[NativeOffhandPolicy] manual inventory promoted Item policy %u -> %u",
+                static_cast<unsigned>(before & 0x3u),
+                static_cast<unsigned>(after & 0x3u)
+            );
+        }
+    }
+
+    return allowed;
+}
+
+int manualContainerSetItemDetour(
+    void* container,
+    const void* before,
+    int slot,
+    const void* after,
+    int arg4,
+    int arg5
+) noexcept {
+    const auto original =
+        reinterpret_cast<ManualContainerSetItemFn>(
+            gManualContainerSetOriginal
+        );
+    if (original == nullptr) {
+        return 0;
+    }
+
+    const auto caller = reinterpret_cast<std::uintptr_t>(
+        __builtin_return_address(0)
+    );
+    const auto callerRva = targetRva(caller);
+    const bool manualInventoryCall =
+        callerRva == kManualDestinationSetReturnRva126511 ||
+        callerRva == kManualSourceSetReturnRva126511;
+
+    if (
+        manualInventoryCall &&
+        NativeOffhandPolicy::instance().featureEnabled()
+    ) {
+        // The first native call installs the moved stack into its destination.
+        // Promote before forwarding so the later vanilla request/reconciliation
+        // observes Item+0x1C8 == 1. The source-side call normally carries an
+        // empty/remainder stack; promoting an actual remainder is harmless and
+        // keeps the Item definition consistently native-capable.
+        promoteStackNativeOffhand(after);
+    }
+
+    return original(
+        container,
+        before,
+        slot,
+        after,
+        arg4,
+        arg5
+    );
+}
+
+[[nodiscard]] bool installManualNativePolicyBridge(
+    pl::mod::ModContext& context
+) noexcept {
+    if (
+        gManualContainerSetHook &&
+        gManualContainerSetHook->installed() &&
+        gManualContainerSetOriginal != nullptr &&
+        gNativeSetAllowOffhand != nullptr
+    ) {
+        return true;
+    }
+
+    const auto manualSet = pl::memory::resolveSignature(
+        kManualContainerSetItemSignature126511,
+        kMinecraftLibrary
+    );
+    const auto nativePolicy = pl::memory::resolveSignature(
+        kNativeSetAllowOffhandSignature126511,
+        kMinecraftLibrary
+    );
+
+    if (
+        !belongsToMinecraft(manualSet) ||
+        targetRva(manualSet) != kManualContainerSetItemRva126511 ||
+        !belongsToMinecraft(nativePolicy) ||
+        targetRva(nativePolicy) != kNativeSetAllowOffhandRva126511
+    ) {
+        context.logger().error(
+            "[NativeOffhandPolicy] 1.26.51.1 manual policy bridge target validation failed"
+        );
+        return false;
+    }
+
+    gNativeSetAllowOffhand =
+        reinterpret_cast<NativeSetAllowOffhandFn>(nativePolicy);
+    gManualContainerSetOriginal = nullptr;
+    gManualContainerSetHook =
+        std::make_unique<pl::memory::HookHandle>(
+            reinterpret_cast<void*>(manualSet),
+            reinterpret_cast<void*>(&manualContainerSetItemDetour),
+            &gManualContainerSetOriginal,
+            pl::memory::HookPriority::Normal
+        );
+
+    if (
+        !gManualContainerSetHook ||
+        !gManualContainerSetHook->installed() ||
+        gManualContainerSetOriginal == nullptr
+    ) {
+        if (gManualContainerSetHook) {
+            gManualContainerSetHook->reset();
+            gManualContainerSetHook.reset();
+        }
+        gManualContainerSetOriginal = nullptr;
+        gNativeSetAllowOffhand = nullptr;
+        context.logger().error(
+            "[NativeOffhandPolicy] manual inventory policy bridge hook failed"
+        );
+        return false;
+    }
+
+    gLoggedManualPromotion.store(false, std::memory_order_relaxed);
+    context.logger().info(
+        "[NativeOffhandPolicy] manual inventory native Item policy bridge active"
+    );
+    return true;
+}
+
+void uninstallManualNativePolicyBridge() noexcept {
+    if (gManualContainerSetHook) {
+        gManualContainerSetHook->reset();
+        gManualContainerSetHook.reset();
+    }
+    gManualContainerSetOriginal = nullptr;
+    gNativeSetAllowOffhand = nullptr;
+    gLoggedManualPromotion.store(false, std::memory_order_relaxed);
 }
 
 [[nodiscard]] std::uintptr_t resolvePolicyTarget() noexcept {
@@ -271,13 +540,23 @@ bool NativeOffhandPolicy::install(pl::mod::ModContext& context) noexcept {
         return false;
     }
 
-    mFeatureEnabled.store(true, std::memory_order_release);
-    if (!applyPatch()) {
+    const auto rva = targetRva(mInstruction);
+    if (
+        rva == kAllowOffhandQueryRva126511 &&
+        !installManualNativePolicyBridge(context)
+    ) {
         mInstruction = 0;
         return false;
     }
 
-    const auto rva = targetRva(mInstruction);
+    mFeatureEnabled.store(true, std::memory_order_release);
+    if (!applyPatch()) {
+        if (rva == kAllowOffhandQueryRva126511) {
+            uninstallManualNativePolicyBridge();
+        }
+        mInstruction = 0;
+        return false;
+    }
     if (rva == kAllowOffhandQueryRva126511) {
         context.logger().info(
             "[NativeOffhandPolicy] 1.26.51.1 active: ItemStackBase::getAllowOffHand RVA 0x{:x} forced true",
@@ -294,6 +573,9 @@ bool NativeOffhandPolicy::install(pl::mod::ModContext& context) noexcept {
 
 void NativeOffhandPolicy::uninstall(pl::mod::ModContext& context) noexcept {
     const bool currentQuery = isCurrentQueryTarget(mInstruction);
+    if (currentQuery) {
+        uninstallManualNativePolicyBridge();
+    }
     revertPatch();
     mInstruction = 0;
 

@@ -38,6 +38,16 @@ required = {
         "20 00 80 52 C0 03 5F D6",
         "kAllowOffhandQuerySignature126511",
         "kPatchedAllowQueryPrefix",
+        "kManualContainerSetItemRva126511 = 0xF97F9E8",
+        "kNativeSetAllowOffhandRva126511 = 0xFF82E5C",
+        "kManualDestinationSetReturnRva126511 = 0xF927828",
+        "kManualSourceSetReturnRva126511 = 0xF927984",
+        "kItemOffhandPolicyOffset = 0x1C8",
+        "kNativeOffhandAllowedPolicy = 1",
+        "manualContainerSetItemDetour(",
+        "promoteStackNativeOffhand(after)",
+        "gNativeSetAllowOffhand(item, true)",
+        "installManualNativePolicyBridge(context)",
         "levi_offhand.item_allow_offhand",
     ),
     "src/runtime/AutoInsertRouting.cpp": (
@@ -85,6 +95,22 @@ assert "0xFF7D070" not in policy_text, (
 )
 assert "Item+0x1C8" in policy_text
 assert "isCurrentQueryTarget(current)" in policy_text
+assert "ContainerScreenValidation" not in policy_text
+assert "InventoryTransactionPacket" not in policy_text
+assert "ItemStackRequestAction" not in policy_text
+
+manual_detour_start = policy_text.index("int manualContainerSetItemDetour(")
+manual_detour_end = policy_text.index(
+    "[[nodiscard]] bool installManualNativePolicyBridge(",
+    manual_detour_start,
+)
+manual_detour = policy_text[manual_detour_start:manual_detour_end]
+assert manual_detour.count("original(") == 1, (
+    "manual inventory bridge must forward the native setter exactly once"
+)
+assert manual_detour.index("promoteStackNativeOffhand(after)") < manual_detour.index(
+    "return original("
+), "native Item policy must be promoted before vanilla reconciliation continues"
 
 assert not (ROOT / "src/runtime/OffhandValidationHook.cpp").exists()
 assert not (ROOT / "src/runtime/OffhandValidationHook.hpp").exists()

@@ -26,6 +26,18 @@ Protected swap invariants:
 
 Historical branch findings retained before branch cleanup are summarized in [docs/BRANCH_ARCHIVE.md](docs/BRANCH_ARCHIVE.md).
 
+### Manual inventory arbitrary-OFFHAND repair candidate
+
+This candidate starts from the protected build #721 swap baseline and does **not** modify `src/swap/*`, `SwapRuntime`, RightUseRouter, or renderer behavior.
+
+On exact Minecraft 1.26.51.1 the native offhand capability is a two-bit Item policy at `Item+0x1C8`: value `1` allows offhand and value `2` disallows it. The existing policy forced `ItemStackBase::getAllowOffHand @ 0xFFA60F0` to return true, but that did not change the underlying Item policy used later by the manual inventory request/reconciliation path.
+
+Device/static RE of the vanilla inventory flow established `0xF927118` as the high-level manual operation. It writes destination then source through `0xF97F9E8`, at direct callsites `0xF927824` and `0xF927980`, before native request construction. The candidate hooks only that exact lower setter and, only when called from those two manual-inventory return addresses, calls native `Item::setAllowOffHand(true) @ 0xFF82E5C` on the moved Item before forwarding the original setter exactly once.
+
+This is a lazy native-capability promotion, not a validation bypass. `AutoInsertRouting` remains responsible for filtering Offhand container 34 from crafting/pickup automatic destinations. No `ContainerValidation` hook, synthetic packet/request, or F-swap change is introduced.
+
+Required device test: drag an arbitrary item from inventory/hotbar into OFFHAND without pressing F; move it back out; repeat with several item families; verify crafting/pickup still never auto-selects OFFHAND; then rerun one-empty and occupied F swaps to confirm build #721 is unchanged.
+
 
 Native Levi Launcher Android mod for Minecraft Bedrock **1.26.45.1** and **1.26.51.1**.
 

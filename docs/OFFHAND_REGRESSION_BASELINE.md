@@ -245,6 +245,29 @@ Only after this matrix passes may swap be reintroduced. When that happens, add s
 16. Occupied MAIN=A / OFF=B repeated F swaps alternate A/B correctly.
 17. Immediately after occupied swap, the new OFFHAND item can be moved/removed normally and right-click behavior still follows the existing MAINHAND ownership rules.
 
+## Manual inventory native Item-policy repair — 1.26.51.1
+
+Protected swap baseline: build #721 (`73336dccfa4c86476ebb2940de99a00e321ff7b2`). The repair is intentionally outside `src/swap/*`.
+
+Evidence:
+
+- `ItemStackBase::getAllowOffHand @ 0xFFA60F0` returns true only for native Item policy `(Item+0x1C8 & 3) == 1`.
+- `Item::setAllowOffHand(bool) @ 0xFF82E5C` is the verified native writer for that policy.
+- manual inventory operation `0xF927118` performs destination and source writes through `0xF97F9E8` (BL callsites `0xF927824` and `0xF927980`) before native request/reconciliation.
+- previous device traces showed the manual operation/setter could return success before later predictive reconciliation restored the item, so forcing only the getter was insufficient.
+
+Candidate boundary:
+
+- hook only exact-fingerprint `0xF97F9E8`;
+- accept only return RVAs `0xF927828` / `0xF927984`, which correspond to the two known manual-inventory calls;
+- promote the non-empty `after` stack's Item through native `0xFF82E5C(Item*, true)` before forwarding the original setter once;
+- keep `AutoInsertRouting` active so native Item capability cannot turn crafting/pickup into automatic OFFHAND routing;
+- do not hook `ContainerScreenValidation`, synthesize ItemStackRequest/InventoryTransaction packets, or alter swap/right-use/renderer code.
+
+Because this changes the Item definition's native policy, an Item already promoted during the process can remain offhand-capable until process restart even after the module is disabled. The automatic-routing guard already remains active until restart for the same persistent-capability reason.
+
+Device validation must prove manual arbitrary insertion/removal, crafting/pickup exclusion, world re-entry, and unchanged build-#721 F swap behavior.
+
 ## Documentation rule
 
 Any change that touches:
