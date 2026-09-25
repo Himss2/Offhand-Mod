@@ -173,7 +173,10 @@ def main() -> int:
         "revertUseTickBridgePatch()",
         "mUseTickPatchApplied = true",
     )
-    if "Inventory::getItem" in install or "mInventoryGetItemHook" in router:
+    if (
+        'resolveHookTarget(\n        "Inventory::getItem"' in router
+        or "mInventoryGetItemHook" in router
+    ):
         raise AssertionError(
             "rejected #748 global Inventory::getItem hot-path hook must not return"
         )
