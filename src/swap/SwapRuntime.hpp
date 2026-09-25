@@ -1,6 +1,7 @@
 #pragma once
 
 #include <atomic>
+#include <cstdint>
 
 #include <pl/Mod.hpp>
 
@@ -33,6 +34,7 @@ private:
     std::atomic_bool mInstalled{false};
     std::atomic_bool mSwapRequested{false};
     std::atomic_bool mSwapInProgress{false};
+    std::atomic<std::uint64_t> mLastSwapStartNs{0};
 };
 
 } // namespace levioffhand::swap

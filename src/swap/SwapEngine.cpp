@@ -398,15 +398,6 @@ RecordLegacySlotFn gRecordLegacySlot=nullptr;
         block,static_cast<std::size_t>(entryOffset),nullptr
     );
 
-    __android_log_print(
-        screen?ANDROID_LOG_INFO:ANDROID_LOG_ERROR,
-        kLogTag,
-        "[SwapEngine][legacy-screen-slots] direct screen=%p index=%llu blockOff=0x%llX entryOff=0x%llX",
-        screen,
-        static_cast<unsigned long long>(index),
-        static_cast<unsigned long long>(blockOffset),
-        static_cast<unsigned long long>(entryOffset)
-    );
     return screen;
 }
 
@@ -495,11 +486,6 @@ public:
         }
 
         mValid=true;
-        __android_log_print(
-            ANDROID_LOG_INFO,kLogTag,
-            "[SwapEngine][legacy-screen-slots] open req=%d screen=%p",
-            mRequestId,mScreen
-        );
     }
 
     ~LegacyScreenSlotScope() noexcept {
@@ -530,11 +516,6 @@ public:
         gRecordLegacySlot(
             mManager,screen,containerType,slot
         );
-        __android_log_print(
-            ANDROID_LOG_INFO,kLogTag,
-            "[SwapEngine][legacy-screen-slots] req=%d type=%d slot=%d",
-            mRequestId,containerType,slot
-        );
         return true;
     }
 
@@ -549,11 +530,13 @@ public:
         );
         mClosed=cleanupOk && afterId==0;
 
-        __android_log_print(
-            mClosed?ANDROID_LOG_INFO:ANDROID_LOG_ERROR,kLogTag,
-            "[SwapEngine][legacy-screen-slots] close req=%d->%d cleanup=%d",
-            mRequestId,afterId,cleanupOk?1:0
-        );
+        if(!mClosed) {
+            __android_log_print(
+                ANDROID_LOG_ERROR,kLogTag,
+                "[SwapEngine][legacy-screen-slots] close failed req=%d->%d cleanup=%d",
+                mRequestId,afterId,cleanupOk?1:0
+            );
+        }
         mValid=false;
         return mClosed;
     }
@@ -574,10 +557,6 @@ private:
     auto* txManager=
         static_cast<std::byte*>(player)+kPlayerInventoryTransactionManagerOffset;
     if(read<void*>(txManager,kInventoryTransactionPendingOffset,nullptr)!=nullptr) {
-        __android_log_print(
-            ANDROID_LOG_WARN,kLogTag,
-            "[SwapEngine][legacy-txn] existing pending InventoryTransaction; F swap rejected"
-        );
         return false;
     }
 
@@ -596,14 +575,7 @@ private:
         return false;
     }
 
-    const bool ok=allowed(netManager);
-    if(!ok) {
-        __android_log_print(
-            ANDROID_LOG_WARN,kLogTag,
-            "[SwapEngine][legacy-txn] ItemStackNetManager has active modern request; F swap rejected"
-        );
-    }
-    return ok;
+    return allowed(netManager);
 }
 
 class LegacyInventoryAction final {
@@ -978,16 +950,7 @@ bool SwapEngine::swap(void* player,const void* selected) noexcept {
         offAction.submit(player);
         gSetOffhandRaw(player,main.get());
 
-        const bool slotsClosed=screenSlots.finish();
-        const bool settled=legacyTransactionSettled(player);
-
-        __android_log_print(
-            settled && slotsClosed ? ANDROID_LOG_INFO : ANDROID_LOG_ERROR,
-            kLogTag,
-            "[SwapEngine][re-balanced] MAIN->OFF settled=%d slotsClosed=%d nativeMainClearFallback=1",
-            settled?1:0,slotsClosed?1:0
-        );
-        return settled && slotsClosed;
+        return screenSlots.finish();
     }
 
     if(mainEmpty) {
@@ -1025,16 +988,7 @@ bool SwapEngine::swap(void* player,const void* selected) noexcept {
         hotbarFillAction.submit(player);
         mSetSelectedItem(player,offSnap.get());
 
-        const bool slotsClosed=screenSlots.finish();
-        const bool settled=legacyTransactionSettled(player);
-
-        __android_log_print(
-            settled && slotsClosed ? ANDROID_LOG_INFO : ANDROID_LOG_ERROR,
-            kLogTag,
-            "[SwapEngine][re-balanced] OFF->MAIN settled=%d slotsClosed=%d explicitHotbarFill=1",
-            settled?1:0,slotsClosed?1:0
-        );
-        return settled && slotsClosed;
+        return screenSlots.finish();
     }
 
     Snapshot main(mItemStackCopyCtor,mItemStackDtor,selected);
@@ -1074,14 +1028,7 @@ bool SwapEngine::swap(void* player,const void* selected) noexcept {
     hotbarFillAction.submit(player);
     mSetSelectedItem(player,offSnap.get());
 
-    const bool slotsClosed=screenSlots.finish();
-    const bool settled=legacyTransactionSettled(player);
-    __android_log_print(
-        settled && slotsClosed?ANDROID_LOG_INFO:ANDROID_LOG_ERROR,kLogTag,
-        "[SwapEngine][re-balanced] OCCUPIED settled=%d slotsClosed=%d explicitHotbarFill=1",
-        settled?1:0,slotsClosed?1:0
-    );
-    return settled && slotsClosed;
+    return screenSlots.finish();
 }
 
 } // namespace levioffhand::swap

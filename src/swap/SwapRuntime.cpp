@@ -6,11 +6,11 @@
 #include <array>
 #include <cstddef>
 #include <cstdint>
+#include <chrono>
 #include <cstring>
 #include <elf.h>
 #include <link.h>
 #include <memory>
-#include <sys/prctl.h>
 
 #include <pl/memory/Hook.hpp>
 
@@ -22,6 +22,7 @@ constexpr char kLogTag[]="Levi Offhand";
 
 constexpr std::uintptr_t kClientPreFrameTickRva=0x9803334;
 constexpr std::size_t kClientGetLocalPlayerVtableOffset=0x100;
+constexpr std::uint64_t kMinSwapIntervalNs=50'000'000ULL;
 
 constexpr std::array<std::uint8_t,16> kClientPreFrameTickFingerprint{
     0xFF,0xC3,0x00,0xD1,0xFD,0x7B,0x01,0xA9,
@@ -100,14 +101,12 @@ void* gPreFrameOriginal=nullptr;
     return getter(client);
 }
 
-void currentThreadName(char* out) noexcept {
-    if(!out) return;
-    char name[16]{};
-    if(prctl(PR_GET_NAME,name,0,0,0)!=0) {
-        std::strncpy(name,"unknown",sizeof(name)-1);
-    }
-    std::strncpy(out,name,15);
-    out[15]='\0';
+[[nodiscard]] std::uint64_t steadyNowNs() noexcept {
+    return static_cast<std::uint64_t>(
+        std::chrono::duration_cast<std::chrono::nanoseconds>(
+            std::chrono::steady_clock::now().time_since_epoch()
+        ).count()
+    );
 }
 
 class ScopedProgress final {
@@ -152,6 +151,16 @@ SwapRuntime& SwapRuntime::instance() noexcept {
 bool SwapRuntime::drain(void* player,const void* selected) noexcept {
     if(!hasPendingSwap()) return false;
 
+    // Inventory exchange is a logical game action, not a render-frame action.
+    // Keep one pending intent queued but cap actual mutation to ~20/s so a
+    // held/spammed F button cannot execute dozens of native transactions per
+    // rendered frame burst.
+    const auto nowNs=steadyNowNs();
+    const auto lastNs=mLastSwapStartNs.load(std::memory_order_acquire);
+    if(lastNs!=0 && nowNs-lastNs<kMinSwapIntervalNs) {
+        return false;
+    }
+
     bool requested=true;
     if(!mSwapRequested.compare_exchange_strong(
             requested,false,std::memory_order_acq_rel)) {
@@ -165,29 +174,9 @@ bool SwapRuntime::drain(void* player,const void* selected) noexcept {
         return false;
     }
     ScopedProgress guard(mSwapInProgress);
+    mLastSwapStartNs.store(nowNs,std::memory_order_release);
 
-    char threadName[16]{};
-    currentThreadName(threadName);
-    __android_log_print(
-        ANDROID_LOG_INFO,kLogTag,
-        "[SwapRuntime] draining queued F swap on preFrame thread=%s",
-        threadName
-    );
-
-    const bool ok=SwapEngine::instance().swap(player,selected);
-    if(!ok) {
-        __android_log_print(
-            ANDROID_LOG_ERROR,kLogTag,
-            "[SwapRuntime] swap engine rejected exchange"
-        );
-        return false;
-    }
-
-    __android_log_print(
-        ANDROID_LOG_INFO,kLogTag,
-        "[SwapRuntime] swapped selected hotbar <-> OFFHAND via isolated engine"
-    );
-    return true;
+    return SwapEngine::instance().swap(player,selected);
 }
 
 bool SwapRuntime::install(pl::mod::ModContext& context) noexcept {
@@ -240,6 +229,7 @@ bool SwapRuntime::install(pl::mod::ModContext& context) noexcept {
 
     mSwapRequested.store(false,std::memory_order_release);
     mSwapInProgress.store(false,std::memory_order_release);
+    mLastSwapStartNs.store(0,std::memory_order_release);
     mFeatureEnabled.store(true,std::memory_order_release);
     mInstalled.store(true,std::memory_order_release);
 
@@ -254,6 +244,7 @@ void SwapRuntime::uninstall(pl::mod::ModContext&) noexcept {
     mFeatureEnabled.store(false,std::memory_order_release);
     mSwapRequested.store(false,std::memory_order_release);
     mSwapInProgress.store(false,std::memory_order_release);
+    mLastSwapStartNs.store(0,std::memory_order_release);
 
     if(gPreFrameHook) {
         gPreFrameHook->reset();
@@ -286,11 +277,9 @@ void SwapRuntime::requestSwap() noexcept {
         );
         return;
     }
-    mSwapRequested.store(true,std::memory_order_release);
-    __android_log_print(
-        ANDROID_LOG_INFO,kLogTag,
-        "[SwapRuntime] F swap queued for MINECRAFT MAIN"
-    );
+    // Coalesce repeated UI taps while one request is already waiting.
+    // This preserves the latest intent without growing work on the main thread.
+    (void)mSwapRequested.exchange(true,std::memory_order_acq_rel);
 }
 
 bool SwapRuntime::hasPendingSwap() const noexcept {

@@ -518,9 +518,10 @@ for marker in (
 if "recordChangedSlot(screen,kHandContainerType,kOffhandLocalSlot)" in engine.replace(" ", ""):
     raise AssertionError("predictive Hand OFF must not use legacy container-119 slot 0")
 
-# Device #702 showed OFF->MAIN storage was healthy but settled was sampled
-# while the predictive request was still open. Close request first, then
-# inspect the legacy transaction manager.
+# Device testing showed the legacy transaction may remain pending for a
+# short period after the local swap is already valid/removable. Swap success
+# therefore means the predictive scope closed cleanly; the next request is
+# independently guarded by legacyInventoryTransactionAvailable().
 swap_body = engine[engine.index("bool SwapEngine::swap"):]
 compact_swap = swap_body.replace(" ", "").replace("\n", "")
 off_start = compact_swap.index("if(offEmpty){")
@@ -531,11 +532,11 @@ for body, name in (
     (compact_swap[main_start:occ_start], "OFF->MAIN"),
     (compact_swap[occ_start:], "OCCUPIED"),
 ):
-    close = body.find("screenSlots.finish()")
-    settle = body.find("legacyTransactionSettled(player)")
-    if close < 0 or settle < 0 or close > settle:
+    if "screenSlots.finish()" not in body:
+        raise AssertionError(f"{name} must close predictive scope")
+    if "legacyTransactionSettled(player)" in body:
         raise AssertionError(
-            f"{name} must close predictive scope before settlement check"
+            f"{name} must not use same-frame settlement as success/failure"
         )
 
 # Performance regression contract for F-spam:

@@ -1,7 +1,5 @@
 #include "ui/SwapButton.hpp"
 
-#include <android/log.h>
-
 #include <string_view>
 #include <utility>
 
@@ -11,7 +9,6 @@ namespace levioffhand::ui {
 namespace {
 
 constexpr char kButtonId[] = "levi_offhand.swap_item";
-constexpr char kLogTag[] = "Levi Offhand";
 
 // Temporary code-only visual.  Once the interaction path is proven in-game,
 // this is intentionally easy to replace with the same PNG normal/pressed
@@ -61,12 +58,6 @@ bool SwapButton::registerButton(
                     ) {
                         return;
                     }
-
-                    __android_log_print(
-                        ANDROID_LOG_INFO,
-                        kLogTag,
-                        "[SwapButton] F button click captured"
-                    );
 
                     if (mOnClick) {
                         mOnClick();
