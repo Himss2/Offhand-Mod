@@ -666,8 +666,7 @@ void clearSession() noexcept {
 }
 
 
-__attribute__((noinline))
-[[nodiscard]] const void* useTickSelectedStackBridge(
+[[nodiscard]] __attribute__((noinline)) const void* useTickSelectedStackBridge(
     const void* player
 ) noexcept {
     const void* mainStack =
