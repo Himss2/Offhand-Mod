@@ -245,6 +245,24 @@ Only after this matrix passes may swap be reintroduced. When that happens, add s
 16. Occupied MAIN=A / OFF=B repeated F swaps alternate A/B correctly.
 17. Immediately after occupied swap, the new OFFHAND item can be moved/removed normally and right-click behavior still follows the existing MAINHAND ownership rules.
 
+## Bow/Crossbow FPP native-first ownership candidate
+
+Known-good gameplay base remains build #711/#714 (`f9b75172b9fc7ecbb30801ec460a7dcb704f9f91`). Scope is renderer-only and restricted to Bow/Crossbow first-person offhand ownership.
+
+Observed device failure with visual/model packs: Bow and Crossbow show two models. The old FPP path unconditionally forced generic-left admission when vanilla's hand-equip predicate returned false, while third-party packs could independently supply an attachable.
+
+Candidate ownership rule:
+
+1. During the normal FPP pass, exact offhand Bow/Crossbow dispatch is native-only; Levi does not force generic admission.
+2. `prepareAttachmentDetour` marks ownership only when slot 6, first-person and enabled actually enter the native attachment pipeline.
+3. Bow/Crossbow right-item attachment bindings may use the existing right->left owner remap; already-left bindings are left unchanged.
+4. If native attachment preparation occurred, no fallback is drawn.
+5. If no native attachment preparation occurred, `renderOffhandDetour` invokes exactly one generic fallback.
+6. During that fallback, native Bow/Crossbow attachment routing is suppressed to prevent recursive/double ownership.
+7. Existing final local XYZ/rotation calibration remains active; no gameplay/storage/swap code is changed.
+
+Required device checks: Bow and Crossbow with no visual pack, then with Actions & Stuff/XNova/HMI-style packs. Each must render exactly one offhand model. Also verify Bow/Crossbow use animations and the build-#711/#714 F-swap/manual inventory behavior remain unchanged.
+
 ## Documentation rule
 
 Any change that touches:

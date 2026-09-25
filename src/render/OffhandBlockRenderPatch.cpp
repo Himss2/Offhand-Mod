@@ -344,6 +344,15 @@ namespace levioffhand::render {
         std::uintptr_t gHandEquipPredicateTarget=0;
         thread_local std::uint32_t gGenericLeftFppLoggedMask=0;
 
+        // Bow/Crossbow FPP uses one render owner per frame. The normal pass
+        // admits native/add-on attachment rendering and suppresses the forced
+        // generic-left route. If no native attachment reaches prepareAttachment,
+        // renderOffhandDetour performs exactly one generic fallback.
+        thread_local bool gBowCrossbowFppNativePrepared=false;
+        thread_local std::uint32_t gBowCrossbowFppFallbackDepth=0;
+        thread_local const void* gLastBowCrossbowNativeOwnerItem=nullptr;
+        thread_local const void* gLastBowCrossbowFallbackItem=nullptr;
+
         std::unique_ptr<pl::memory::HookHandle> gRenderItemRouteHook;
         void* gRenderItemRouteOriginal=nullptr;
         std::uintptr_t gRenderItemRouteTarget=0;
@@ -1166,42 +1175,23 @@ namespace levioffhand::render {
                 return false;
             }
 
-            if(vanilla) {
-                return true;
-            }
-
-            if(!isExactMinecraftCallsite(
-                returnAddress,kOffDispatchCallsiteRva
-            )) {
-                return vanilla;
-            }
-
-            const bool genericLeft=
-                native_attachment_fix::shouldRouteGenericLeftFirstPerson(
-                    true,
-                    (
-                        family==ToolFamily::Bow
-                        ||
-                        family==ToolFamily::Crossbow
-                    ),
-                    native_attachment_fix::kOffhandSlot,
-                    true
+            const bool exactOffhandDispatch=
+                isExactMinecraftCallsite(
+                    returnAddress,kOffDispatchCallsiteRva
                 );
-            if(!genericLeft) {
-                return vanilla;
+            const bool bowLike=
+                family==ToolFamily::Bow
+                || family==ToolFamily::Crossbow;
+
+            if(exactOffhandDispatch && bowLike) {
+                // Normal pass: do not submit the historical forced generic
+                // copy. This lets Minecraft/add-on attachment rendering own
+                // the frame. The explicit fallback pass below is the only
+                // place where generic-left is forced.
+                return gBowCrossbowFppFallbackDepth!=0;
             }
 
-            const std::uint32_t bit=
-                1u<<static_cast<std::uint32_t>(family);
-            if((gGenericLeftFppLoggedMask&bit)==0) {
-                gGenericLeftFppLoggedMask|=bit;
-                __android_log_print(
-                    ANDROID_LOG_INFO,kLogTag,
-                    "[GenericLeftFppRoute] %s genericDispatch=1",
-                    toolFamilyName(family)
-                );
-            }
-            return true;
+            return vanilla;
         }
 
         using RenderItemRouteFn=void(*)(
@@ -1332,20 +1322,39 @@ namespace levioffhand::render {
             const std::uint32_t slot=readValue<std::uint32_t>(
                 slotPointer,0,static_cast<std::uint32_t>(-1)
             );
-            const bool isBow=
-                OffhandBlockRenderPatch::instance().featureEnabled()
-                && stack
-                && stackMatchesId(stack,kBowIdRva);
-            const bool remapBowOwner=
+            const bool rendererEnabled=
+                OffhandBlockRenderPatch::instance().featureEnabled();
+            const ToolFamily family=
+                rendererEnabled && stack
+                ? classifyTool(stack)
+                : ToolFamily::None;
+            const bool bowLike=
+                family==ToolFamily::Bow
+                || family==ToolFamily::Crossbow;
+            const bool remapBowLikeOwner=
                 native_attachment_fix::shouldRemapBowOwnerBone(
-                    isBow,
+                    bowLike,
                     slot,
                     gNativeAttachmentHooksReady.load(
                         std::memory_order_acquire
                     )
                 );
 
-            if(remapBowOwner) {
+            if(
+                rendererEnabled
+                && bowLike
+                && slot==native_attachment_fix::kOffhandSlot
+                && isFirstPerson
+                && enabled
+                && gBowCrossbowFppFallbackDepth==0
+            ) {
+                // This is the decisive ownership signal. Unlike the old
+                // attachable-state guess, it fires only when Minecraft/add-on
+                // actually enters the native attachment preparation path.
+                gBowCrossbowFppNativePrepared=true;
+            }
+
+            if(remapBowLikeOwner) {
                 ++gBowOffhandBindingDepth;
             }
 
@@ -1354,7 +1363,7 @@ namespace levioffhand::render {
                 isFirstPerson,enabled
             );
 
-            if(remapBowOwner && gBowOffhandBindingDepth!=0) {
+            if(remapBowLikeOwner && gBowOffhandBindingDepth!=0) {
                 --gBowOffhandBindingDepth;
             }
         }
@@ -1436,7 +1445,7 @@ namespace levioffhand::render {
                 gBowNativeBindingLogged=true;
                 __android_log_print(
                     ANDROID_LOG_INFO,kLogTag,
-                    "[BowNativeOwnerBinding] slot6 local=rightitem owner=leftitem"
+                    "[BowLikeNativeOwnerBinding] slot6 local=rightitem owner=leftitem"
                 );
             }
             return true;
@@ -1692,23 +1701,14 @@ namespace levioffhand::render {
                 && slot==native_attachment_fix::kOffhandSlot
                 && queryNativeFirstPerson(parentContext,actor);
 
-            const bool genericLeftBowFpp=
-                native_attachment_fix::shouldRouteGenericLeftFirstPerson(
-                    enabled,
-                    family==ToolFamily::Bow,
-                    slot,
-                    nativeFirstPerson
+            const bool explicitGenericFallback=
+                gBowCrossbowFppFallbackDepth!=0
+                && nativeFirstPerson
+                && (
+                    family==ToolFamily::Bow
+                    || family==ToolFamily::Crossbow
                 );
-            if(genericLeftBowFpp) {
-                const std::uint32_t bit=
-                    1u<<static_cast<std::uint32_t>(family);
-                if((gGenericLeftFppLoggedMask&bit)==0) {
-                    gGenericLeftFppLoggedMask|=bit;
-                    __android_log_print(
-                        ANDROID_LOG_INFO,kLogTag,
-                        "[GenericLeftFppRoute] Bow slot6 nativeSuppressed=1"
-                    );
-                }
+            if(explicitGenericFallback) {
                 return;
             }
 
@@ -3054,6 +3054,10 @@ namespace levioffhand::render {
         gNative3dFppFamily=ToolFamily::None;
         gNative3dOwnerVector={};
         gGenericLeftFppLoggedMask=0;
+        gBowCrossbowFppNativePrepared=false;
+        gBowCrossbowFppFallbackDepth=0;
+        gLastBowCrossbowNativeOwnerItem=nullptr;
+        gLastBowCrossbowFallbackItem=nullptr;
         gBowTppFishingRodDepth=0;
         gBowNativeBindingLogged=false;
         gNative3dLeftCarrierLogged=false;
@@ -3553,6 +3557,10 @@ namespace levioffhand::render {
         gNative3dFppFamily=ToolFamily::None;
         gNative3dOwnerVector={};
         gGenericLeftFppLoggedMask=0;
+        gBowCrossbowFppNativePrepared=false;
+        gBowCrossbowFppFallbackDepth=0;
+        gLastBowCrossbowNativeOwnerItem=nullptr;
+        gLastBowCrossbowFallbackItem=nullptr;
         gBowTppFishingRodDepth=0;
         gBowNativeBindingLogged=false;
         gNative3dLeftCarrierLogged=false;
@@ -3782,6 +3790,10 @@ namespace levioffhand::render {
         gNative3dFppFamily=ToolFamily::None;
         gNative3dOwnerVector={};
         gGenericLeftFppLoggedMask=0;
+        gBowCrossbowFppNativePrepared=false;
+        gBowCrossbowFppFallbackDepth=0;
+        gLastBowCrossbowNativeOwnerItem=nullptr;
+        gLastBowCrossbowFallbackItem=nullptr;
         gBowTppFishingRodDepth=0;
         gBowNativeBindingLogged=false;
         gNative3dLeftCarrierLogged=false;
@@ -3896,6 +3908,20 @@ namespace levioffhand::render {
                 toolFamily
             );
 
+        const bool bowCrossbowFpp=
+            instance->featureEnabled()
+            && stack
+            && item
+            && (
+                toolFamily==ToolFamily::Bow
+                || toolFamily==ToolFamily::Crossbow
+            );
+        const bool previousNativePrepared=
+            gBowCrossbowFppNativePrepared;
+        if(bowCrossbowFpp) {
+            gBowCrossbowFppNativePrepared=false;
+        }
+
         if(
             toolFamily
             !=
@@ -3987,6 +4013,61 @@ namespace levioffhand::render {
             player,
             itemFlags
         );
+
+        if(bowCrossbowFpp) {
+            const bool nativeOwner=
+                gBowCrossbowFppNativePrepared;
+
+            if(
+                nativeOwner
+                && item!=gLastBowCrossbowNativeOwnerItem
+            ) {
+                gLastBowCrossbowNativeOwnerItem=item;
+                __android_log_print(
+                    ANDROID_LOG_INFO,kLogTag,
+                    "[BowCrossbowFppOwner] %s native/add-on attachment owns frame",
+                    toolFamilyName(toolFamily)
+                );
+            }
+
+            if(
+                !nativeOwner
+                && instance->mRenderItemTarget
+                && gPlayer
+            ) {
+                const auto renderItem=
+                    reinterpret_cast<RenderItemFn>(
+                        instance->mRenderItemTarget
+                    );
+
+                ++gBowCrossbowFppFallbackDepth;
+                renderItem(
+                    self,
+                    renderContext,
+                    gPlayer,
+                    stack,
+                    false,
+                    itemFlags,
+                    true,
+                    false
+                );
+                if(gBowCrossbowFppFallbackDepth!=0) {
+                    --gBowCrossbowFppFallbackDepth;
+                }
+
+                if(item!=gLastBowCrossbowFallbackItem) {
+                    gLastBowCrossbowFallbackItem=item;
+                    __android_log_print(
+                        ANDROID_LOG_INFO,kLogTag,
+                        "[BowCrossbowFppOwner] %s native missing; one generic fallback",
+                        toolFamilyName(toolFamily)
+                    );
+                }
+            }
+
+            gBowCrossbowFppNativePrepared=
+                previousNativePrepared;
+        }
     }
 
 

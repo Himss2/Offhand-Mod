@@ -111,6 +111,25 @@ dist/arm64-v8a/levi-offhand-v0.2.68.levipack
 
 Use a supported build from `manifest.json` and start from a fresh game launch. For the current action/swap work, validate on **1.26.51.1**.
 
+### Bow/Crossbow visual-pack duplicate fix candidate
+
+Gameplay baseline remains build #711/#714 (`f9b75172b9fc7ecbb30801ec460a7dcb704f9f91`). Only first-person Bow/Crossbow render ownership changes.
+
+The previous renderer forced the generic `FIRSTPERSON_LEFT` path for Bow and Crossbow even when a resource/animation pack also supplied a native attachable. That can produce two submissions: the pack/native model plus Levi's calibrated generic model.
+
+The candidate changes FPP to **native-first, fallback-only**:
+
+- the normal Bow/Crossbow offhand pass suppresses only Levi's forced generic admission;
+- the existing native attachment pipeline is allowed to run;
+- `prepareAttachment` is the ownership signal: if slot-6 Bow/Crossbow actually reaches native attachment preparation, that model owns the frame;
+- right-item owner bindings from Bow/Crossbow attachables are mapped to the left-item owner using the existing slot-6 resolver;
+- only when no native attachment was prepared does Levi submit one generic fallback;
+- the explicit fallback suppresses native attachment re-entry so it cannot create a second model;
+- the existing compiled Bow/Crossbow XYZ/rotation calibration remains on the final offhand matrix.
+
+Swap, manual inventory, right-use, placement and all non-Bow/Crossbow item visuals are unchanged.
+
+
 1. Bow offhand FPP: exactly one Bow is visible on the left/offhand side.
 2. Bow offhand TPP: exactly one Bow is attached to the left hand; inventory/player preview must remain unaffected.
 3. Trident offhand FPP: one native 3D Trident is visible on the left and follows normal/raise/use animation without a generic 2D duplicate.

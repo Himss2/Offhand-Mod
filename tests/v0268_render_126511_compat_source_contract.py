@@ -107,14 +107,64 @@ def main() -> int:
     for token in (
         "family==ToolFamily::Bow",
         "family==ToolFamily::Crossbow",
-        "[GenericLeftFppRoute] %s genericDispatch=1",
+        "gBowCrossbowFppFallbackDepth!=0",
+        "return gBowCrossbowFppFallbackDepth!=0;",
     ):
         if token not in hand_equip:
-            raise AssertionError(f"Crossbow/Bow FPP admission missing {token!r}")
+            raise AssertionError(
+                f"Bow/Crossbow native-first FPP arbitration missing {token!r}"
+            )
+    if "shouldRouteGenericLeftFirstPerson(" in hand_equip:
+        raise AssertionError(
+            "Bow/Crossbow normal FPP pass must not force generic-left"
+        )
+
+    prepare_start = cpp.index("void prepareAttachmentDetour(")
+    prepare_end = cpp.index("using ResolveOwnerBoneByNameFn", prepare_start)
+    prepare = cpp[prepare_start:prepare_end]
+    for token in (
+        "family==ToolFamily::Bow",
+        "family==ToolFamily::Crossbow",
+        "gBowCrossbowFppNativePrepared=true;",
+        "isFirstPerson",
+        "enabled",
+    ):
+        if token not in prepare:
+            raise AssertionError(
+                f"Bow/Crossbow native attachment ownership probe missing {token!r}"
+            )
 
     off_start = cpp.index("renderOffhandDetour(")
     off_end = cpp.index("blockRenderPredicateDetour(", off_start)
     render_offhand = cpp[off_start:off_end]
+    for token in (
+        "gBowCrossbowFppNativePrepared=false;",
+        "gBowCrossbowFppFallbackDepth",
+        "[BowCrossbowFppOwner] %s native/add-on attachment owns frame",
+        "[BowCrossbowFppOwner] %s native missing; one generic fallback",
+    ):
+        if token not in render_offhand:
+            raise AssertionError(
+                f"Bow/Crossbow native-first fallback missing {token!r}"
+            )
+
+    legacy_start = cpp.index("void legacyAttachmentRouteDetour(")
+    legacy_end = cpp.index("using ComposeAttachmentBoneMatrixFn", legacy_start)
+    legacy = cpp[legacy_start:legacy_end]
+    if "genericLeftBowFpp" in legacy:
+        raise AssertionError(
+            "Bow native FPP attachment must not be suppressed during the normal pass"
+        )
+    for token in (
+        "explicitGenericFallback",
+        "gBowCrossbowFppFallbackDepth!=0",
+        "family==ToolFamily::Bow",
+        "family==ToolFamily::Crossbow",
+    ):
+        if token not in legacy:
+            raise AssertionError(
+                f"explicit generic fallback isolation missing {token!r}"
+            )
 
     # Build #470 Banner routing is intentionally restored, but ONLY with the
     # 1.26.51.1 member layout recovered from the new BannerItem constructor.
