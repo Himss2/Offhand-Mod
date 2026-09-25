@@ -255,8 +255,6 @@ for marker in (
     "kRecordLegacySlotRva=0xF88CE8C",
     "kInventoryContainerType=-1",
     "kHandContainerType=19",
-    "kGetTopScreenRva=0xF88AA24",
-    "kGetTopScreenFingerprint",
     "recordChangedSlot(",
     "[SwapEngine][legacy-screen-slots]",
 ):
