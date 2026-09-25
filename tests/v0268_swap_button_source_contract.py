@@ -352,7 +352,6 @@ stable_body = install_body[stable_start:stable_end]
 for forbidden in (
     "tryLegacyTransaction",
     "recordLegacySlot",
-    "getTopScreenValid",
 ):
     if forbidden in stable_body:
         raise AssertionError(
@@ -365,7 +364,6 @@ ready_body = engine[ready_start:ready_end]
 for forbidden in (
     "gTryBeginClientLegacyTransaction",
     "gRecordLegacySlot",
-    "gGetTopScreen",
 ):
     if forbidden in ready_body:
         raise AssertionError(
@@ -387,30 +385,39 @@ if "using #662 baseline" in swap_body_full:
         "RE-balanced candidate must not fall back to mixed #662 mutation"
     )
 
-# Exact-binary RE contract for Minecraft 1.26.51.1:
-# Build ID 712509dc14ccc233e91f267937dfb46ecdcc4b68 is stripped, therefore
-# _getTopScreen cannot be a mandatory dlsym/symbol lookup. 0xF88D97C
-# directly calls 0xF88AA24 before manager+0x50 receives the negative-even
-# legacy request id.
-if "_ZN23ItemStackNetManagerBase13_getTopScreenEv" in engine:
-    raise AssertionError(
-        "stripped 1.26.51.1 binary must not resolve top screen by mangled symbol"
-    )
-if "pl::memory::resolveSignature" in engine:
-    raise AssertionError(
-        "SwapEngine RE targets must use validated RVA/fingerprint, not symbol guessing"
-    )
+# Exact-binary RE correction from setPlayerContainer @ 0xF88A664.
+# Its legacy branch does NOT call 0xF88AA24. It reads the active
+# ItemStackNetManagerScreen directly from manager+0x38:
+#   screenStack = [manager+0x38]
+#   index       = [screenStack+0x20]
+#   map         = [screenStack+0x08]
+#   block       = map[((index >> 6) & ~7)]
+#   screen      = block[index & 0x1ff]
+# This path is valid in normal gameplay where the separate 0xF88AA24 lookup
+# can legitimately return null.
+for forbidden in (
+    "kGetTopScreenRva",
+    "kGetTopScreenFingerprint",
+    "gGetTopScreen",
+    "GetTopScreenFn",
+):
+    if forbidden in engine:
+        raise AssertionError(
+            f"legacy request screen must not depend on unrelated top-screen resolver: {forbidden}"
+        )
+
 for marker in (
-    "kGetTopScreenRva=0xF88AA24",
-    "0xFF,0x43,0x01,0xD1",
-    "0xFD,0x7B,0x03,0xA9",
-    "0x54,0xD0,0x3B,0xD5",
-    "const auto getTopScreen=resolve(",
-    "kGetTopScreenRva,kGetTopScreenFingerprint",
+    "kItemStackNetManagerScreenStackOffset=0x38",
+    "kScreenStackMapOffset=0x08",
+    "kScreenStackIndexOffset=0x20",
+    "currentLegacyRequestScreen(",
+    "index>>6",
+    "index&0x1FF",
+    "[SwapEngine][legacy-screen-slots] direct screen=",
 ):
     if marker not in engine.replace(" ", "") and marker not in engine:
         raise AssertionError(
-            f"exact RE top-screen resolver contract missing {marker}"
+            f"setPlayerContainer screen-stack RE contract missing {marker}"
         )
 
 # Exact RE: ItemStackNetManagerBase::setPlayerContainer @ 0xF88A664
