@@ -539,3 +539,56 @@ for body, name in (
             f"{name} must close predictive scope before settlement check"
         )
 
+# Performance regression contract for F-spam:
+# - duplicate UI requests coalesce while one is already pending;
+# - logical inventory swaps are capped at one per 50 ms (~20/s), while the
+#   pending bit remains set so the most recent user intent is not lost;
+# - release success path must not perform per-swap Logcat/thread-name I/O;
+# - a transaction that is still pending immediately after local mutation is
+#   not itself a swap failure; the next swap is already guarded by
+#   legacyInventoryTransactionAvailable().
+runtime_compact = runtime.replace(" ", "").replace("\n", "")
+for marker in (
+    "kMinSwapIntervalNs=50'000'000",
+    "mLastSwapStartNs",
+    "mSwapRequested.exchange(true",
+    "nowNs-lastNs<kMinSwapIntervalNs",
+):
+    if marker not in runtime_compact:
+        raise AssertionError(f"F-spam coalescing/throttle missing {marker}")
+
+for noisy in (
+    "[SwapButton] F button click captured",
+    "[SwapRuntime] F swap queued for MINECRAFT MAIN",
+    "[SwapRuntime] draining queued F swap",
+    "[SwapRuntime] swapped selected hotbar <-> OFFHAND via isolated engine",
+    "PR_GET_NAME",
+    "currentThreadName(",
+):
+    if noisy in button or noisy in runtime:
+        raise AssertionError(f"release F path still has per-swap diagnostic overhead: {noisy}")
+
+for noisy in (
+    "direct screen=%p",
+    "open req=%d screen=%p",
+    "req=%d type=%d slot=%d",
+):
+    if noisy in engine:
+        raise AssertionError(f"SwapEngine success-path diagnostic spam remains: {noisy}")
+
+swap_body_perf = engine[engine.index("bool SwapEngine::swap"):]
+compact_perf = swap_body_perf.replace(" ", "").replace("\n", "")
+off_start = compact_perf.index("if(offEmpty){")
+main_start = compact_perf.index("if(mainEmpty){", off_start)
+occ_start = compact_perf.index("Snapshotmain(", main_start)
+main_body_perf = compact_perf[main_start:occ_start]
+occ_body_perf = compact_perf[occ_start:]
+
+for body,name in ((main_body_perf,"OFF->MAIN"),(occ_body_perf,"OCCUPIED")):
+    if "returnsettled&&slotsClosed;" in body:
+        raise AssertionError(
+            f"{name} must not reject an otherwise valid swap because settlement is async"
+        )
+    if "returnslotsClosed;" not in body:
+        raise AssertionError(f"{name} must accept cleanly closed predictive scope")
+
