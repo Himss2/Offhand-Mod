@@ -337,8 +337,10 @@ if mapped_guard > invoke_read:
         "legacy screen scope dereferences callable vtable before mapped guard"
     )
 
-# Screen-slot bookkeeping is an optional capability. It must NEVER decide
-# whether the baseline #662 SwapEngine/SwapRuntime installs.
+# Exact RE helpers must not gate SwapRuntime::installed(), but an individual
+# F request must fail closed BEFORE any storage mutation if one of those
+# helpers is unavailable. Do not fall back to a mixed #662 transaction after
+# opening/expecting predictive bookkeeping.
 install_start = engine.index("bool SwapEngine::install")
 uninstall_start = engine.index("void SwapEngine::uninstall", install_start)
 install_body = engine[install_start:uninstall_start]
@@ -352,7 +354,7 @@ for forbidden in (
 ):
     if forbidden in stable_body:
         raise AssertionError(
-            f"optional screen bookkeeping must not gate stableBuild: {forbidden}"
+            f"RE helper must not gate SwapRuntime installation: {forbidden}"
         )
 
 ready_start = engine.index("bool SwapEngine::ready() const noexcept")
@@ -365,23 +367,23 @@ for forbidden in (
 ):
     if forbidden in ready_body:
         raise AssertionError(
-            f"optional screen bookkeeping must not gate ready(): {forbidden}"
+            f"RE helper must not gate ready(): {forbidden}"
         )
 
-# If the optional screen scope is unavailable, F must continue through the
-# known-good #662 mutation path instead of rejecting the request.
 swap_start = engine.index("bool SwapEngine::swap")
 swap_body_full = engine[swap_start:]
-if "screenSlots.valid()" not in swap_body_full:
-    raise AssertionError("swap must probe optional screen bookkeeping")
-if "no native screen/request; F swap rejected before mutation" in swap_body_full:
+for marker in (
+    "exact RE helper unavailable; swap rejected before mutation",
+    "native request/screen invalid; swap rejected before mutation",
+    "paired registration failed; swap rejected before mutation",
+):
+    if marker not in swap_body_full:
+        raise AssertionError(f"fail-closed RE swap guard missing {marker}")
+
+if "using #662 baseline" in swap_body_full:
     raise AssertionError(
-        "missing screen bookkeeping must not disable baseline F swap"
+        "RE-balanced candidate must not fall back to mixed #662 mutation"
     )
-if "[SwapEngine][legacy-screen-slots] unavailable; using #662 baseline" not in engine:
-    raise AssertionError("optional screen fallback log missing")
-
-
 
 # Exact-binary RE contract for Minecraft 1.26.51.1:
 # Build ID 712509dc14ccc233e91f267937dfb46ecdcc4b68 is stripped, therefore
