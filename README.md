@@ -136,7 +136,7 @@ Current main remains `12447d1ad3a6d9ad96ef817636aea58b295cab20`; `src/swap/*` is
 
 Device testing rejected build #748. It did not eat and made movement heavier. RE of the uploaded 1.26.51.1 ELF explains both results: the #748 implementation hooked `Inventory::getItem @ 0xF883B58` globally, but when selected MAIN is empty Player tick checks selected-state `+0xB0` at `0xF9E70BC` and jumps directly to `EMPTY_ITEM`. The getter is skipped completely, while its global detour still adds overhead to normal inventory/render/gameplay callers.
 
-The replacement removes that hook entirely and patches only the 24-byte inline selected-stack block at `0xF9E70B8..0xF9E70CC`. The exact-build patch calls a local helper and resumes at `0xF9E71B8`:
+The replacement removes that hook entirely and patches only the inline selected-stack block at `0xF9E70B8..0xF9E70D0`. RE after rejected build #751 found an ABI error in the first inline stub: immediately before this block vanilla calls `ItemStack::isNull(Player+0x6D8)`, so `x0` contains the boolean result while `x19` still owns `Player*`. The corrected 28-byte patch explicitly executes `mov x0,x19` before calling the helper, then resumes at `0xF9E71B8`:
 
 - normal MAIN use -> helper returns the original selected MAIN stack;
 - explicit local OFF session -> helper returns live OFFHAND while Minecraft's active-use stack matches it;

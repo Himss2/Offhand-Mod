@@ -64,11 +64,17 @@ constexpr std::uintptr_t kItemStackDtorRva = 0x85ADF98;
 // Inventory::getItem, which is why the rejected #748 getter hook never ran.
 // Replace only 0xF9E70B8..0xF9E70CC with:
 //
+//   mov x0, x19
 //   ldr x16, literal(useTickSelectedStackBridge)
 //   blr x16
 //   mov x20, x0
 //   b   0xF9E71B8
 //   .quad helper
+//
+// x19 is the Player*.  This move is mandatory: immediately before this block
+// vanilla calls ItemStack::isNull(Player+0x6D8), so x0 contains that boolean
+// return value, not Player*.  Build #751 omitted the move and therefore called
+// the helper with the wrong ABI argument.
 //
 // x20 is exactly the selected/use-validation stack expected by the untouched
 // vanilla code from 0xF9E71B8 onward.  The helper returns OFF only for a
@@ -78,20 +84,22 @@ constexpr std::uintptr_t kUseTickResumeRva = 0xF9E71B8;
 constexpr char kUseTickPatchName[] =
     "levi_offhand.use_tick_selected_stack_bridge";
 
-constexpr std::array<std::uint8_t, 24> kUseTickSelectedBlockFingerprint{
+constexpr std::array<std::uint8_t, 28> kUseTickSelectedBlockFingerprint{
     0x68, 0xBA, 0x42, 0xF9, // ldr x8,[x19,#0x570]
     0x09, 0xC1, 0x42, 0x39, // ldrb w9,[x8,#0xB0]
     0x09, 0x07, 0x00, 0x34, // cbz w9,0xF9E71A0
     0xF4, 0xD6, 0x01, 0xF0, // adrp x20,EMPTY_ITEM page
     0x94, 0x02, 0x1E, 0x91, // add x20,x20,#0x780
     0x88, 0x8E, 0x40, 0x39, // ldrb w8,[x20,#0x23]
+    0x88, 0x07, 0x00, 0x35, // cbnz w8,0xF9E71C0
 };
 
-constexpr std::array<std::uint8_t, 16> kUseTickPatchPrefix{
+constexpr std::array<std::uint8_t, 20> kUseTickPatchPrefix{
+    0xE0, 0x03, 0x13, 0xAA, // mov x0,x19 (Player*)
     0x90, 0x00, 0x00, 0x58, // ldr x16, literal at +0x10
     0x00, 0x02, 0x3F, 0xD6, // blr x16
     0xF4, 0x03, 0x00, 0xAA, // mov x20,x0
-    0x3D, 0x00, 0x00, 0x14, // b 0xF9E71B8 from 0xF9E70C4
+    0x3C, 0x00, 0x00, 0x14, // b 0xF9E71B8 from 0xF9E70C8
 };
 
 // 1.26.51.1 Item virtual defaults used only as capability identities.
@@ -734,7 +742,7 @@ void clearSession() noexcept {
         return false;
     }
 
-    std::array<std::uint8_t, 24> patch{};
+    std::array<std::uint8_t, 28> patch{};
     std::memcpy(
         patch.data(),
         kUseTickPatchPrefix.data(),
