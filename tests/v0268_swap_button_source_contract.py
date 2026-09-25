@@ -281,7 +281,8 @@ for marker in (
     "kRecordLegacySlotRva=0xF88CE8C",
     "kInventoryContainerType=-1",
     "kHandContainerType=19",
-    "_ZN23ItemStackNetManagerBase13_getTopScreenEv",
+    "kGetTopScreenRva=0xF88AA24",
+    "kGetTopScreenFingerprint",
     "recordChangedSlot(",
     "[SwapEngine][legacy-screen-slots]",
 ):
@@ -406,3 +407,30 @@ if "no native screen/request; F swap rejected before mutation" in swap_body_full
 if "[SwapEngine][legacy-screen-slots] unavailable; using #662 baseline" not in engine:
     raise AssertionError("optional screen fallback log missing")
 
+
+
+# Exact-binary RE contract for Minecraft 1.26.51.1:
+# Build ID 712509dc14ccc233e91f267937dfb46ecdcc4b68 is stripped, therefore
+# _getTopScreen cannot be a mandatory dlsym/symbol lookup. 0xF88D97C
+# directly calls 0xF88AA24 before manager+0x50 receives the negative-even
+# legacy request id.
+if "_ZN23ItemStackNetManagerBase13_getTopScreenEv" in engine:
+    raise AssertionError(
+        "stripped 1.26.51.1 binary must not resolve top screen by mangled symbol"
+    )
+if "pl::memory::resolveSignature" in engine:
+    raise AssertionError(
+        "SwapEngine RE targets must use validated RVA/fingerprint, not symbol guessing"
+    )
+for marker in (
+    "kGetTopScreenRva=0xF88AA24",
+    "0xFF,0x43,0x01,0xD1",
+    "0xFD,0x7B,0x03,0xA9",
+    "0x54,0xD0,0x3B,0xD5",
+    "const auto getTopScreen=resolve(",
+    "kGetTopScreenRva,kGetTopScreenFingerprint",
+):
+    if marker not in engine.replace(" ", "") and marker not in engine:
+        raise AssertionError(
+            f"exact RE top-screen resolver contract missing {marker}"
+        )
