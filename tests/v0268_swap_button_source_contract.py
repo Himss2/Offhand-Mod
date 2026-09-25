@@ -107,7 +107,7 @@ for forbidden in (
 # (container 119).  Do not open an ItemStackRequest or use the public OFF setter,
 # because LocalPlayer suppresses its container-119 action in modern mode.
 compact_engine = engine.replace(" ", "").replace("\n", "")
-swap_body = engine[engine.index("bool SwapEngine::swap"):]
+swap_body = engine[engine.index("SwapResult SwapEngine::swap"):]
 
 for forbidden in (
     "mSetItemInHandSlot(",
@@ -264,7 +264,7 @@ for marker in (
             f"screen-aware legacy touched-slot bookkeeping missing {marker}"
         )
 
-swap_body = engine[engine.index("bool SwapEngine::swap"):]
+swap_body = engine[engine.index("SwapResult SwapEngine::swap"):]
 compact_swap = swap_body.replace(" ", "").replace("\n", "")
 
 for required in (
@@ -369,7 +369,7 @@ for forbidden in (
             f"RE helper must not gate ready(): {forbidden}"
         )
 
-swap_start = engine.index("bool SwapEngine::swap")
+swap_start = engine.index("SwapResult SwapEngine::swap")
 swap_body_full = engine[swap_start:]
 for marker in (
     "exact RE helper unavailable; swap rejected before mutation",
@@ -433,7 +433,7 @@ for marker in (
     if marker not in engine.replace(" ", "") and marker not in engine:
         raise AssertionError(f"RE-balanced transaction missing {marker}")
 
-swap_body = engine[engine.index("bool SwapEngine::swap"):]
+swap_body = engine[engine.index("SwapResult SwapEngine::swap"):]
 compact_swap = swap_body.replace(" ", "").replace("\n", "")
 
 # MAIN->OFF ends MAIN at EMPTY, so the selected setter must retain its native
@@ -522,7 +522,7 @@ if "recordChangedSlot(screen,kHandContainerType,kOffhandLocalSlot)" in engine.re
 # short period after the local swap is already valid/removable. Swap success
 # therefore means the predictive scope closed cleanly; the next request is
 # independently guarded by legacyInventoryTransactionAvailable().
-swap_body = engine[engine.index("bool SwapEngine::swap"):]
+swap_body = engine[engine.index("SwapResult SwapEngine::swap"):]
 compact_swap = swap_body.replace(" ", "").replace("\n", "")
 off_start = compact_swap.index("if(offEmpty){")
 main_start = compact_swap.index("if(mainEmpty){", off_start)
@@ -576,7 +576,7 @@ for noisy in (
     if noisy in engine:
         raise AssertionError(f"SwapEngine success-path diagnostic spam remains: {noisy}")
 
-swap_body_perf = engine[engine.index("bool SwapEngine::swap"):]
+swap_body_perf = engine[engine.index("SwapResult SwapEngine::swap"):]
 compact_perf = swap_body_perf.replace(" ", "").replace("\n", "")
 off_start = compact_perf.index("if(offEmpty){")
 main_start = compact_perf.index("if(mainEmpty){", off_start)
