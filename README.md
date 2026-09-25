@@ -6,6 +6,27 @@ Shears routing is pinned independently of RTTI. For the current 26.50/26.51 item
 
 # Levi Offhand
 
+## Current protected baseline — build #721
+
+The accepted F-swap baseline is GitHub Actions build **#721**, commit `73336dccfa4c86476ebb2940de99a00e321ff7b2`. The same commit was fast-forwarded to `main` and rebuilt successfully there as build **#724**.
+
+The swap mechanism at this baseline is considered **known-good and protected from unrelated changes**. Fixes to rendering, right-use/offhand behavior, item actions, animation, UI, or other features must not rewrite the swap transaction/storage path unless the task explicitly targets swap itself.
+
+Protected swap invariants:
+
+- `SwapButton` remains UI-only and only queues an F intent.
+- `SwapRuntime` remains the preFrame pump; repeated F input is coalesced and throttled without moving storage logic into UI/render code.
+- `SwapEngine` keeps the verified 1.26.51.1 selected-stack read without calling the already-hooked `Player::getSelectedItem`.
+- MAIN/HOTBAR writes stay on `Player::setSelectedItem`; OFF storage stays on the verified raw OFF writer `0xF579C24` plus native-equivalent legacy bookkeeping.
+- Legacy InventoryAction container `119 (0x77)` addresses OFFHAND as slot `0`, while predictive `ContainerType::Hand (19)` addresses the native Hand container where OFFHAND is slot `1`. These slot domains must never be mixed.
+- Occupied A/B swap preserves the accepted local order: `MAIN=A -> EMPTY`, `OFF=B -> A`, `MAIN=EMPTY -> B`.
+- Native predictive scope must be opened/closed without relocating its inline self-referential final-action object.
+- Same-frame legacy transaction settlement is not used as the definition of swap success; a cleanly closed predictive scope is sufficient and the next request is independently guarded.
+- Do not reintroduce ContainerValidation swap hooks, synthetic ItemStackRequest/InventoryTransaction packets, raw-container bridges, post-settlement healers, or right-click-based swap recovery.
+
+Historical branch findings retained before branch cleanup are summarized in [docs/BRANCH_ARCHIVE.md](docs/BRANCH_ARCHIVE.md).
+
+
 Native Levi Launcher Android mod for Minecraft Bedrock **1.26.45.1** and **1.26.51.1**.
 
 ## OFFHAND consumption and release candidate
