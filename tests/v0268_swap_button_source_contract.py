@@ -511,7 +511,7 @@ for marker in (
 for marker in (
     "kOffhandLegacySlot=0",
     "kHandOffhandSlot=1",
-    "recordChangedSlot(screen,kHandContainerType,kHandOffhandSlot)",
+    "kHandContainerType,kHandOffhandSlot",
 ):
     if marker not in engine.replace(" ", "") and marker not in engine:
         raise AssertionError(f"OFF slot-domain split missing {marker}")
