@@ -950,7 +950,8 @@ bool SwapEngine::swap(void* player,const void* selected) noexcept {
         offAction.submit(player);
         gSetOffhandRaw(player,main.get());
 
-        return screenSlots.finish();
+        const bool slotsClosed=screenSlots.finish();
+        return slotsClosed;
     }
 
     if(mainEmpty) {
@@ -988,7 +989,8 @@ bool SwapEngine::swap(void* player,const void* selected) noexcept {
         hotbarFillAction.submit(player);
         mSetSelectedItem(player,offSnap.get());
 
-        return screenSlots.finish();
+        const bool slotsClosed=screenSlots.finish();
+        return slotsClosed;
     }
 
     Snapshot main(mItemStackCopyCtor,mItemStackDtor,selected);
@@ -1028,7 +1030,8 @@ bool SwapEngine::swap(void* player,const void* selected) noexcept {
     hotbarFillAction.submit(player);
     mSetSelectedItem(player,offSnap.get());
 
-    return screenSlots.finish();
+    const bool slotsClosed=screenSlots.finish();
+    return slotsClosed;
 }
 
 } // namespace levioffhand::swap
