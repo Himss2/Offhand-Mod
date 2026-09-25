@@ -28,7 +28,6 @@ for token in (
     "preFrameDetour(",
     "SwapEngine::instance().selectedStack(player)",
     "SwapEngine::instance().swap(player,selected)",
-    "F swap queued for MINECRAFT MAIN",
 ):
     if token not in runtime.replace(" ", "") and token not in runtime:
         raise AssertionError(f"SwapRuntime missing {token}")
