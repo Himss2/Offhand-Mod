@@ -65,11 +65,6 @@ static_assert(offsetof(Stack, valid) == 0x23);
 static_assert(sizeof(Stack) == 0x98);
 struct Player { void* table{}; } player;
 struct GameMode { void* table{}; const Player* owner = &player; } gameMode;
-struct Inventory {
-    std::array<std::byte, kInventoryOwnerOffset> pad{};
-    const Player* owner{};
-};
-static_assert(offsetof(Inventory, owner) == kInventoryOwnerOffset);
 static std::array<void*, 134> mainTable{}, offTable{};
 static Item mainItem{mainTable.data()}, offItem{offTable.data()};
 static const Item* mainWeak = &mainItem;
@@ -314,24 +309,11 @@ int main(int argc, char** argv) {
             "OFFHAND food must pin the native use session"
         );
 
-        Inventory inventory{};
-        inventory.owner = &player;
-        const void* tickStack = offhandStackForNativeUseTick(
-            &inventory,
-            testBase + kUseTickInventoryGetReturnRva,
-            true
-        );
+        gUseTickSelectedOriginal = selected;
+        const void* tickStack = useTickSelectedStackBridge(&player);
         ok &= check(
             tickStack == &offStack,
             "native use tick must read the same live OFFHAND stack regardless of item origin"
-        );
-        ok &= check(
-            offhandStackForNativeUseTick(
-                &inventory,
-                testBase + kUseTickInventoryGetReturnRva + 4,
-                true
-            ) == nullptr,
-            "long-use bridge must reject every non-tick caller"
         );
 
         RightUseRouter::completeUsingItemDetour(&player);

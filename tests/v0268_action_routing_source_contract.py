@@ -99,12 +99,11 @@ def main() -> int:
         "kStackDiffersForUseRva = 0xFFA5B04",
         "kItemStackCopyCtorRva = 0xFF9D748",
         "kItemStackDtorRva = 0x85ADF98",
-        "kInventoryGetItemRva = 0xF883B58",
-        "kUseTickSelectedFetchRva = 0xF9E71A0",
-        "kUseTickInventoryGetReturnRva = 0xF9E71B4",
-        "kInventoryOwnerOffset = 0x158",
-        "kInventoryGetItemFingerprint",
-        "kUseTickSelectedFetchFingerprint",
+        "kUseTickSelectedBlockRva = 0xF9E70B8",
+        "kUseTickResumeRva = 0xF9E71B8",
+        "kUseTickSelectedBlockFingerprint",
+        "kUseTickPatchPrefix",
+        "levi_offhand.use_tick_selected_stack_bridge",
         "kItemStackStorageSize = 0x98",
         "kItemStackCountOffset = 0x22",
         "kItemMaxStackSizeOffset = 0xA8",
@@ -157,25 +156,30 @@ def main() -> int:
             "RightUseRouter must consume the live OFFHAND slot without depending on swap origin"
         )
 
-    bridge = function_body(router, "RightUseRouter::inventoryGetItemDetour(")
-    require(
-        bridge,
-        "__builtin_return_address(0)",
-        "offhandStackForNativeUseTick(",
-        "return original(inventory, slot)",
-        "return offStack",
-    )
-    helper = function_body(router, "offhandStackForNativeUseTick(")
+    helper = function_body(router, "useTickSelectedStackBridge(")
     require(
         helper,
-        "returnAddress != base + kUseTickInventoryGetReturnRva",
-        "kInventoryOwnerOffset",
-        "owner != gSessionPlayer",
-        "activeUseMatches(owner, offStack)",
+        "gUseTickSelectedOriginal(player)",
+        "gSessionPlayer == player",
+        "activeUseMatches(player, offStack)",
+        "activeUseMatches(player, mainStack)",
+        "return offStack",
     )
+    require(
+        router,
+        "applyUseTickBridgePatch(",
+        "pl::memory::writeBytes(",
+        "std::span<const std::uint8_t>(patch.data(), patch.size())",
+        "revertUseTickBridgePatch()",
+        "mUseTickPatchApplied = true",
+    )
+    if "Inventory::getItem" in install or "mInventoryGetItemHook" in router:
+        raise AssertionError(
+            "rejected #748 global Inventory::getItem hot-path hook must not return"
+        )
     if "SwapEngine" in helper or "SwapRuntime" in helper:
         raise AssertionError(
-            "native long-use tick bridge must depend only on live OFFHAND/session state"
+            "native long-use tick bridge must depend only on live hand/use state"
         )
 
     base_use = function_body(router, "RightUseRouter::baseUseItemDetour(")
@@ -351,9 +355,6 @@ def main() -> int:
         "dtorTarget = resolveExactTarget(",
         "setHandExact = resolveExactTarget(",
         "kSetItemInHandSlotRva",
-        'resolveHookTarget(\n        "Inventory::getItem"',
-        "mInventoryGetItemHook",
-        "inventoryGetItemDetour",
         'resolveHookTarget(\n        "Player::getSelectedItem"',
         'resolveHookTarget(\n        "GameMode::useItemOnBlock"',
         "&blockUsePreHooked",

@@ -130,21 +130,22 @@ The candidate changes FPP to **native-first, fallback-only**:
 Swap, manual inventory, right-use, placement and all non-Bow/Crossbow item visuals are unchanged.
 
 
-### OFFHAND eating candidate — native long-use tick bridge
+### OFFHAND eating candidate — exact inline use-tick bridge
 
-This candidate is based on current main `12447d1ad3a6d9ad96ef817636aea58b295cab20` and does not modify `src/swap/*`.
+Current main remains `12447d1ad3a6d9ad96ef817636aea58b295cab20`; `src/swap/*` is unchanged.
 
-Device testing proved OFFHAND food already enters `GameMode::baseUseItem(..., hand=1)` and pins Minecraft's active-use stack, but holding right-click never reaches completion. Reverse engineering of the exact uploaded Minecraft 1.26.51.1 ELF (SHA-256 `b8a6351503d330628335a80e8131acd45291fa9a747465f0f34a31b2346847b4`) found the missing native boundary:
+Device testing rejected build #748. It did not eat and made movement heavier. RE of the uploaded 1.26.51.1 ELF explains both results: the #748 implementation hooked `Inventory::getItem @ 0xF883B58` globally, but when selected MAIN is empty Player tick checks selected-state `+0xB0` at `0xF9E70BC` and jumps directly to `EMPTY_ITEM`. The getter is skipped completely, while its global detour still adds overhead to normal inventory/render/gameplay callers.
 
-- Player's virtual tick function is `0xF9E6358..0xF9E7E14`.
-- At `0xF9E71A0` the long-use path inlines selected-MAIN lookup: selected Inventory at state `+0xB8`, selected slot at `+0x10`, vtable `+0x40`, then `blr` at `0xF9E71B0`.
-- The concrete Player Inventory vtable resolves `+0x40` to `0xF883B58`; its RTTI is `Inventory`, and its constructor `0xF881CB0` stores the owning Player at `Inventory+0x158`.
-- The tick compares this returned selected-MAIN stack with the active-use stack at `Player+0x6D8`. OFFHAND food therefore starts correctly and is stopped on the next tick because MAIN is empty/different.
-- The native completion call remains `0xF9E7450 -> 0xF9E8094`.
+The replacement removes that hook entirely and patches only the 24-byte inline selected-stack block at `0xF9E70B8..0xF9E70CC`. The exact-build patch calls a local helper and resumes at `0xF9E71B8`:
 
-The fix hooks only `Inventory::getItem @ 0xF883B58`. It redirects **only** when the return PC is exact long-use tick `0xF9E71B4`, the Inventory owner equals the active OFFHAND session Player, and Minecraft's active-use stack still matches the live OFFHAND slot. Every other Inventory caller runs unchanged. No selected-item global spoof, custom timer, physical hand swap, synthetic packet, or swap-history check is used.
+- normal MAIN use -> helper returns the original selected MAIN stack;
+- explicit local OFF session -> helper returns live OFFHAND while Minecraft's active-use stack matches it;
+- integrated-server Player without the local TLS session may use OFF only when native active-use uniquely matches OFF and not MAIN;
+- ambiguous MAIN/OFF identical stacks remain MAIN unless the explicit OFF session owns the Player.
 
-Because the bridge reads only the live OFFHAND slot/session, manually inserted food and F-swapped food are intentionally identical. Existing native completion/writeback still performs consumption/container replacement through OFFHAND hand 1.
+All vanilla checks after `0xF9E71B8` remain untouched, including item validity, active-stack equality, selected slot/empty-flag continuity, duration progression, stop/cancel and `0xF9E7450 -> completeUsingItem`.
+
+The patch is installed once and does not run during ordinary movement unless Minecraft has already entered its active-use tick. No global Inventory getter hook, custom eating timer, physical item swap or swap-history dependency remains.
 
 
 ### Banner FPP — build #470 logic ported to 1.26.51.1

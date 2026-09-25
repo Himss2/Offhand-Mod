@@ -263,23 +263,25 @@ Candidate ownership rule:
 
 Required device checks: Bow and Crossbow with no visual pack, then with Actions & Stuff/XNova/HMI-style packs. Each must render exactly one offhand model. Also verify Bow/Crossbow use animations and the build-#711/#714 F-swap/manual inventory behavior remain unchanged.
 
-## OFFHAND food consumption — native tick bridge candidate
+## OFFHAND food consumption — exact inline use-tick bridge
 
-Parent gameplay/render baseline: `12447d1ad3a6d9ad96ef817636aea58b295cab20`. Swap code is unchanged.
+Parent gameplay/render baseline remains `12447d1ad3a6d9ad96ef817636aea58b295cab20`. Swap code is unchanged.
 
-Exact 1.26.51.1 RE from the user-supplied ELF establishes why start-use alone cannot support OFFHAND food:
+Device result for rejected build #748: OFF food still did not progress and gameplay became noticeably heavier while moving. The expected getter-bridge log never appeared.
 
-1. `Player::startUsingItem`-like function `0xF9E8D94..0xF9E93B0` copies the supplied stack to `Player+0x6D8`, but snapshots selected-MAIN metadata from `Player+0x570` into `Player+0x770/+0x774`. It stores no hand=0/1 owner.
-2. Player virtual tick `0xF9E6358..0xF9E7E14` checks active-use state, then at `0xF9E71A0..0xF9E71B4` directly reads selected Inventory/slot and calls Inventory vtable `+0x40`; it does not call the hooked `Player::getSelectedItem`.
-3. Player's selected Inventory is constructed at `0xF9E0AA0` through `0xF881CB0`; RTTI is `Inventory`, owner Player is stored at `+0x158`, and vtable `+0x40` resolves to `0xF883B58`.
-4. The selected stack returned into x20 must match `Player+0x6D8` through `0xFF83708`; it is then compared against the active-use copy via `0xFFA5B04`. Failures branch to `Player::stopUsingItem @ 0xF9E86C0`.
-5. Successful duration depletion reaches `0xF9E7450 -> Player::completeUsingItem @ 0xF9E8094`.
+Exact RE correction:
 
-Candidate implementation hooks only `0xF883B58`, guarded by exact getter fingerprint plus the exact `0xF9E71A0` callsite fingerprint. Redirection requires return PC `base+0xF9E71B4`, Inventory owner == thread-local OFF session Player, non-null live OFFHAND, and active-use/native stack match. Otherwise the original getter executes.
+1. Player virtual tick `0xF9E6358..0xF9E7E14` reaches active-use validation at `0xF9E7090`.
+2. At `0xF9E70B8` it loads selected state. If `selectedState+0xB0 != 0` (empty MAIN), `0xF9E70C4..0xF9E70C8` selects global `EMPTY_ITEM` and **never calls Inventory::getItem**.
+3. Only non-empty selected MAIN reaches `0xF9E71A0..0xF9E71B0` and virtual Inventory getter `+0x40`. Therefore the #748 global `0xF883B58` hook could not solve the empty-MAIN food case and merely added hot-path overhead.
+4. From `0xF9E71B8` onward x20 is the validation stack. It is checked for validity, compared with active-use at `Player+0x6D8`, checked against saved selected metadata `Player+0x770/+0x774`, then duration logic eventually calls `completeUsingItem @ 0xF9E8094`.
+5. Start-use `0xF9E8D94` stores selected empty-flag/index into `Player+0x770/+0x774` but does not store the native hand enum, so only the x20 stack source must be extended; the saved metadata can remain vanilla MAIN continuity state.
 
-This bridge preserves Minecraft's own tick duration, stop/cancel conditions, completion call, hunger/effect logic and native transaction envelope. Completion/writeback remains the existing scoped OFFHAND path. It does not depend on whether the item entered slot 34 manually or through F swap.
+Candidate patch replaces only original bytes `0xF9E70B8..0xF9E70CC` after an exact 24-byte fingerprint check. The injected 24 bytes load a runtime helper pointer, `blr` it with x19/Player in x0, move its returned stack to x20, and branch to untouched `0xF9E71B8`. Helper fallback uses the original `Player::getSelectedItem` trampoline, preserving vanilla MAIN behavior. OFF is selected only for explicit OFF session ownership or unique native OFF active-use ownership.
 
-Device matrix: manual food and F-swapped food; MAIN empty and MAIN attack-only tool; hold-to-finish; release early; stack 16->15; last item; bowl/bottle replacement; move/replace OFF during use; verify MAIN remains unchanged.
+The rejected global Inventory getter HookHandle is removed. Patch removal is paired with RightUseRouter uninstall. Feature-disable leaves the patch installed but helper returns MAIN, avoiding executable-code churn while toggling.
+
+Required device checks: FPS/movement first (must return to baseline), then manual/F-swapped food with MAIN empty, hold-to-finish, release early, stack decrement, last item, container replacement and MAIN preservation.
 
 
 ## Documentation rule

@@ -44,10 +44,6 @@ private:
         bool flag
     ) noexcept;
 
-    static const void* inventoryGetItemDetour(
-        const void* inventory,
-        int slot
-    ) noexcept;
     static const void* selectedItemDetour(const void* player) noexcept;
     static void releaseUsingItemDetour(void* gameMode) noexcept;
     static void completeUsingItemDetour(void* player) noexcept;
@@ -63,8 +59,6 @@ private:
     std::unique_ptr<pl::memory::HookHandle> mSetSelectedItemHook;
     void* mCompleteUsingItemOriginal{nullptr};
     void* mSetSelectedItemOriginal{nullptr};
-    std::unique_ptr<pl::memory::HookHandle> mInventoryGetItemHook;
-    void* mInventoryGetItemOriginal{nullptr};
     std::unique_ptr<pl::memory::HookHandle> mSelectedItemHook;
     std::unique_ptr<pl::memory::HookHandle> mReleaseUsingItemHook;
     std::unique_ptr<pl::memory::HookHandle> mBaseUseItemHook;
@@ -75,7 +69,6 @@ private:
     void* mBaseUseItemOriginal{nullptr};
     void* mUseItemOnBlockOriginal{nullptr};
 
-    std::uintptr_t mInventoryGetItemTarget{0};
     std::uintptr_t mSelectedItemTarget{0};
     std::uintptr_t mReleaseUsingItemTarget{0};
     std::uintptr_t mBaseUseItemTarget{0};
@@ -85,6 +78,7 @@ private:
     // RightUseRouter installed.  Used for a narrow selected-item bridge around
     // the chained OFFHAND call; the clean native path remains snapshot-only.
     bool mUseItemOnBlockPreHooked{false};
+    bool mUseTickPatchApplied{false};
 
     std::atomic_bool mFeatureEnabled{false};
     std::atomic_bool mLoggedOffhandUse{false};

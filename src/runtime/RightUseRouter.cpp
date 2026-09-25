@@ -13,8 +13,10 @@
 #include <dlfcn.h>
 #include <link.h>
 #include <memory>
+#include <span>
 
 #include <pl/memory/Hook.hpp>
+#include <pl/memory/Patch.hpp>
 
 namespace levioffhand::runtime {
 namespace {
@@ -54,20 +56,43 @@ constexpr std::uintptr_t kStackDiffersForUseRva = 0xFFA5B04;
 constexpr std::uintptr_t kItemStackCopyCtorRva = 0xFF9D748;
 constexpr std::uintptr_t kItemStackDtorRva = 0x85ADF98;
 
-// Exact native long-use tick bridge, recovered from the uploaded 1.26.51.1
+// Exact native long-use tick patch, recovered from the uploaded 1.26.51.1
 // ELF (SHA-256 b8a63515...6847b4).
 //
-// Player's virtual tick at 0xF9E6358 inlines getSelectedItem instead of
-// calling Player::getSelectedItem.  At 0xF9E71A0 it loads the selected
-// Inventory from Player selected-state +0xB8, selected slot +0x10, then calls
-// Inventory vtable +0x40.  The concrete Inventory slot resolves to 0xF883B58;
-// the return PC after the BLR is exactly 0xF9E71B4.
+// Player virtual tick 0xF9E6358..0xF9E7E14 inlines selected-stack lookup.
+// With MAIN empty it branches directly to EMPTY_ITEM and never calls
+// Inventory::getItem, which is why the rejected #748 getter hook never ran.
+// Replace only 0xF9E70B8..0xF9E70CC with:
 //
-// Inventory's constructor 0xF881CB0 stores the owning Player at +0x158.
-constexpr std::uintptr_t kInventoryGetItemRva = 0xF883B58;
-constexpr std::uintptr_t kUseTickSelectedFetchRva = 0xF9E71A0;
-constexpr std::uintptr_t kUseTickInventoryGetReturnRva = 0xF9E71B4;
-constexpr std::size_t kInventoryOwnerOffset = 0x158;
+//   ldr x16, literal(useTickSelectedStackBridge)
+//   blr x16
+//   mov x20, x0
+//   b   0xF9E71B8
+//   .quad helper
+//
+// x20 is exactly the selected/use-validation stack expected by the untouched
+// vanilla code from 0xF9E71B8 onward.  The helper returns OFF only for a
+// verified native OFF use; otherwise it calls the original selected getter.
+constexpr std::uintptr_t kUseTickSelectedBlockRva = 0xF9E70B8;
+constexpr std::uintptr_t kUseTickResumeRva = 0xF9E71B8;
+constexpr char kUseTickPatchName[] =
+    "levi_offhand.use_tick_selected_stack_bridge";
+
+constexpr std::array<std::uint8_t, 24> kUseTickSelectedBlockFingerprint{
+    0x68, 0xBA, 0x42, 0xF9, // ldr x8,[x19,#0x570]
+    0x09, 0xC1, 0x42, 0x39, // ldrb w9,[x8,#0xB0]
+    0x09, 0x07, 0x00, 0x34, // cbz w9,0xF9E71A0
+    0xF4, 0xD6, 0x01, 0xF0, // adrp x20,EMPTY_ITEM page
+    0x94, 0x02, 0x1E, 0x91, // add x20,x20,#0x780
+    0x88, 0x8E, 0x40, 0x39, // ldrb w8,[x20,#0x23]
+};
+
+constexpr std::array<std::uint8_t, 16> kUseTickPatchPrefix{
+    0x90, 0x00, 0x00, 0x58, // ldr x16, literal at +0x10
+    0x00, 0x02, 0x3F, 0xD6, // blr x16
+    0xF4, 0x03, 0x00, 0xAA, // mov x20,x0
+    0x3D, 0x00, 0x00, 0x14, // b 0xF9E71B8 from 0xF9E70C4
+};
 
 // 1.26.51.1 Item virtual defaults used only as capability identities.
 // MAINHAND ownership is based on concrete native action implementations, not
@@ -151,19 +176,6 @@ constexpr std::array<std::uint8_t, 28> kItemStackDtorFingerprint{
     0x54, 0xD0, 0x3B, 0xD5, 0xF3, 0x03, 0x00, 0xAA,
     0xE9, 0x56, 0x05, 0xD0,
 };
-constexpr std::array<std::uint8_t, 16> kInventoryGetItemFingerprint{
-    0x81, 0x01, 0xF8, 0x37, 0x08, 0x24, 0x54, 0xA9,
-    0x6A, 0x43, 0x99, 0x52, 0x6A, 0x0D, 0xA5, 0x72,
-};
-constexpr std::array<std::uint8_t, 24> kUseTickSelectedFetchFingerprint{
-    0x00, 0x5D, 0x40, 0xF9, // ldr x0,[selected-state,#0xB8]
-    0x01, 0x11, 0x40, 0xB9, // ldr w1,[selected-state,#0x10]
-    0x09, 0x00, 0x40, 0xF9, // ldr x9,[x0]
-    0x28, 0x21, 0x40, 0xF9, // ldr x8,[x9,#0x40]
-    0x00, 0x01, 0x3F, 0xD6, // blr x8
-    0xF4, 0x03, 0x00, 0xAA, // mov x20,x0
-};
-
 using BaseUseItemFn = bool (*)(void*, const void*, unsigned char);
 using UseItemOnBlockFn = std::uint32_t (*)(
     void*,
@@ -199,6 +211,7 @@ thread_local const void* gUseWritebackBefore = nullptr;
 
 using ReleaseUsingItemFn = void (*)(void*);
 using SelectedItemFn = const void* (*)(const void*);
+SelectedItemFn gUseTickSelectedOriginal = nullptr;
 using OffhandItemFn = const void* (*)(const void*);
 using SetItemInHandSlotFn = void (*)(void*, unsigned char, const void*);
 using StackIsNullFn = bool (*)(const void*);
@@ -207,7 +220,6 @@ using ItemInUseStackFn = const void* (*)(const void*);
 using StackDiffersForUseFn = bool (*)(const void*, const void*);
 using ItemStackCopyCtorFn = void (*)(void*, const void*);
 using ItemStackDtorFn = void (*)(void*);
-using InventoryGetItemFn = const void* (*)(const void*, int);
 using GetMaxUseDurationFn = int (*)(const void*, const void*);
 using GetAttackDamageFn = int (*)(const void*);
 using ItemBoolFn = bool (*)(const void*);
@@ -648,55 +660,113 @@ private:
     return !stackIsNull(active) && stacksMatch(active, stack);
 }
 
-[[nodiscard]] const void* offhandStackForNativeUseTick(
-    const void* inventory,
-    std::uintptr_t returnAddress,
-    bool featureEnabled
-) noexcept {
-    if (
-        !featureEnabled ||
-        inventory == nullptr ||
-        gSessionPlayer == nullptr ||
-        gGetOffhandSlot == nullptr
-    ) {
-        return nullptr;
-    }
-
-    const auto base = minecraftModuleBase();
-    if (
-        base == 0 ||
-        returnAddress != base + kUseTickInventoryGetReturnRva
-    ) {
-        return nullptr;
-    }
-
-    const void* owner = nullptr;
-    std::memcpy(
-        &owner,
-        static_cast<const std::byte*>(inventory) + kInventoryOwnerOffset,
-        sizeof(owner)
-    );
-    if (owner == nullptr || owner != gSessionPlayer) {
-        return nullptr;
-    }
-
-    const void* offStack = gGetOffhandSlot(owner);
-    if (
-        offStack == nullptr ||
-        stackIsNull(offStack) ||
-        !activeUseMatches(owner, offStack)
-    ) {
-        return nullptr;
-    }
-
-    return offStack;
-}
-
 void clearSession() noexcept {
     gSessionPlayer = nullptr;
     gSessionGameMode = nullptr;
 }
 
+
+__attribute__((noinline))
+[[nodiscard]] const void* useTickSelectedStackBridge(
+    const void* player
+) noexcept {
+    const void* mainStack =
+        gUseTickSelectedOriginal != nullptr
+        ? gUseTickSelectedOriginal(player)
+        : nullptr;
+
+    if (
+        player == nullptr ||
+        !RightUseRouter::instance().featureEnabled() ||
+        gGetOffhandSlot == nullptr ||
+        gPlayerIsUsingItem == nullptr ||
+        gItemInUseStack == nullptr
+    ) {
+        return mainStack;
+    }
+
+    const void* offStack = gGetOffhandSlot(player);
+    if (offStack == nullptr || stackIsNull(offStack)) {
+        if (gSessionPlayer == player) {
+            clearSession();
+        }
+        return mainStack;
+    }
+
+    const bool offActive = activeUseMatches(player, offStack);
+    if (!offActive) {
+        if (gSessionPlayer == player) {
+            clearSession();
+        }
+        return mainStack;
+    }
+
+    // Local client has an explicit session. Integrated-server Player may be a
+    // different object/thread, so unique native active-stack ownership is the
+    // safe fallback there. If MAIN and OFF are indistinguishable, MAIN wins
+    // unless this exact Player owns the explicit OFF session.
+    const bool explicitOffSession = gSessionPlayer == player;
+    const bool mainActive =
+        mainStack != nullptr &&
+        !stackIsNull(mainStack) &&
+        activeUseMatches(player, mainStack);
+
+    if (!explicitOffSession && mainActive) {
+        return mainStack;
+    }
+
+    bool expected = false;
+    if (gLoggedUseTickBridge.compare_exchange_strong(
+            expected, true, std::memory_order_relaxed
+        )) {
+        __android_log_print(
+            ANDROID_LOG_INFO,
+            kLogTag,
+            "[RightUseRouter] native long-use tick selected live OFFHAND"
+        );
+    }
+    return offStack;
+}
+
+[[nodiscard]] bool applyUseTickBridgePatch(
+    std::uintptr_t target
+) noexcept {
+    if (target == 0) {
+        return false;
+    }
+
+    std::array<std::uint8_t, 24> patch{};
+    std::memcpy(
+        patch.data(),
+        kUseTickPatchPrefix.data(),
+        kUseTickPatchPrefix.size()
+    );
+
+    const auto helper =
+        reinterpret_cast<std::uintptr_t>(&useTickSelectedStackBridge);
+    static_assert(sizeof(helper) == 8);
+    std::memcpy(
+        patch.data() + kUseTickPatchPrefix.size(),
+        &helper,
+        sizeof(helper)
+    );
+
+    return pl::memory::writeBytes(
+        target,
+        std::span<const std::uint8_t>(patch.data(), patch.size()),
+        kUseTickPatchName
+    );
+}
+
+void revertUseTickBridgePatch() noexcept {
+    if (!pl::memory::revertPatch(kUseTickPatchName)) {
+        __android_log_print(
+            ANDROID_LOG_WARN,
+            kLogTag,
+            "[RightUseRouter] native long-use tick patch revert reported failure"
+        );
+    }
+}
 } // namespace
 
 RightUseRouter* RightUseRouter::sInstance = nullptr;
@@ -740,8 +810,8 @@ bool RightUseRouter::install(pl::mod::ModContext& context) noexcept {
     const auto setHandExact = resolveExactTarget(
         kSetItemInHandSlotRva, kSetItemInHandSlotFingerprint
     );
-    const auto useTickFetchTarget = resolveExactTarget(
-        kUseTickSelectedFetchRva, kUseTickSelectedFetchFingerprint
+    const auto useTickBridgeTarget = resolveExactTarget(
+        kUseTickSelectedBlockRva, kUseTickSelectedBlockFingerprint
     );
     const auto setHandTarget =
         setHandExact != 0
@@ -752,7 +822,7 @@ bool RightUseRouter::install(pl::mod::ModContext& context) noexcept {
         offhandTarget == 0 || nullTarget == 0 ||
         usingTarget == 0 || inUseTarget == 0 || differsTarget == 0 ||
         copyCtorTarget == 0 || dtorTarget == 0 || setHandTarget == 0 ||
-        useTickFetchTarget == 0
+        useTickBridgeTarget == 0
     ) {
         __android_log_print(
             ANDROID_LOG_WARN,
@@ -766,7 +836,7 @@ bool RightUseRouter::install(pl::mod::ModContext& context) noexcept {
             copyCtorTarget != 0 ? 1 : 0,
             dtorTarget != 0 ? 1 : 0,
             setHandTarget != 0 ? 1 : 0,
-            useTickFetchTarget != 0 ? 1 : 0
+            useTickBridgeTarget != 0 ? 1 : 0
         );
         context.logger().warn(
             "[RightUseRouter] Minecraft 1.26.51.1 stable fingerprint validation failed; right-use disabled"
@@ -801,11 +871,6 @@ bool RightUseRouter::install(pl::mod::ModContext& context) noexcept {
         kSelectedItemRva,
         kSelectedItemFingerprint
     );
-    const auto inventoryGetTarget = resolveHookTarget(
-        "Inventory::getItem",
-        kInventoryGetItemRva,
-        kInventoryGetItemFingerprint
-    );
     bool blockUsePreHooked = false;
     const auto blockUseTarget = resolveHookTarget(
         "GameMode::useItemOnBlock",
@@ -825,8 +890,8 @@ bool RightUseRouter::install(pl::mod::ModContext& context) noexcept {
     );
 
     if (
-        selectedTarget == 0 || inventoryGetTarget == 0 ||
-        blockUseTarget == 0 || useTarget == 0 || releaseTarget == 0
+        selectedTarget == 0 || blockUseTarget == 0 ||
+        useTarget == 0 || releaseTarget == 0
     ) {
         context.logger().warn(
             "[RightUseRouter] Minecraft 1.26.51.1 live hook target resolution failed; right-use disabled"
@@ -844,7 +909,6 @@ bool RightUseRouter::install(pl::mod::ModContext& context) noexcept {
     gItemStackDtor = reinterpret_cast<ItemStackDtorFn>(dtorTarget);
 
     mSelectedItemTarget = selectedTarget;
-    mInventoryGetItemTarget = inventoryGetTarget;
     mReleaseUsingItemTarget = releaseTarget;
     mBaseUseItemTarget = useTarget;
     mUseItemOnBlockTarget = blockUseTarget;
@@ -852,22 +916,6 @@ bool RightUseRouter::install(pl::mod::ModContext& context) noexcept {
     sInstance = this;
     gStopUsingItem = reinterpret_cast<CompleteUsingItemFn>(stopTarget);
     gReleaseCallback = minecraftModuleBase() + kReleaseCallbackRva;
-
-    mInventoryGetItemHook = std::make_unique<pl::memory::HookHandle>(
-        reinterpret_cast<void*>(mInventoryGetItemTarget),
-        reinterpret_cast<void*>(&RightUseRouter::inventoryGetItemDetour),
-        &mInventoryGetItemOriginal,
-        pl::memory::HookPriority::Normal
-    );
-    if (
-        !mInventoryGetItemHook ||
-        !mInventoryGetItemHook->installed() ||
-        mInventoryGetItemOriginal == nullptr
-    ) {
-        context.logger().warn("[RightUseRouter] native long-use Inventory::getItem bridge hook failed");
-        uninstall(context);
-        return false;
-    }
 
     mSelectedItemHook = std::make_unique<pl::memory::HookHandle>(
         reinterpret_cast<void*>(mSelectedItemTarget),
@@ -937,6 +985,17 @@ bool RightUseRouter::install(pl::mod::ModContext& context) noexcept {
         return false;
     }
 
+    gUseTickSelectedOriginal =
+        reinterpret_cast<SelectedItemFn>(mSelectedItemOriginal);
+    if (!applyUseTickBridgePatch(useTickBridgeTarget)) {
+        context.logger().warn(
+            "[RightUseRouter] exact native long-use tick patch failed"
+        );
+        uninstall(context);
+        return false;
+    }
+    mUseTickPatchApplied = true;
+
     mFeatureEnabled.store(true, std::memory_order_release);
     mLoggedOffhandUse.store(false, std::memory_order_relaxed);
     mLoggedBlockUse.store(false, std::memory_order_relaxed);
@@ -953,6 +1012,12 @@ bool RightUseRouter::install(pl::mod::ModContext& context) noexcept {
 void RightUseRouter::uninstall(pl::mod::ModContext& context) noexcept {
     mFeatureEnabled.store(false, std::memory_order_release);
     clearSession();
+
+    if (mUseTickPatchApplied) {
+        revertUseTickBridgePatch();
+        mUseTickPatchApplied = false;
+    }
+    gUseTickSelectedOriginal = nullptr;
 
     if (mHandTransactionHook) { mHandTransactionHook->reset(); mHandTransactionHook.reset(); }
     mHandTransactionOriginal = nullptr;
@@ -979,12 +1044,6 @@ void RightUseRouter::uninstall(pl::mod::ModContext& context) noexcept {
         mSelectedItemHook->reset();
         mSelectedItemHook.reset();
     }
-    if (mInventoryGetItemHook) {
-        mInventoryGetItemHook->reset();
-        mInventoryGetItemHook.reset();
-    }
-
-    mInventoryGetItemOriginal = nullptr;
     mUseItemOnBlockOriginal = nullptr;
     mBaseUseItemOriginal = nullptr;
     mReleaseUsingItemOriginal = nullptr;
@@ -994,7 +1053,6 @@ void RightUseRouter::uninstall(pl::mod::ModContext& context) noexcept {
     mBaseUseItemTarget = 0;
     mReleaseUsingItemTarget = 0;
     mSelectedItemTarget = 0;
-    mInventoryGetItemTarget = 0;
     gGetOffhandSlot = nullptr;
     gSetItemInHandSlot = nullptr;
     gStackIsNull = nullptr;
@@ -1025,8 +1083,7 @@ bool RightUseRouter::installed() const noexcept {
         mSetSelectedItemHook != nullptr && mSetSelectedItemHook->installed() &&
         mCompleteUsingItemOriginal != nullptr && mSetSelectedItemOriginal != nullptr &&
         mSelectedItemHook != nullptr && mSelectedItemHook->installed() &&
-        mInventoryGetItemHook != nullptr && mInventoryGetItemHook->installed() &&
-        mInventoryGetItemOriginal != nullptr &&
+        mUseTickPatchApplied &&
         mReleaseUsingItemHook != nullptr && mReleaseUsingItemHook->installed() &&
         mBaseUseItemHook != nullptr && mBaseUseItemHook->installed() &&
         mUseItemOnBlockHook != nullptr && mUseItemOnBlockHook->installed() &&
@@ -1351,47 +1408,6 @@ std::uint32_t RightUseRouter::useItemOnBlockDetour(
 
     // A nonzero OFF result is definitive even when it does not swing.
     return offResult != 0u ? offResult : mainFallback();
-}
-
-const void* RightUseRouter::inventoryGetItemDetour(
-    const void* inventory,
-    int slot
-) noexcept {
-    auto* instance = sInstance;
-    if (
-        instance == nullptr ||
-        instance->mInventoryGetItemOriginal == nullptr
-    ) {
-        return nullptr;
-    }
-
-    const auto original = reinterpret_cast<InventoryGetItemFn>(
-        instance->mInventoryGetItemOriginal
-    );
-
-    const auto returnAddress = reinterpret_cast<std::uintptr_t>(
-        __builtin_return_address(0)
-    );
-    const void* offStack = offhandStackForNativeUseTick(
-        inventory,
-        returnAddress,
-        instance->featureEnabled()
-    );
-    if (offStack == nullptr) {
-        return original(inventory, slot);
-    }
-
-    bool expected = false;
-    if (gLoggedUseTickBridge.compare_exchange_strong(
-            expected, true, std::memory_order_relaxed
-        )) {
-        __android_log_print(
-            ANDROID_LOG_INFO,
-            kLogTag,
-            "[RightUseRouter] native long-use tick reads live OFFHAND instead of selected MAIN"
-        );
-    }
-    return offStack;
 }
 
 const void* RightUseRouter::selectedItemDetour(const void* player) noexcept {
