@@ -331,3 +331,10 @@ The uploaded `libminecraftpe.so` was verified as ARM64 NDK r28c with Build ID `7
 Static binary analysis establishes `0xF88AA24` as the current-screen resolver used by the legacy predictive request lifecycle: `ItemStackNetManagerClient::_tryBeginClientLegacyTransactionRequest @ 0xF88D960` directly calls `0xF88AA24` at `0xF88D97C` before writing the generated negative-even request id to `manager+0x50`. The mod therefore resolves `0xF88AA24` only through its exact 32-byte fingerprint.
 
 The same binary also confirms `0xF88CE8C` maps legacy `ContainerType::Inventory (-1)` to player container enum 29 and `ContainerType::Hand (19)` to Offhand enum 34 before recording the requested slot. No gameplay storage writer or right-use route is changed by this correction.
+
+
+## Build #721 follow-up: transient F intent retention
+
+Root cause: `SwapRuntime::drain()` clears the queued F bit before calling `SwapEngine::swap()`. Build #721 returned the same boolean `false` when the previous legacy transaction / modern request was merely still busy and when the native state was actually invalid. A user press during that temporary busy window was therefore consumed permanently.
+
+The fix does not change the #721 MAIN/OFF mutation sequence. `SwapEngine` reports a typed result: `Success`, `RetryLater`, or `Rejected`. Only a pre-mutation busy transaction/request is `RetryLater`; runtime restores exactly one coalesced pending intent. Invalid ABI/state, predictive bookkeeping failures, scope-close failures, and other rejected paths are never automatically retried. The existing 50 ms start throttle remains in place, so a settling transaction is probed at the existing bounded cadence rather than creating an unbounded retry loop.

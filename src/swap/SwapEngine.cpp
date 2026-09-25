@@ -551,31 +551,43 @@ private:
     bool mClosed{false};
 };
 
-[[nodiscard]] bool legacyInventoryTransactionAvailable(void* player) noexcept {
-    if(!player) return false;
+enum class LegacyTransactionState : std::uint8_t {
+    Available,
+    Busy,
+    Invalid,
+};
+
+[[nodiscard]] LegacyTransactionState legacyInventoryTransactionState(
+    void* player
+) noexcept {
+    if(!player) return LegacyTransactionState::Invalid;
 
     auto* txManager=
         static_cast<std::byte*>(player)+kPlayerInventoryTransactionManagerOffset;
     if(read<void*>(txManager,kInventoryTransactionPendingOffset,nullptr)!=nullptr) {
-        return false;
+        return LegacyTransactionState::Busy;
     }
 
     void* netManager=read<void*>(
         player,kPlayerItemStackNetManagerOffset,nullptr
     );
-    if(!netManager) return true;
+    if(!netManager) return LegacyTransactionState::Available;
 
     const void* vtable=read<const void*>(netManager,0,nullptr);
-    if(!mapped(reinterpret_cast<std::uintptr_t>(vtable),0)) return false;
+    if(!mapped(reinterpret_cast<std::uintptr_t>(vtable),0)) {
+        return LegacyTransactionState::Invalid;
+    }
 
     const auto allowed=read<LegacyActionAllowedFn>(
         vtable,kItemStackNetManagerLegacyAllowedVtableOffset,nullptr
     );
     if(!allowed || !mapped(reinterpret_cast<std::uintptr_t>(allowed),PF_X)) {
-        return false;
+        return LegacyTransactionState::Invalid;
     }
 
-    return allowed(netManager);
+    return allowed(netManager)
+        ? LegacyTransactionState::Available
+        : LegacyTransactionState::Busy;
 }
 
 class LegacyInventoryAction final {
@@ -846,25 +858,31 @@ const void* SwapEngine::selectedStack(const void* player) const noexcept {
     return getter(container,index);
 }
 
-bool SwapEngine::swap(void* player,const void* selected) noexcept {
-    if(!ready() || !player || !selected) return false;
+SwapResult SwapEngine::swap(void* player,const void* selected) noexcept {
+    if(!ready() || !player || !selected) return SwapResult::Rejected;
 
     const void* off=mGetOffhandSlot(player);
-    if(!off) return false;
+    if(!off) return SwapResult::Rejected;
 
     const bool mainEmpty=mStackIsNull(selected);
     const bool offEmpty=mStackIsNull(off);
 
-    if(mainEmpty && offEmpty) return true;
+    if(mainEmpty && offEmpty) return SwapResult::Success;
 
     // Never join an unrelated inventory transaction or an active modern
     // ItemStackRequest.  The native InventoryTransactionManager can accept
     // legacy InventoryAction records while modern item-stack networking is
     // enabled, but only while no modern request owns the manager.
-    if(!legacyInventoryTransactionAvailable(player)) return false;
+    const auto transactionState=legacyInventoryTransactionState(player);
+    if(transactionState==LegacyTransactionState::Busy) {
+        return SwapResult::RetryLater;
+    }
+    if(transactionState!=LegacyTransactionState::Available) {
+        return SwapResult::Rejected;
+    }
 
     const int selectedSlot=selectedHotbarSlot(player);
-    if(selectedSlot<0) return false;
+    if(selectedSlot<0) return SwapResult::Rejected;
 
     // Exact 1.26.51.1 RE target set. Do not open a predictive request unless
     // every helper needed to close it safely is available. Runtime remains
@@ -880,7 +898,7 @@ bool SwapEngine::swap(void* player,const void* selected) noexcept {
             gTryBeginClientLegacyTransaction?1:0,
             gRecordLegacySlot?1:0
         );
-        return false;
+        return SwapResult::Rejected;
     }
 
     // CRITICAL ABI RULE:
@@ -896,7 +914,7 @@ bool SwapEngine::swap(void* player,const void* selected) noexcept {
             ANDROID_LOG_ERROR,kLogTag,
             "[SwapEngine][legacy-screen-slots] native request/screen invalid; swap rejected before mutation"
         );
-        return false;
+        return SwapResult::Rejected;
     }
 
     void* screen=screenSlots.screen();
@@ -924,12 +942,12 @@ bool SwapEngine::swap(void* player,const void* selected) noexcept {
             ANDROID_LOG_ERROR,kLogTag,
             "[SwapEngine][legacy-screen-slots] paired registration failed; swap rejected before mutation"
         );
-        return false;
+        return SwapResult::Rejected;
     }
 
     if(offEmpty) {
         Snapshot main(mItemStackCopyCtor,mItemStackDtor,selected);
-        if(!main.get() || !mStackIsNull(mEmptyItem)) return false;
+        if(!main.get() || !mStackIsNull(mEmptyItem)) return SwapResult::Rejected;
 
         LegacyInventoryAction offAction(
             mItemStackCopyCtor,
@@ -938,7 +956,7 @@ bool SwapEngine::swap(void* player,const void* selected) noexcept {
             off,
             main.get()
         );
-        if(!offAction.valid()) return false;
+        if(!offAction.valid()) return SwapResult::Rejected;
 
         // Selected container +0x68 is transaction-aware on LocalPlayer:
         // A -> EMPTY records legacy container 0 and performs the local clear.
@@ -951,12 +969,12 @@ bool SwapEngine::swap(void* player,const void* selected) noexcept {
         gSetOffhandRaw(player,main.get());
 
         const bool slotsClosed=screenSlots.finish();
-        return slotsClosed;
+        return slotsClosed ? SwapResult::Success : SwapResult::Rejected;
     }
 
     if(mainEmpty) {
         Snapshot offSnap(mItemStackCopyCtor,mItemStackDtor,off);
-        if(!offSnap.get() || !mStackIsNull(mEmptyItem)) return false;
+        if(!offSnap.get() || !mStackIsNull(mEmptyItem)) return SwapResult::Rejected;
 
         LegacyInventoryAction offAction(
             mItemStackCopyCtor,
@@ -965,7 +983,7 @@ bool SwapEngine::swap(void* player,const void* selected) noexcept {
             off,
             mEmptyItem
         );
-        if(!offAction.valid()) return false;
+        if(!offAction.valid()) return SwapResult::Rejected;
 
         // First half: B -> EMPTY in container 119, then the exact low-level
         // OFF writer.  The transaction remains pending until selected storage
@@ -977,7 +995,7 @@ bool SwapEngine::swap(void* player,const void* selected) noexcept {
             mEmptyItem,
             offSnap.get()
         );
-        if(!hotbarFillAction.valid()) return false;
+        if(!hotbarFillAction.valid()) return SwapResult::Rejected;
 
         offAction.submit(player);
         gSetOffhandRaw(player,mEmptyItem);
@@ -990,13 +1008,13 @@ bool SwapEngine::swap(void* player,const void* selected) noexcept {
         mSetSelectedItem(player,offSnap.get());
 
         const bool slotsClosed=screenSlots.finish();
-        return slotsClosed;
+        return slotsClosed ? SwapResult::Success : SwapResult::Rejected;
     }
 
     Snapshot main(mItemStackCopyCtor,mItemStackDtor,selected);
     Snapshot offSnap(mItemStackCopyCtor,mItemStackDtor,off);
     if(!main.get() || !offSnap.get() || !mStackIsNull(mEmptyItem)) {
-        return false;
+        return SwapResult::Rejected;
     }
 
     LegacyInventoryAction offAction(
@@ -1006,7 +1024,7 @@ bool SwapEngine::swap(void* player,const void* selected) noexcept {
         off,
         main.get()
     );
-    if(!offAction.valid()) return false;
+    if(!offAction.valid()) return SwapResult::Rejected;
 
     LegacyInventoryAction hotbarFillAction(
         mItemStackCopyCtor,
@@ -1015,7 +1033,7 @@ bool SwapEngine::swap(void* player,const void* selected) noexcept {
         mEmptyItem,
         offSnap.get()
     );
-    if(!hotbarFillAction.valid()) return false;
+    if(!hotbarFillAction.valid()) return SwapResult::Rejected;
 
     // Preserve the accepted 44a local mutation order:
     //   MAIN A->EMPTY, OFF B->A, MAIN EMPTY->B.
@@ -1031,7 +1049,7 @@ bool SwapEngine::swap(void* player,const void* selected) noexcept {
     mSetSelectedItem(player,offSnap.get());
 
     const bool slotsClosed=screenSlots.finish();
-    return slotsClosed;
+    return slotsClosed ? SwapResult::Success : SwapResult::Rejected;
 }
 
 } // namespace levioffhand::swap

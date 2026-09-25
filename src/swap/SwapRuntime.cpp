@@ -176,7 +176,15 @@ bool SwapRuntime::drain(void* player,const void* selected) noexcept {
     ScopedProgress guard(mSwapInProgress);
     mLastSwapStartNs.store(nowNs,std::memory_order_release);
 
-    return SwapEngine::instance().swap(player,selected);
+    const auto res=SwapEngine::instance().swap(player,selected);
+    if(res==SwapResult::RetryLater) {
+        // The previous native inventory/request owner is still settling.
+        // Preserve exactly one coalesced user intent; do not retry rejected
+        // ABI/state failures because they may be non-transient.
+        mSwapRequested.store(true,std::memory_order_release);
+        return false;
+    }
+    return res==SwapResult::Success;
 }
 
 bool SwapRuntime::install(pl::mod::ModContext& context) noexcept {

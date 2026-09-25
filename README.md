@@ -27,6 +27,12 @@ Protected swap invariants:
 Historical branch findings retained before branch cleanup are summarized in [docs/BRANCH_ARCHIVE.md](docs/BRANCH_ARCHIVE.md).
 
 
+### Transient F-request retry
+
+The first post-#721 bug fix keeps the accepted swap storage/transaction sequence unchanged. `SwapEngine` now distinguishes `Success`, temporary `RetryLater`, and non-transient `Rejected` outcomes before mutation. A still-pending legacy transaction or active modern request returns `RetryLater`; `SwapRuntime` keeps one coalesced F intent queued for a later preFrame instead of silently consuming it. ABI/state failures and any failure after mutation are not retried.
+
+
+
 Native Levi Launcher Android mod for Minecraft Bedrock **1.26.45.1** and **1.26.51.1**.
 
 ## OFFHAND consumption and release candidate

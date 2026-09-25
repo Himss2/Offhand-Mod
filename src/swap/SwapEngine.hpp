@@ -6,6 +6,12 @@
 
 namespace levioffhand::swap {
 
+enum class SwapResult : std::uint8_t {
+    Success,
+    RetryLater,
+    Rejected,
+};
+
 class SwapEngine final {
 public:
     static SwapEngine& instance() noexcept;
@@ -21,7 +27,7 @@ public:
     [[nodiscard]] const void* selectedStack(const void* player) const noexcept;
 
     // Native storage exchange only. Caller must run on the swap preFrame pump.
-    [[nodiscard]] bool swap(void* player, const void* selectedStack) noexcept;
+    [[nodiscard]] SwapResult swap(void* player, const void* selectedStack) noexcept;
 
     // Native ABI aliases are public only so the engine's private snapshot
     // helper can use the exact constructor/destructor signatures. They do not
