@@ -557,7 +557,7 @@ enum class LegacyTransactionState : std::uint8_t {
     Invalid,
 };
 
-[[nodiscard]] LegacyTransactionState legacyInventoryTransactionState(
+[[nodiscard]] LegacyTransactionState legacyInventoryTransactionAvailable(
     void* player
 ) noexcept {
     if(!player) return LegacyTransactionState::Invalid;
@@ -873,7 +873,7 @@ SwapResult SwapEngine::swap(void* player,const void* selected) noexcept {
     // ItemStackRequest.  The native InventoryTransactionManager can accept
     // legacy InventoryAction records while modern item-stack networking is
     // enabled, but only while no modern request owns the manager.
-    const auto transactionState=legacyInventoryTransactionState(player);
+    const auto transactionState=legacyInventoryTransactionAvailable(player);
     if(transactionState==LegacyTransactionState::Busy) {
         return SwapResult::RetryLater;
     }
