@@ -319,7 +319,7 @@ if "kNativeFunctionDestroyHeapVtableOffset" in finish_body:
 # legacy scope because failure occurs before any swap mutation.
 screen_scope_start = engine.index("class LegacyScreenSlotScope")
 screen_scope_end = engine.index(
-    "[[nodiscard]] bool legacyInventoryTransactionAvailable",
+    "[[nodiscard]] LegacyTransactionState legacyInventoryTransactionAvailable",
     screen_scope_start
 )
 screen_scope_body = engine[screen_scope_start:screen_scope_end]
