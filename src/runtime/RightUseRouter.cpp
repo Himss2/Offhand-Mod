@@ -247,6 +247,13 @@ thread_local const void* gScopedPlayer = nullptr;
 thread_local const void* gSessionPlayer = nullptr;
 thread_local void* gSessionGameMode = nullptr;
 std::atomic_bool gLoggedUseTickBridge{false};
+std::atomic_bool gLoggedUseTickEntry{false};
+std::atomic_bool gLoggedOffhandRelease{false};
+std::atomic_bool gLoggedOffhandStop{false};
+
+using StopUsingItemFn = void (*)(void*);
+std::unique_ptr<pl::memory::HookHandle> gStopUsingItemDiagHook;
+void* gStopUsingItemDiagOriginal = nullptr;
 
 class ScopedBool final {
 public:
@@ -674,6 +681,41 @@ void clearSession() noexcept {
 }
 
 
+void stopUsingItemDiagDetour(void* player) noexcept {
+    const auto original = reinterpret_cast<StopUsingItemFn>(
+        gStopUsingItemDiagOriginal
+    );
+    if (original == nullptr) {
+        return;
+    }
+
+    if (player != nullptr && gSessionPlayer == player) {
+        bool expected = false;
+        if (gLoggedOffhandStop.compare_exchange_strong(
+                expected, true, std::memory_order_relaxed
+            )) {
+            const auto caller = reinterpret_cast<std::uintptr_t>(
+                __builtin_return_address(0)
+            );
+            const auto base = minecraftModuleBase();
+            const auto callerRva =
+                base != 0 && caller >= base ? caller - base : 0;
+            const bool usingNow =
+                gPlayerIsUsingItem != nullptr &&
+                gPlayerIsUsingItem(player);
+            __android_log_print(
+                ANDROID_LOG_INFO,
+                kLogTag,
+                "[UseLifecycleDiag] stopUsingItem session=1 callerRva=0x%llX usingBefore=%d",
+                static_cast<unsigned long long>(callerRva),
+                usingNow ? 1 : 0
+            );
+        }
+    }
+
+    original(player);
+}
+
 [[nodiscard]] __attribute__((noinline)) const void* useTickSelectedStackBridge(
     const void* player
 ) noexcept {
@@ -693,14 +735,47 @@ void clearSession() noexcept {
     }
 
     const void* offStack = gGetOffhandSlot(player);
-    if (offStack == nullptr || stackIsNull(offStack)) {
+    const void* activeStack =
+        gItemInUseStack != nullptr ? gItemInUseStack(player) : nullptr;
+    const bool nativeUsing =
+        gPlayerIsUsingItem != nullptr && gPlayerIsUsingItem(player);
+    const bool offNull = offStack == nullptr || stackIsNull(offStack);
+    const bool activeNull =
+        activeStack == nullptr || stackIsNull(activeStack);
+    const bool offMatches =
+        !offNull && !activeNull && stacksMatch(activeStack, offStack);
+    const bool mainNull =
+        mainStack == nullptr || stackIsNull(mainStack);
+    const bool mainMatches =
+        !mainNull && !activeNull && stacksMatch(activeStack, mainStack);
+
+    bool entryExpected = false;
+    if (gLoggedUseTickEntry.compare_exchange_strong(
+            entryExpected, true, std::memory_order_relaxed
+        )) {
+        __android_log_print(
+            ANDROID_LOG_INFO,
+            kLogTag,
+            "[UseLifecycleDiag] tickBridge entry session=%d using=%d activeNull=%d offNull=%d offMatch=%d mainMatch=%d activeCount=%u offCount=%u",
+            gSessionPlayer == player ? 1 : 0,
+            nativeUsing ? 1 : 0,
+            activeNull ? 1 : 0,
+            offNull ? 1 : 0,
+            offMatches ? 1 : 0,
+            mainMatches ? 1 : 0,
+            static_cast<unsigned>(stackCount(activeStack)),
+            static_cast<unsigned>(stackCount(offStack))
+        );
+    }
+
+    if (offNull) {
         if (gSessionPlayer == player) {
             clearSession();
         }
         return mainStack;
     }
 
-    const bool offActive = activeUseMatches(player, offStack);
+    const bool offActive = nativeUsing && offMatches;
     if (!offActive) {
         if (gSessionPlayer == player) {
             clearSession();
@@ -758,11 +833,25 @@ void clearSession() noexcept {
         sizeof(helper)
     );
 
-    return pl::memory::writeBytes(
-        target,
-        std::span<const std::uint8_t>(patch.data(), patch.size()),
-        kUseTickPatchName
+    if (!pl::memory::writeBytes(
+            target,
+            std::span<const std::uint8_t>(patch.data(), patch.size()),
+            kUseTickPatchName
+        )) {
+        return false;
+    }
+
+    const bool installed =
+        std::memcmp(target ? reinterpret_cast<const void*>(target) : nullptr,
+                    patch.data(), patch.size()) == 0;
+    __android_log_print(
+        installed ? ANDROID_LOG_INFO : ANDROID_LOG_ERROR,
+        kLogTag,
+        "[UseLifecycleDiag] use-tick inline patch readback=%d targetRva=0x%llX",
+        installed ? 1 : 0,
+        static_cast<unsigned long long>(kUseTickSelectedBlockRva)
     );
+    return installed;
 }
 
 void revertUseTickBridgePatch() noexcept {
@@ -863,6 +952,25 @@ bool RightUseRouter::install(pl::mod::ModContext& context) noexcept {
     const auto stopTarget = resolveExactTarget(kStopUsingItemRva, kStopUsingItemFingerprint);
     if (stopTarget == 0) {
         context.logger().warn("[RightUseRouter] completion cancellation guard failed");
+        return false;
+    }
+
+    gStopUsingItemDiagOriginal = nullptr;
+    gStopUsingItemDiagHook = std::make_unique<pl::memory::HookHandle>(
+        reinterpret_cast<void*>(stopTarget),
+        reinterpret_cast<void*>(&stopUsingItemDiagDetour),
+        &gStopUsingItemDiagOriginal,
+        pl::memory::HookPriority::Normal
+    );
+    if (
+        !gStopUsingItemDiagHook ||
+        !gStopUsingItemDiagHook->installed() ||
+        gStopUsingItemDiagOriginal == nullptr
+    ) {
+        context.logger().warn(
+            "[RightUseRouter] diagnostic stopUsingItem hook failed"
+        );
+        uninstall(context);
         return false;
     }
     const auto completeTarget = resolveHookTarget("Player::completeUsingItem", kCompleteUsingItemRva, kCompleteUsingItemFingerprint);
@@ -1026,6 +1134,12 @@ void RightUseRouter::uninstall(pl::mod::ModContext& context) noexcept {
     }
     gUseTickSelectedOriginal = nullptr;
 
+    if (gStopUsingItemDiagHook) {
+        gStopUsingItemDiagHook->reset();
+        gStopUsingItemDiagHook.reset();
+    }
+    gStopUsingItemDiagOriginal = nullptr;
+
     if (mHandTransactionHook) { mHandTransactionHook->reset(); mHandTransactionHook.reset(); }
     mHandTransactionOriginal = nullptr;
     gReleaseCallback = 0;
@@ -1161,6 +1275,10 @@ bool RightUseRouter::baseUseItemDetour(
         if (activeUseMatches(player, gGetOffhandSlot(player))) {
             gSessionPlayer = player;
             gSessionGameMode = gameMode;
+            gLoggedUseTickEntry.store(false, std::memory_order_relaxed);
+            gLoggedOffhandRelease.store(false, std::memory_order_relaxed);
+            gLoggedOffhandStop.store(false, std::memory_order_relaxed);
+            gLoggedUseTickBridge.store(false, std::memory_order_relaxed);
             expected = false;
             if (instance->mLoggedLongUse.compare_exchange_strong(
                     expected, true, std::memory_order_relaxed
@@ -1572,6 +1690,21 @@ void RightUseRouter::releaseUsingItemDetour(void* gameMode) noexcept {
     const void* main = selected ? selected(player) : nullptr;
     const bool ownsSession = gSessionPlayer == player && gSessionGameMode == gameMode;
     const bool uniqueNativeOff = activeUseMatches(player, off) && !activeUseMatches(player, main);
+
+    if (ownsSession) {
+        bool expected = false;
+        if (gLoggedOffhandRelease.compare_exchange_strong(
+                expected, true, std::memory_order_relaxed
+            )) {
+            __android_log_print(
+                ANDROID_LOG_INFO,
+                kLogTag,
+                "[UseLifecycleDiag] releaseUsingItem called while OFF session active offMatch=%d mainMatch=%d",
+                activeUseMatches(player, off) ? 1 : 0,
+                activeUseMatches(player, main) ? 1 : 0
+            );
+        }
+    }
     if (!ownsSession && !uniqueNativeOff) {
         ScopedActionHand mainScope(ActionHand::MainHand, ActionKind::UseAir);
         original(gameMode);

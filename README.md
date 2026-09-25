@@ -148,6 +148,8 @@ All vanilla checks after `0xF9E71B8` remain untouched, including item validity, 
 The patch is installed once and does not run during ordinary movement unless Minecraft has already entered its active-use tick. No global Inventory getter hook, custom eating timer, physical item swap or swap-history dependency remains.
 
 
+Diagnostic follow-up after build #752: LocalPlayer RTTI/vtable confirms its active tick override at `0xAAC7D68` calls Player base tick `0xF9E6358` at `0xAAC7E68`; therefore the base tick is not dead code. The next build logs patch readback, first helper-entry state, OFF-session release, and `stopUsingItem` caller. These diagnostics are low-frequency and do not hook Inventory/getItem or any movement hot path.
+
 ### Banner FPP — build #470 logic ported to 1.26.51.1
 
 Banner now uses the **rendering logic from successful build #470** rather than the later generic safe-item approximation. The old build temporarily exposed BannerItem's cached standing-banner `Block*` through the offhand ItemStack so Minecraft entered the same block-transform path that produced the accepted custom FPP position/orientation.

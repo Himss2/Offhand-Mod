@@ -286,6 +286,14 @@ The rejected global Inventory getter HookHandle is removed. Patch removal is pai
 Required device checks: FPS/movement first (must return to baseline), then manual/F-swapped food with MAIN empty, hold-to-finish, release early, stack decrement, last item, container replacement and MAIN preservation.
 
 
+### Build #752 RE follow-up
+
+RTTI/vtable recovery proves Player's base tick is virtual slot +0xC8: Player vtable address point `0x130343D0` stores `0xF9E6358` at `0x13034498`; LocalPlayer typeinfo `0x12D09C48` and vtable address point `0x12D08C38` override that slot with `0xAAC7D68`. LocalPlayer's override directly calls `0xF9E6358` at `0xAAC7E68`. No LocalPlayer direct `stopUsingItem` call occurs before that base call.
+
+The active-use gate before the injected block requires active ItemStack validity/count/item holder. `Player::isUsingItem @ 0xF9E8D64` itself is just `!ItemStack::isNull(Player+0x6D8)`; `stopUsingItem @ 0xF9E86C0` later clears that same stack at `0xF9E89AC`. Therefore a missing OFF bridge can now be reduced to: active use was stopped before the next tick, or the live OFF stack no longer matches the active-use copy.
+
+The diagnostic build verifies patch memory readback and logs one helper entry, release call, and stop caller only while an explicit OFF session exists. It intentionally adds no global inventory or movement hook.
+
 ## Documentation rule
 
 Any change that touches:

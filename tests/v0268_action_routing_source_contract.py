@@ -106,6 +106,10 @@ def main() -> int:
         "0xE0, 0x03, 0x13, 0xAA",
         "0x3C, 0x00, 0x00, 0x14",
         "levi_offhand.use_tick_selected_stack_bridge",
+        "[UseLifecycleDiag] use-tick inline patch readback=%d targetRva=0x%llX",
+        "[UseLifecycleDiag] tickBridge entry session=%d using=%d activeNull=%d offNull=%d offMatch=%d mainMatch=%d activeCount=%u offCount=%u",
+        "[UseLifecycleDiag] releaseUsingItem called while OFF session active offMatch=%d mainMatch=%d",
+        "[UseLifecycleDiag] stopUsingItem session=1 callerRva=0x%llX usingBefore=%d",
         "kItemStackStorageSize = 0x98",
         "kItemStackCountOffset = 0x22",
         "kItemMaxStackSizeOffset = 0xA8",
@@ -175,6 +179,8 @@ def main() -> int:
         "std::span<const std::uint8_t>(patch.data(), patch.size())",
         "revertUseTickBridgePatch()",
         "mUseTickPatchApplied = true",
+        "gStopUsingItemDiagHook",
+        "stopUsingItemDiagDetour",
     )
     if (
         'resolveHookTarget(\n        "Inventory::getItem"' in router
