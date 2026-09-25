@@ -589,7 +589,7 @@ for body,name in ((main_body_perf,"OFF->MAIN"),(occ_body_perf,"OCCUPIED")):
         raise AssertionError(
             f"{name} must not reject an otherwise valid swap because settlement is async"
         )
-    if "returnslotsClosed;" not in body:
+    if "returnslotsClosed?SwapResult::Success:SwapResult::Rejected;" not in body:
         raise AssertionError(f"{name} must accept cleanly closed predictive scope")
 
 
