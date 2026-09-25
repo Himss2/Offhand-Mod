@@ -66,7 +66,6 @@ constexpr std::size_t kNativeLegacyScopeEngagedOffset=0x30;
 constexpr std::size_t kNativeLegacyScopeSize=0x38;
 constexpr std::size_t kNativeFunctionInvokeVtableOffset=0x30;
 constexpr std::size_t kNativeFunctionDestroyInlineVtableOffset=0x20;
-constexpr std::size_t kNativeFunctionDestroyHeapVtableOffset=0x28;
 constexpr std::uint8_t kHotbarLegacyContainerId=0x00;
 constexpr std::uint8_t kOffhandLegacyContainerId=0x77;
 
@@ -333,17 +332,24 @@ GetTopScreenFn gGetTopScreen=nullptr;
     const void* vtable=read<const void*>(callable,0,nullptr);
     if(!mapped(reinterpret_cast<std::uintptr_t>(vtable),0)) return false;
 
+    // Exact 1.26.51.1 RE: every return path of 0xF88A434/0xF88D960
+    // stores the final-action's own address at scope+0x20. This wrapper never
+    // returns a heap-owned callable. A mismatch means the aggregate was
+    // relocated/corrupted; fail closed instead of heap-destroying stack memory.
+    if(callable!=static_cast<void*>(scope.storage.data())) {
+        __android_log_print(
+            ANDROID_LOG_ERROR,kLogTag,
+            "[SwapEngine][legacy-screen-slots] native scope self-pointer mismatch scope=%p callable=%p",
+            scope.storage.data(),callable
+        );
+        return false;
+    }
+
     const auto invoke=read<NativeScopeCallableFn>(
         vtable,kNativeFunctionInvokeVtableOffset,nullptr
     );
-    const bool inlineCallable=
-        callable==static_cast<void*>(scope.storage.data());
     const auto destroy=read<NativeScopeCallableFn>(
-        vtable,
-        inlineCallable
-            ? kNativeFunctionDestroyInlineVtableOffset
-            : kNativeFunctionDestroyHeapVtableOffset,
-        nullptr
+        vtable,kNativeFunctionDestroyInlineVtableOffset,nullptr
     );
     if(
         !invoke ||
@@ -354,9 +360,9 @@ GetTopScreenFn gGetTopScreen=nullptr;
         return false;
     }
 
-    // Match the libc++ std::function lifecycle recovered from native callers:
-    // run the scope callback first (ends request / clears manager+0x50), then
-    // destroy the callable through the correct inline-or-heap vtable slot.
+    // Native caller pattern:
+    //   vcall +0x30 => final_action callback (clears manager+0x50)
+    //   vcall +0x20 => inline std::function destroy (no heap delete)
     invoke(callable);
     destroy(callable);
 
