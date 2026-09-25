@@ -1046,7 +1046,7 @@ bool SwapEngine::swap(void* player,const void* selected) noexcept {
     LegacyInventoryAction offAction(
         mItemStackCopyCtor,
         kOffhandLegacyContainerId,
-        kOffhandLocalSlot,
+        kOffhandLegacySlot,
         off,
         main.get()
     );
