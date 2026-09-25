@@ -377,30 +377,25 @@ GetTopScreenFn gGetTopScreen=nullptr;
 
 class LegacyScreenSlotScope final {
 public:
-    explicit LegacyScreenSlotScope(void* player) noexcept {
-        if(!player || !gTryBeginClientLegacyTransaction ||
-           !gRecordLegacySlot || !gGetTopScreen) {
+    LegacyScreenSlotScope(
+        NativeClientLegacyScope& scope,
+        void* player
+    ) noexcept : mScope(scope) {
+        if(!player || !gRecordLegacySlot || !gGetTopScreen) {
+            (void)finishNativeClientLegacyScope(mScope);
+            mFinished=true;
             return;
         }
 
         mManager=read<void*>(
             player,kPlayerItemStackNetManagerOffset,nullptr
         );
-        if(!mManager) return;
-
-        const int beforeId=read<int>(
-            mManager,kItemStackNetManagerLegacyRequestIdOffset,0
-        );
-        if(beforeId!=0) {
-            __android_log_print(
-                ANDROID_LOG_WARN,kLogTag,
-                "[SwapEngine][legacy-screen-slots] busy before open req=%d",
-                beforeId
-            );
+        if(!mManager) {
+            (void)finishNativeClientLegacyScope(mScope);
+            mFinished=true;
             return;
         }
 
-        mScope=gTryBeginClientLegacyTransaction(player);
         mRequestId=read<int>(
             mManager,kItemStackNetManagerLegacyRequestIdOffset,0
         );
@@ -413,7 +408,8 @@ public:
         );
         if(engaged==0 || !callable ||
            mRequestId>-2 || (mRequestId&1)!=0) {
-            finishNativeClientLegacyScope(mScope);
+            (void)finishNativeClientLegacyScope(mScope);
+            mFinished=true;
             mRequestId=0;
             return;
         }
@@ -517,7 +513,7 @@ public:
     }
 
 private:
-    NativeClientLegacyScope mScope{};
+    NativeClientLegacyScope& mScope;
     void* mManager{nullptr};
     void* mScreen{nullptr};
     int mRequestId{0};
@@ -859,47 +855,67 @@ bool SwapEngine::swap(void* player,const void* selected) noexcept {
     const int selectedSlot=selectedHotbarSlot(player);
     if(selectedSlot<0) return false;
 
-    // Optional predictive bookkeeping. Failure here must not regress the
-    // working #662 F runtime: when any helper/screen is unavailable we execute
-    // the exact baseline mutation and log which optional capability was absent.
-    LegacyScreenSlotScope screenSlots(player);
-    bool screenBookkeeping=false;
-    if(screenSlots.valid()) {
-        void* screen=screenSlots.screen();
-
-        // Exact selected-container RE:
-        // - MAIN->EMPTY: setPlayerContainer rejects EMPTY before recording the
-        //   slot, so we must record the selected HOTBAR slot ourselves.
-        // - MAIN EMPTY->NONEMPTY: selected path 0xF9DA2DC succeeds through
-        //   setPlayerContainer @ 0xF88A664 and records HOTBAR itself.
-        // OFF always uses the proven raw #662 writer, so OFFHAND must always
-        // be recorded explicitly.
-        const bool mainRecorded=
-            mainEmpty ||
-            screenSlots.recordChangedSlot(
-                screen,kInventoryContainerType,selectedSlot
-            );
-        const bool offRecorded=
-            screenSlots.recordChangedSlot(
-                screen,kHandContainerType,kOffhandLocalSlot
-            );
-        screenBookkeeping=mainRecorded && offRecorded;
-
-        if(!screenBookkeeping) {
-            (void)screenSlots.finish();
-            __android_log_print(
-                ANDROID_LOG_WARN,kLogTag,
-                "[SwapEngine][legacy-screen-slots] registration failed; using #662 baseline"
-            );
-        }
-    } else {
+    // Exact 1.26.51.1 RE target set. Do not open a predictive request unless
+    // every helper needed to close it safely is available. Runtime remains
+    // installed, but this F request is rejected before mutation if validation
+    // ever stops matching a future binary.
+    if(
+        !gTryBeginClientLegacyTransaction ||
+        !gRecordLegacySlot ||
+        !gGetTopScreen
+    ) {
         __android_log_print(
-            ANDROID_LOG_WARN,kLogTag,
-            "[SwapEngine][legacy-screen-slots] unavailable; using #662 baseline tryPlayer=%d record=%d topScreen=%d",
+            ANDROID_LOG_ERROR,kLogTag,
+            "[SwapEngine][legacy-screen-slots] exact RE helper unavailable; swap rejected before mutation tryPlayer=%d record=%d topScreen=%d",
             gTryBeginClientLegacyTransaction?1:0,
             gRecordLegacySlot?1:0,
             gGetTopScreen?1:0
         );
+        return false;
+    }
+
+    // CRITICAL ABI RULE:
+    // 0xF88A434 / 0xF88D960 writes a self-pointer at scope+0x20 when the
+    // std::function callable is stored inline. The aggregate must therefore be
+    // constructed directly in its final address and must never be copied or
+    // assigned afterward.
+    NativeClientLegacyScope nativeScope=
+        gTryBeginClientLegacyTransaction(player);
+    LegacyScreenSlotScope screenSlots(nativeScope,player);
+    if(!screenSlots.valid()) {
+        __android_log_print(
+            ANDROID_LOG_ERROR,kLogTag,
+            "[SwapEngine][legacy-screen-slots] native request/screen invalid; swap rejected before mutation"
+        );
+        return false;
+    }
+
+    void* screen=screenSlots.screen();
+
+    // Exact selected-container RE:
+    // - MAIN->EMPTY: setPlayerContainer rejects EMPTY before recording the
+    //   slot, so we must record the selected HOTBAR slot ourselves.
+    // - MAIN EMPTY->NONEMPTY: selected path 0xF9DA2DC succeeds through
+    //   setPlayerContainer @ 0xF88A664 and records HOTBAR itself.
+    // OFF always uses the proven raw #662 writer, so OFFHAND is recorded here.
+    const bool mainRecorded=
+        mainEmpty ||
+        screenSlots.recordChangedSlot(
+            screen,kInventoryContainerType,selectedSlot
+        );
+    const bool offRecorded=
+        screenSlots.recordChangedSlot(
+            screen,kHandContainerType,kOffhandLocalSlot
+        );
+    const bool screenBookkeeping=mainRecorded && offRecorded;
+
+    if(!screenBookkeeping) {
+        (void)screenSlots.finish();
+        __android_log_print(
+            ANDROID_LOG_ERROR,kLogTag,
+            "[SwapEngine][legacy-screen-slots] paired registration failed; swap rejected before mutation"
+        );
+        return false;
     }
 
     if(offEmpty) {
@@ -926,8 +942,7 @@ bool SwapEngine::swap(void* player,const void* selected) noexcept {
         gSetOffhandRaw(player,main.get());
 
         const bool settled=legacyTransactionSettled(player);
-        const bool slotsClosed=
-            !screenBookkeeping || screenSlots.finish();
+        const bool slotsClosed=screenSlots.finish();
 
         __android_log_print(
             settled && slotsClosed ? ANDROID_LOG_INFO : ANDROID_LOG_ERROR,
@@ -974,8 +989,7 @@ bool SwapEngine::swap(void* player,const void* selected) noexcept {
         mSetSelectedItem(player,offSnap.get());
 
         const bool settled=legacyTransactionSettled(player);
-        const bool slotsClosed=
-            !screenBookkeeping || screenSlots.finish();
+        const bool slotsClosed=screenSlots.finish();
 
         __android_log_print(
             settled && slotsClosed ? ANDROID_LOG_INFO : ANDROID_LOG_ERROR,
@@ -1024,8 +1038,7 @@ bool SwapEngine::swap(void* player,const void* selected) noexcept {
     mSetSelectedItem(player,offSnap.get());
 
     const bool settled=legacyTransactionSettled(player);
-    const bool slotsClosed=
-        !screenBookkeeping || screenSlots.finish();
+    const bool slotsClosed=screenSlots.finish();
     __android_log_print(
         settled && slotsClosed?ANDROID_LOG_INFO:ANDROID_LOG_ERROR,kLogTag,
         "[SwapEngine][re-balanced] OCCUPIED settled=%d slotsClosed=%d explicitHotbarFill=1",
