@@ -154,7 +154,7 @@ def main() -> int:
     base_use = function_body(router, "RightUseRouter::baseUseItemDetour(")
     require(
         base_use,
-        "stacksMatch(itemStack, mainStack)",
+        "useInputRepresentsSelected(itemStack, mainStack)",
         "if (!stackClaimsMainhandRightClick(mainStack))",
         "ScopedActionHand offScope(ActionHand::OffHand, ActionKind::UseAir)",
         "original(gameMode, offSnapshot.get(), kOffHand)",
