@@ -268,7 +268,7 @@ compact_swap = swap_body.replace(" ", "").replace("\n", "")
 
 for required in (
     "recordChangedSlot(screen,kInventoryContainerType,selectedSlot)",
-    "recordChangedSlot(screen,kHandContainerType,kOffhandLocalSlot)",
+    "recordChangedSlot(screen,kHandContainerType,kHandOffhandSlot)",
 ):
     if required not in compact_swap:
         raise AssertionError(f"paired legacy slot bookkeeping missing {required}")
