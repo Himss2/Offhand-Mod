@@ -322,3 +322,12 @@ The candidate opens the exact Player-aware legacy request wrapper at `0xF88A434`
 Native scope cleanup follows the recovered libc++ `std::function` storage mode: inline callable destruction uses vtable `+0x20`, heap callable destruction uses `+0x28`. Callable vtables are mapping-validated before any method dereference.
 
 This remains a device-test candidate until MAIN→OFF, OFF→MAIN and occupied A/B swaps prove: no loss/duplication/rollback, both resulting slots detach normally without right-click healing, and existing OFF block placement/right-use behavior remains unchanged.
+
+
+#### Exact 1.26.51.1 RE correction: current screen resolver
+
+The uploaded `libminecraftpe.so` was verified as ARM64 NDK r28c with Build ID `712509dc14ccc233e91f267937dfb46ecdcc4b68`. Its dynamic symbol table is stripped, so the previous attempt to resolve `_ZN23ItemStackNetManagerBase13_getTopScreenEv` by name cannot work on this binary.
+
+Static binary analysis establishes `0xF88AA24` as the current-screen resolver used by the legacy predictive request lifecycle: `ItemStackNetManagerClient::_tryBeginClientLegacyTransactionRequest @ 0xF88D960` directly calls `0xF88AA24` at `0xF88D97C` before writing the generated negative-even request id to `manager+0x50`. The mod therefore resolves `0xF88AA24` only through its exact 32-byte fingerprint.
+
+The same binary also confirms `0xF88CE8C` maps legacy `ContainerType::Inventory (-1)` to player container enum 29 and `ContainerType::Hand (19)` to Offhand enum 34 before recording the requested slot. No gameplay storage writer or right-use route is changed by this correction.

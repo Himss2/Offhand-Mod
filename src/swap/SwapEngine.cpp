@@ -9,7 +9,6 @@
 #include <elf.h>
 #include <link.h>
 
-#include <pl/memory/Signature.hpp>
 
 namespace levioffhand::swap {
 namespace {
@@ -42,10 +41,11 @@ constexpr std::uintptr_t kTryBeginClientLegacyTransactionRva=0xF88A434;
 // The second argument is ItemStackNetManagerScreen&, NOT Player*.
 constexpr std::uintptr_t kRecordLegacySlotRva=0xF88CE8C;
 
-// Resolve the manager's real active screen through the native method instead
-// of decoding libc++ deque internals or casting ClientScreenData.
-constexpr char kGetTopScreenSymbol[]=
-    "_ZN23ItemStackNetManagerBase13_getTopScreenEv";
+// Exact 1.26.51.1 current-screen resolver recovered from the uploaded
+// libminecraftpe.so (Build ID 712509dc14ccc233e91f267937dfb46ecdcc4b68).
+// ItemStackNetManagerClient::_tryBeginClientLegacyTransactionRequest @
+// 0xF88D960 directly BLs this target at 0xF88D97C before writing manager+0x50.
+constexpr std::uintptr_t kGetTopScreenRva=0xF88AA24;
 
 constexpr std::uintptr_t kEmptyItemRva=0x134C6780;
 
@@ -163,6 +163,12 @@ constexpr std::array<std::uint8_t,32> kRecordLegacySlotFingerprint{
     0xF4,0x4F,0x02,0xA9,0xFD,0x43,0x00,0x91,
     0x53,0xD0,0x3B,0xD5,0x49,0x1C,0x00,0x12,
     0xE8,0x03,0x01,0xAA,0x6A,0x16,0x40,0xF9,
+};
+constexpr std::array<std::uint8_t,32> kGetTopScreenFingerprint{
+    0xFF,0x43,0x01,0xD1,0xFD,0x7B,0x03,0xA9,
+    0xF4,0x4F,0x04,0xA9,0xFD,0xC3,0x00,0x91,
+    0x54,0xD0,0x3B,0xD5,0xF3,0x03,0x00,0xAA,
+    0xE0,0x23,0x00,0x91,0x88,0x16,0x40,0xF9,
 };
 
 struct ModuleState {
@@ -755,11 +761,10 @@ bool SwapEngine::install(pl::mod::ModContext& context) noexcept {
     const auto recordLegacySlot=resolve(
         kRecordLegacySlotRva,kRecordLegacySlotFingerprint
     );
-    const auto getTopScreen=pl::memory::resolveSignature(
-        kGetTopScreenSymbol,kMinecraftLibrary
+    const auto getTopScreen=resolve(
+        kGetTopScreenRva,kGetTopScreenFingerprint
     );
-    const bool getTopScreenValid=
-        getTopScreen!=0 && mapped(getTopScreen,PF_X);
+    const bool getTopScreenValid=getTopScreen!=0;
 
     // Only the proven #662 targets decide whether the F runtime is usable.
     // Screen-aware predictive bookkeeping is optional until its runtime
