@@ -842,8 +842,11 @@ void stopUsingItemDiagDetour(void* player) noexcept {
     }
 
     const bool installed =
-        std::memcmp(target ? reinterpret_cast<const void*>(target) : nullptr,
-                    patch.data(), patch.size()) == 0;
+        std::memcmp(
+            reinterpret_cast<const void*>(target),
+            patch.data(),
+            patch.size()
+        ) == 0;
     __android_log_print(
         installed ? ANDROID_LOG_INFO : ANDROID_LOG_ERROR,
         kLogTag,
