@@ -866,13 +866,24 @@ bool SwapEngine::swap(void* player,const void* selected) noexcept {
     bool screenBookkeeping=false;
     if(screenSlots.valid()) {
         void* screen=screenSlots.screen();
-        screenBookkeeping=
+
+        // Exact selected-container RE:
+        // - MAIN->EMPTY: setPlayerContainer rejects EMPTY before recording the
+        //   slot, so we must record the selected HOTBAR slot ourselves.
+        // - MAIN EMPTY->NONEMPTY: selected path 0xF9DA2DC succeeds through
+        //   setPlayerContainer @ 0xF88A664 and records HOTBAR itself.
+        // OFF always uses the proven raw #662 writer, so OFFHAND must always
+        // be recorded explicitly.
+        const bool mainRecorded=
+            mainEmpty ||
             screenSlots.recordChangedSlot(
                 screen,kInventoryContainerType,selectedSlot
-            ) &&
+            );
+        const bool offRecorded=
             screenSlots.recordChangedSlot(
                 screen,kHandContainerType,kOffhandLocalSlot
             );
+        screenBookkeeping=mainRecorded && offRecorded;
 
         if(!screenBookkeeping) {
             (void)screenSlots.finish();
