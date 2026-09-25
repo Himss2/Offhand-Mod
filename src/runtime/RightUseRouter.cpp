@@ -199,6 +199,14 @@ thread_local const void* gScopedPlayer = nullptr;
 thread_local const void* gSessionPlayer = nullptr;
 thread_local void* gSessionGameMode = nullptr;
 
+// Temporary low-volume diagnostics for the unresolved OFFHAND long-use tick.
+// We record each selected-item caller at most once per session, capped at 8.
+thread_local std::array<std::uintptr_t, 8> gUseSessionSelectedCallers{};
+thread_local std::size_t gUseSessionSelectedCallerCount = 0;
+std::atomic_bool gLoggedUseSessionNotUsing{false};
+std::atomic_bool gLoggedUseSessionMismatch{false};
+std::atomic_bool gLoggedCompleteEntry{false};
+
 class ScopedBool final {
 public:
     explicit ScopedBool(bool& value) noexcept
@@ -988,6 +996,11 @@ bool RightUseRouter::baseUseItemDetour(
         if (activeUseMatches(player, gGetOffhandSlot(player))) {
             gSessionPlayer = player;
             gSessionGameMode = gameMode;
+            gUseSessionSelectedCallers.fill(0);
+            gUseSessionSelectedCallerCount = 0;
+            gLoggedUseSessionNotUsing.store(false, std::memory_order_relaxed);
+            gLoggedUseSessionMismatch.store(false, std::memory_order_relaxed);
+            gLoggedCompleteEntry.store(false, std::memory_order_relaxed);
             expected = false;
             if (instance->mLoggedLongUse.compare_exchange_strong(
                     expected, true, std::memory_order_relaxed
@@ -1287,15 +1300,64 @@ const void* RightUseRouter::selectedItemDetour(const void* player) noexcept {
     }
 
     if (sessionOffhand) {
+        const auto caller = reinterpret_cast<std::uintptr_t>(
+            __builtin_return_address(0)
+        );
+        bool seenCaller = false;
+        for (std::size_t i = 0; i < gUseSessionSelectedCallerCount; ++i) {
+            if (gUseSessionSelectedCallers[i] == caller) {
+                seenCaller = true;
+                break;
+            }
+        }
+        if (
+            !seenCaller &&
+            gUseSessionSelectedCallerCount < gUseSessionSelectedCallers.size()
+        ) {
+            gUseSessionSelectedCallers[gUseSessionSelectedCallerCount++] = caller;
+            const auto base = minecraftModuleBase();
+            const auto callerRva =
+                base != 0 && caller >= base ? caller - base : 0;
+            __android_log_print(
+                ANDROID_LOG_INFO,
+                kLogTag,
+                "[UseTickDiag] selectedItem during OFF session callerRva=0x%llX",
+                static_cast<unsigned long long>(callerRva)
+            );
+        }
+
         if (
             gPlayerIsUsingItem == nullptr || !gPlayerIsUsingItem(player) ||
             gItemInUseStack == nullptr
         ) {
+            bool expected = false;
+            if (gLoggedUseSessionNotUsing.compare_exchange_strong(
+                    expected, true, std::memory_order_relaxed
+                )) {
+                __android_log_print(
+                    ANDROID_LOG_INFO,
+                    kLogTag,
+                    "[UseTickDiag] OFF session lost native isUsingItem before completion"
+                );
+            }
             clearSession();
             return original(player);
         }
         const void* active = gItemInUseStack(player);
         if (stackIsNull(active) || !stacksMatch(active, offStack)) {
+            bool expected = false;
+            if (gLoggedUseSessionMismatch.compare_exchange_strong(
+                    expected, true, std::memory_order_relaxed
+                )) {
+                __android_log_print(
+                    ANDROID_LOG_INFO,
+                    kLogTag,
+                    "[UseTickDiag] OFF session active stack diverged active=%p off=%p activeNull=%d",
+                    active,
+                    offStack,
+                    stackIsNull(active) ? 1 : 0
+                );
+            }
             clearSession();
             return original(player);
         }
@@ -1321,6 +1383,19 @@ void RightUseRouter::completeUsingItemDetour(void* player) noexcept {
     // explicitly tracked OFF session.
     const bool ownsSession = gSessionPlayer == player;
     const bool uniqueNativeOff = activeUseMatches(player, off) && !activeUseMatches(player, main);
+    bool completeExpected = false;
+    if (gLoggedCompleteEntry.compare_exchange_strong(
+            completeExpected, true, std::memory_order_relaxed
+        )) {
+        __android_log_print(
+            ANDROID_LOG_INFO,
+            kLogTag,
+            "[UseTickDiag] completeUsingItem entered ownsSession=%d uniqueNativeOff=%d offNull=%d",
+            ownsSession ? 1 : 0,
+            uniqueNativeOff ? 1 : 0,
+            stackIsNull(off) ? 1 : 0
+        );
+    }
     if (!ownsSession && !uniqueNativeOff) {
         ScopedActionHand mainScope(ActionHand::MainHand, ActionKind::UseAir);
         original(player);
