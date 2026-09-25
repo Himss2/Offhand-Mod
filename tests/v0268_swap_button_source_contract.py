@@ -362,3 +362,47 @@ if mapped_guard > invoke_read:
         "legacy screen scope dereferences callable vtable before mapped guard"
     )
 
+# Screen-slot bookkeeping is an optional capability. It must NEVER decide
+# whether the baseline #662 SwapEngine/SwapRuntime installs.
+install_start = engine.index("bool SwapEngine::install")
+uninstall_start = engine.index("void SwapEngine::uninstall", install_start)
+install_body = engine[install_start:uninstall_start]
+stable_start = install_body.index("const bool stableBuild=")
+stable_end = install_body.index("bool setSelectedChainedLive", stable_start)
+stable_body = install_body[stable_start:stable_end]
+for forbidden in (
+    "tryLegacyTransaction",
+    "recordLegacySlot",
+    "getTopScreenValid",
+):
+    if forbidden in stable_body:
+        raise AssertionError(
+            f"optional screen bookkeeping must not gate stableBuild: {forbidden}"
+        )
+
+ready_start = engine.index("bool SwapEngine::ready() const noexcept")
+ready_end = engine.index("const void* SwapEngine::selectedStack", ready_start)
+ready_body = engine[ready_start:ready_end]
+for forbidden in (
+    "gTryBeginClientLegacyTransaction",
+    "gRecordLegacySlot",
+    "gGetTopScreen",
+):
+    if forbidden in ready_body:
+        raise AssertionError(
+            f"optional screen bookkeeping must not gate ready(): {forbidden}"
+        )
+
+# If the optional screen scope is unavailable, F must continue through the
+# known-good #662 mutation path instead of rejecting the request.
+swap_start = engine.index("bool SwapEngine::swap")
+swap_body_full = engine[swap_start:]
+if "screenSlots.valid()" not in swap_body_full:
+    raise AssertionError("swap must probe optional screen bookkeeping")
+if "no native screen/request; F swap rejected before mutation" in swap_body_full:
+    raise AssertionError(
+        "missing screen bookkeeping must not disable baseline F swap"
+    )
+if "[SwapEngine][legacy-screen-slots] unavailable; using #662 baseline" not in engine:
+    raise AssertionError("optional screen fallback log missing")
+
