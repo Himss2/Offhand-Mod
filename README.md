@@ -111,6 +111,21 @@ dist/arm64-v8a/levi-offhand-v0.2.68.levipack
 
 Use a supported build from `manifest.json` and start from a fresh game launch. For the current action/swap work, validate on **1.26.51.1**.
 
+### Visual add-on single-render-owner candidate
+
+Gameplay baseline remains build #711/#714 (`f9b75172b9fc7ecbb30801ec460a7dcb704f9f91`). This candidate is renderer-only; swap, inventory, right-use and placement transactions are unchanged.
+
+Custom XYZ/rotation matrices cannot submit a second model by themselves. Duplicate visuals happen when Levi's fallback renderer and a resource/animation pack both own the same OFFHAND visual. The renderer now yields to an already-active Minecraft attachable before creating a fallback draw:
+
+- Crossbow does not force the generic `FIRSTPERSON_LEFT` fallback when an attachable already owns the current OFFHAND renderer.
+- Special families do not force the block/SpecialBridge fallback when an attachable is active.
+- Banner/Pot/Copper/Skull custom transforms are bypassed while that attachable owns the model, so add-on-authored transforms are not compounded.
+- With no active attachable, all existing Levi custom calibration/fallback behavior remains unchanged.
+- Bow's accepted route is intentionally unchanged because its vanilla native attachment already has a dedicated suppression path when Levi's Bow route owns the frame.
+
+Test with no visual pack and with packs such as Actions & Stuff, XNova Model, or HMI Bedrock; every affected item should have exactly one visible model.
+
+
 1. Bow offhand FPP: exactly one Bow is visible on the left/offhand side.
 2. Bow offhand TPP: exactly one Bow is attached to the left hand; inventory/player preview must remain unaffected.
 3. Trident offhand FPP: one native 3D Trident is visible on the left and follows normal/raise/use animation without a generic 2D duplicate.

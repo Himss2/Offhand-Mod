@@ -169,6 +169,49 @@ def main() -> int:
             "Banner must use build470 block-path routing, not the later bridge-depth exception"
         )
 
+    # Add-on/resource-pack compatibility: one visual owner per OFFHAND item.
+    for token in (
+        "activeAttachableOwnsOffhand()",
+        "[VisualCompat] Crossbow attachable owns OFFHAND",
+        "[VisualCompat] native attachable owns special OFFHAND",
+        "SpecialBridge suppressed",
+    ):
+        if token not in cpp:
+            raise AssertionError(
+                f"single-render-owner compatibility missing {token!r}"
+            )
+
+    hand_start = cpp.index("handEquipPredicateDetour(")
+    hand_end = cpp.index("using RenderItemRouteFn", hand_start)
+    hand_compat = cpp[hand_start:hand_end]
+    for token in (
+        "family==ToolFamily::Crossbow",
+        "exactOffhandDispatch",
+        "activeAttachableOwnsOffhand()",
+        "return false;",
+    ):
+        if token not in hand_compat:
+            raise AssertionError(
+                f"Crossbow attachable ownership guard missing {token!r}"
+            )
+
+    block_start = cpp.index("blockRenderPredicateDetour(")
+    block_end = cpp.index("itemTransformDetour(", block_start)
+    block_compat = cpp[block_start:block_end]
+    if "activeAttachableOwnsOffhand()" not in block_compat:
+        raise AssertionError(
+            "special block fallback must yield to an active attachable"
+        )
+
+    render_object_start = cpp.index("renderObjectDetour(")
+    render_object_compat = cpp[render_object_start:]
+    if render_object_compat.index("activeAttachableOwnsOffhand()") > render_object_compat.index(
+        "renderItem("
+    ):
+        raise AssertionError(
+            "SpecialBridge must check attachable ownership before manual RenderItem"
+        )
+
     # Exact MAINHAND arm-height source identified in renderFirstPerson.
     # Keep OFFHAND height fields and all gameplay routing out of this detour.
     for token in (

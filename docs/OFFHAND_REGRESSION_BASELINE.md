@@ -245,6 +245,18 @@ Only after this matrix passes may swap be reintroduced. When that happens, add s
 16. Occupied MAIN=A / OFF=B repeated F swaps alternate A/B correctly.
 17. Immediately after occupied swap, the new OFFHAND item can be moved/removed normally and right-click behavior still follows the existing MAINHAND ownership rules.
 
+## Visual add-on single-render-owner candidate
+
+Known-good gameplay base: build #711/#714, commit `f9b75172b9fc7ecbb30801ec460a7dcb704f9f91`.
+
+Scope is renderer-only. SwapEngine/SwapRuntime, manual OFFHAND storage, RightUseRouter, native placement, and count reconciliation must remain unchanged.
+
+The custom XYZ/rotation calibration does not itself duplicate geometry; duplicate visuals require two render submissions. Two fallback paths are compatibility risks with third-party visual packs: forced generic Crossbow FPP admission and `SpecialBridge`'s recursive `RenderItem`.
+
+Candidate rule: query the already-hooked Minecraft attachable-state trampoline for the current OFFHAND renderer. If an attachable already owns Crossbow or a special-family visual, do not submit the Levi fallback. Special custom transforms also yield to the attachable. When no attachable is active, the accepted Levi fallback/calibration path is unchanged. Bow remains on the existing dedicated ownership/suppression route.
+
+Required device checks: vanilla/no pack plus available Actions & Stuff/XNova/HMI-style visual packs. Check Crossbow and special calibrated families (Banner, Decorated Pot, Copper Statue, Skull/Head where present) for exactly one model, correct side, and no loss of the no-pack pose.
+
 ## Documentation rule
 
 Any change that touches:

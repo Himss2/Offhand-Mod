@@ -305,6 +305,7 @@ namespace levioffhand::render {
         thread_local const void* gLastBridgeItem=nullptr;
         thread_local const void* gLastTransformItem=nullptr;
         thread_local const void* gLastSkullTransformItem=nullptr;
+        thread_local const void* gLastNativeVisualOwnerItem=nullptr;
 
         enum class ToolFamily:std::uint8_t {
             None,
@@ -819,6 +820,27 @@ namespace levioffhand::render {
                 gRenderer!=nullptr;
         }
 
+        [[nodiscard]]
+        bool activeAttachableOwnsOffhand() noexcept {
+
+            if(
+                !inOffhand()
+                ||
+                !gAttachableStateRouteOriginal
+            ) {
+                return false;
+            }
+
+            const auto original=
+                reinterpret_cast<
+                    bool(*)(void*)
+                >(
+                    gAttachableStateRouteOriginal
+                );
+
+            return original(gRenderer);
+        }
+
         void* offhandStackMutable() noexcept {
 
             if(!inOffhand()) {
@@ -1166,13 +1188,44 @@ namespace levioffhand::render {
                 return false;
             }
 
+            const bool exactOffhandDispatch=
+                isExactMinecraftCallsite(
+                    returnAddress,kOffDispatchCallsiteRva
+                );
+
+            /*
+             * Visual-pack compatibility: if a resource/animation pack already
+             * exposes a Crossbow attachable for this OFFHAND renderer, do not
+             * force Levi's generic FIRSTPERSON_LEFT fallback as a second owner.
+             *
+             * Bow is intentionally excluded. Its vanilla attachment already
+             * has an explicit suppression path whenever Levi's proven generic
+             * Bow route owns the frame.
+             */
+            if(
+                family==ToolFamily::Crossbow
+                &&
+                exactOffhandDispatch
+                &&
+                activeAttachableOwnsOffhand()
+            ) {
+                const void* item=offhandItem();
+                if(item!=gLastNativeVisualOwnerItem) {
+                    gLastNativeVisualOwnerItem=item;
+                    __android_log_print(
+                        ANDROID_LOG_INFO,kLogTag,
+                        "[VisualCompat] Crossbow attachable owns OFFHAND; "
+                        "generic-left fallback suppressed"
+                    );
+                }
+                return false;
+            }
+
             if(vanilla) {
                 return true;
             }
 
-            if(!isExactMinecraftCallsite(
-                returnAddress,kOffDispatchCallsiteRva
-            )) {
+            if(!exactOffhandDispatch) {
                 return vanilla;
             }
 
@@ -3075,6 +3128,7 @@ namespace levioffhand::render {
         gLastBridgeItem=nullptr;
         gLastTransformItem=nullptr;
         gLastSkullTransformItem=nullptr;
+        gLastNativeVisualOwnerItem=nullptr;
         mBannerBridgeLogged.store(false,std::memory_order_relaxed);
         mBannerCompositeLogged.store(false,std::memory_order_relaxed);
         mPotCompositeLogged.store(false,std::memory_order_relaxed);
@@ -3540,6 +3594,7 @@ namespace levioffhand::render {
         gLastBridgeItem=nullptr;
         gLastTransformItem=nullptr;
         gLastSkullTransformItem=nullptr;
+        gLastNativeVisualOwnerItem=nullptr;
         gLastNativeToolItem=nullptr;
         gCurrentToolFamily=ToolFamily::None;
         gToolFinalMatrixApplied=false;
@@ -4030,6 +4085,18 @@ namespace levioffhand::render {
             return vanilla;
         }
 
+        /*
+         * A native/add-on attachable is already a complete visual owner.
+         * Do not force Levi's special block fallback on top of it.
+         */
+        if(
+            activeAttachableOwnsOffhand()
+            &&
+            currentSpecialFamily()
+        ) {
+            return false;
+        }
+
         if(vanilla) {
             return true;
         }
@@ -4164,6 +4231,25 @@ namespace levioffhand::render {
                     block
                 )
             );
+
+        /*
+         * If an add-on/native attachable owns a special item, respect its
+         * authored transform. Levi's Banner/Pot/Copper/Skull calibration is a
+         * fallback for the non-attachable path only.
+         */
+        if(
+            specialFamily(
+                itemClass,
+                blockClass
+            )
+            &&
+            activeAttachableOwnsOffhand()
+        ) {
+            return original(
+                transforms,
+                type
+            );
+        }
 
         // Apply only inside the validated first-person OFFHAND block scope.
         const auto placementAnimated=[&](Matrix64 matrix) noexcept -> Matrix64 {
@@ -4603,6 +4689,26 @@ namespace levioffhand::render {
                 itemFlags
             );
 
+            return;
+        }
+
+        /*
+         * SpecialBridge is a fallback renderer. If Minecraft already has an
+         * active attachable (commonly supplied by animation/model packs), the
+         * recursive RenderItem submission below would create a second visible
+         * model. Let the attachable own the frame and suppress this fallback.
+         */
+        if(activeAttachableOwnsOffhand()) {
+            const void* item=offhandItem();
+            if(item!=gLastNativeVisualOwnerItem) {
+                gLastNativeVisualOwnerItem=item;
+                __android_log_print(
+                    ANDROID_LOG_INFO,kLogTag,
+                    "[VisualCompat] native attachable owns special OFFHAND; "
+                    "SpecialBridge suppressed item=%s",
+                    rttiName(item)
+                );
+            }
             return;
         }
 
