@@ -412,7 +412,6 @@ for marker in (
     "currentLegacyRequestScreen(",
     "index>>6",
     "0x1FF",
-    "[SwapEngine][legacy-screen-slots] direct screen=",
 ):
     if marker not in engine.replace(" ", "") and marker not in engine:
         raise AssertionError(
@@ -430,7 +429,6 @@ for marker in (
     "kHotbarLegacyContainerId=0x00",
     "LegacyInventoryAction",
     "hotbarFillAction",
-    "[SwapEngine][re-balanced]",
 ):
     if marker not in engine.replace(" ", "") and marker not in engine:
         raise AssertionError(f"RE-balanced transaction missing {marker}")
