@@ -474,3 +474,25 @@ if positions != sorted(positions):
     raise AssertionError(
         "occupied order must remain MAIN clear -> OFF action -> explicit MAIN fill action -> MAIN fill"
     )
+
+# Exact crash regression from build #690 / tombstone:
+# NativeClientLegacyScope contains a self-pointer at +0x20 when constructed
+# inline by 0xF88A434/0xF88D960. Byte-copying or assigning that aggregate
+# relocates the storage but leaves the internal pointer aimed at the temporary,
+# causing finishNativeClientLegacyScope() to select heap destroy (+0x28) and
+# delete stack memory.
+if "mScope=gTryBeginClientLegacyTransaction(player)" in engine.replace(" ", ""):
+    raise AssertionError(
+        "native legacy scope must never be copy-assigned after construction"
+    )
+for marker in (
+    "NativeClientLegacyScope nativeScope=",
+    "gTryBeginClientLegacyTransaction(player)",
+    "LegacyScreenSlotScope screenSlots(nativeScope,player)",
+    "NativeClientLegacyScope& mScope",
+):
+    if marker not in engine.replace(" ", "") and marker not in engine:
+        raise AssertionError(
+            f"non-relocating native scope lifetime contract missing {marker}"
+        )
+
