@@ -434,3 +434,69 @@ for marker in (
         raise AssertionError(
             f"exact RE top-screen resolver contract missing {marker}"
         )
+
+# Exact RE: ItemStackNetManagerBase::setPlayerContainer @ 0xF88A664
+# returns false for an empty ItemStack before touched-slot bookkeeping.
+# Selected-container setter @ 0xF9DA2DC therefore falls back to 0xF8834D4
+# only for MAIN->EMPTY. A MAIN->NONEMPTY write inside an active legacy
+# request succeeds natively and skips that fallback, so F swap must supply
+# the missing hotbar InventoryAction explicitly in those directions.
+for marker in (
+    "kInventoryActionSlotOffset=0x0C",
+    "kHotbarLegacyContainerId=0x00",
+    "LegacyInventoryAction",
+    "hotbarFillAction",
+    "[SwapEngine][re-balanced]",
+):
+    if marker not in engine.replace(" ", "") and marker not in engine:
+        raise AssertionError(f"RE-balanced transaction missing {marker}")
+
+swap_body = engine[engine.index("bool SwapEngine::swap"):]
+compact_swap = swap_body.replace(" ", "").replace("\n", "")
+
+# MAIN->OFF ends MAIN at EMPTY, so the selected setter must retain its native
+# fallback action. Do not manually duplicate that hotbar clear.
+off_start = compact_swap.index("if(offEmpty){")
+main_start = compact_swap.index("if(mainEmpty){", off_start)
+occupied_start = compact_swap.index("Snapshotmain(", main_start)
+off_body = compact_swap[off_start:main_start]
+main_body = compact_swap[main_start:occupied_start]
+occupied_body = compact_swap[occupied_start:]
+
+if "hotbarFillAction.submit(player)" in off_body:
+    raise AssertionError("MAIN->OFF must not duplicate native MAIN->EMPTY fallback action")
+
+# OFF->MAIN writes a NONEMPTY selected stack while the request is active, so
+# native setPlayerContainer succeeds and skips legacy fallback. We must add
+# EMPTY->B ourselves before the selected write.
+for token in (
+    "hotbarFillAction.submit(player)",
+    "mSetSelectedItem(player,offSnap.get())",
+):
+    if token not in main_body:
+        raise AssertionError(f"OFF->MAIN missing {token}")
+if main_body.index("hotbarFillAction.submit(player)") > main_body.index(
+    "mSetSelectedItem(player,offSnap.get())"
+):
+    raise AssertionError("OFF->MAIN hotbar action must precede native selected write")
+
+# Occupied 44a: first A->EMPTY is native fallback; final EMPTY->B is native
+# setPlayerContainer and needs an explicit legacy hotbar action.
+for token in (
+    "mSetSelectedItem(player,mEmptyItem)",
+    "offAction.submit(player)",
+    "hotbarFillAction.submit(player)",
+    "mSetSelectedItem(player,offSnap.get())",
+):
+    if token not in occupied_body:
+        raise AssertionError(f"occupied RE-balanced path missing {token}")
+positions=[occupied_body.index(x) for x in (
+    "mSetSelectedItem(player,mEmptyItem)",
+    "offAction.submit(player)",
+    "hotbarFillAction.submit(player)",
+    "mSetSelectedItem(player,offSnap.get())",
+)]
+if positions != sorted(positions):
+    raise AssertionError(
+        "occupied order must remain MAIN clear -> OFF action -> explicit MAIN fill action -> MAIN fill"
+    )
