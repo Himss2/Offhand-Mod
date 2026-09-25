@@ -54,6 +54,21 @@ constexpr std::uintptr_t kStackDiffersForUseRva = 0xFFA5B04;
 constexpr std::uintptr_t kItemStackCopyCtorRva = 0xFF9D748;
 constexpr std::uintptr_t kItemStackDtorRva = 0x85ADF98;
 
+// Exact native long-use tick bridge, recovered from the uploaded 1.26.51.1
+// ELF (SHA-256 b8a63515...6847b4).
+//
+// Player's virtual tick at 0xF9E6358 inlines getSelectedItem instead of
+// calling Player::getSelectedItem.  At 0xF9E71A0 it loads the selected
+// Inventory from Player selected-state +0xB8, selected slot +0x10, then calls
+// Inventory vtable +0x40.  The concrete Inventory slot resolves to 0xF883B58;
+// the return PC after the BLR is exactly 0xF9E71B4.
+//
+// Inventory's constructor 0xF881CB0 stores the owning Player at +0x158.
+constexpr std::uintptr_t kInventoryGetItemRva = 0xF883B58;
+constexpr std::uintptr_t kUseTickSelectedFetchRva = 0xF9E71A0;
+constexpr std::uintptr_t kUseTickInventoryGetReturnRva = 0xF9E71B4;
+constexpr std::size_t kInventoryOwnerOffset = 0x158;
+
 // 1.26.51.1 Item virtual defaults used only as capability identities.
 // MAINHAND ownership is based on concrete native action implementations, not
 // broad data-driven ComponentItem booleans.  Relocated 1.26.51.1 primary
@@ -136,6 +151,18 @@ constexpr std::array<std::uint8_t, 28> kItemStackDtorFingerprint{
     0x54, 0xD0, 0x3B, 0xD5, 0xF3, 0x03, 0x00, 0xAA,
     0xE9, 0x56, 0x05, 0xD0,
 };
+constexpr std::array<std::uint8_t, 16> kInventoryGetItemFingerprint{
+    0x81, 0x01, 0xF8, 0x37, 0x08, 0x24, 0x54, 0xA9,
+    0x6A, 0x43, 0x99, 0x52, 0x6A, 0x0D, 0xA5, 0x72,
+};
+constexpr std::array<std::uint8_t, 24> kUseTickSelectedFetchFingerprint{
+    0x00, 0x5D, 0x40, 0xF9, // ldr x0,[selected-state,#0xB8]
+    0x01, 0x11, 0x40, 0xB9, // ldr w1,[selected-state,#0x10]
+    0x09, 0x00, 0x40, 0xF9, // ldr x9,[x0]
+    0x28, 0x21, 0x40, 0xF9, // ldr x8,[x9,#0x40]
+    0x00, 0x01, 0x3F, 0xD6, // blr x8
+    0xF4, 0x03, 0x00, 0xAA, // mov x20,x0
+};
 
 using BaseUseItemFn = bool (*)(void*, const void*, unsigned char);
 using UseItemOnBlockFn = std::uint32_t (*)(
@@ -180,6 +207,7 @@ using ItemInUseStackFn = const void* (*)(const void*);
 using StackDiffersForUseFn = bool (*)(const void*, const void*);
 using ItemStackCopyCtorFn = void (*)(void*, const void*);
 using ItemStackDtorFn = void (*)(void*);
+using InventoryGetItemFn = const void* (*)(const void*, int);
 using GetMaxUseDurationFn = int (*)(const void*, const void*);
 using GetAttackDamageFn = int (*)(const void*);
 using ItemBoolFn = bool (*)(const void*);
@@ -198,14 +226,7 @@ thread_local bool gInsideBlockUse = false;
 thread_local const void* gScopedPlayer = nullptr;
 thread_local const void* gSessionPlayer = nullptr;
 thread_local void* gSessionGameMode = nullptr;
-
-// Temporary low-volume diagnostics for the unresolved OFFHAND long-use tick.
-// We record each selected-item caller at most once per session, capped at 8.
-thread_local std::array<std::uintptr_t, 8> gUseSessionSelectedCallers{};
-thread_local std::size_t gUseSessionSelectedCallerCount = 0;
-std::atomic_bool gLoggedUseSessionNotUsing{false};
-std::atomic_bool gLoggedUseSessionMismatch{false};
-std::atomic_bool gLoggedCompleteEntry{false};
+std::atomic_bool gLoggedUseTickBridge{false};
 
 class ScopedBool final {
 public:
@@ -627,6 +648,50 @@ private:
     return !stackIsNull(active) && stacksMatch(active, stack);
 }
 
+[[nodiscard]] const void* offhandStackForNativeUseTick(
+    const void* inventory,
+    std::uintptr_t returnAddress,
+    bool featureEnabled
+) noexcept {
+    if (
+        !featureEnabled ||
+        inventory == nullptr ||
+        gSessionPlayer == nullptr ||
+        gGetOffhandSlot == nullptr
+    ) {
+        return nullptr;
+    }
+
+    const auto base = minecraftModuleBase();
+    if (
+        base == 0 ||
+        returnAddress != base + kUseTickInventoryGetReturnRva
+    ) {
+        return nullptr;
+    }
+
+    const void* owner = nullptr;
+    std::memcpy(
+        &owner,
+        static_cast<const std::byte*>(inventory) + kInventoryOwnerOffset,
+        sizeof(owner)
+    );
+    if (owner == nullptr || owner != gSessionPlayer) {
+        return nullptr;
+    }
+
+    const void* offStack = gGetOffhandSlot(owner);
+    if (
+        offStack == nullptr ||
+        stackIsNull(offStack) ||
+        !activeUseMatches(owner, offStack)
+    ) {
+        return nullptr;
+    }
+
+    return offStack;
+}
+
 void clearSession() noexcept {
     gSessionPlayer = nullptr;
     gSessionGameMode = nullptr;
@@ -675,6 +740,9 @@ bool RightUseRouter::install(pl::mod::ModContext& context) noexcept {
     const auto setHandExact = resolveExactTarget(
         kSetItemInHandSlotRva, kSetItemInHandSlotFingerprint
     );
+    const auto useTickFetchTarget = resolveExactTarget(
+        kUseTickSelectedFetchRva, kUseTickSelectedFetchFingerprint
+    );
     const auto setHandTarget =
         setHandExact != 0
         ? setHandExact
@@ -683,12 +751,13 @@ bool RightUseRouter::install(pl::mod::ModContext& context) noexcept {
     if (
         offhandTarget == 0 || nullTarget == 0 ||
         usingTarget == 0 || inUseTarget == 0 || differsTarget == 0 ||
-        copyCtorTarget == 0 || dtorTarget == 0 || setHandTarget == 0
+        copyCtorTarget == 0 || dtorTarget == 0 || setHandTarget == 0 ||
+        useTickFetchTarget == 0
     ) {
         __android_log_print(
             ANDROID_LOG_WARN,
             kLogTag,
-            "[RightUseRouter] stable guard failed offhand=%d null=%d using=%d inUse=%d differs=%d copy=%d dtor=%d setHand=%d",
+            "[RightUseRouter] stable guard failed offhand=%d null=%d using=%d inUse=%d differs=%d copy=%d dtor=%d setHand=%d useTick=%d",
             offhandTarget != 0 ? 1 : 0,
             nullTarget != 0 ? 1 : 0,
             usingTarget != 0 ? 1 : 0,
@@ -696,7 +765,8 @@ bool RightUseRouter::install(pl::mod::ModContext& context) noexcept {
             differsTarget != 0 ? 1 : 0,
             copyCtorTarget != 0 ? 1 : 0,
             dtorTarget != 0 ? 1 : 0,
-            setHandTarget != 0 ? 1 : 0
+            setHandTarget != 0 ? 1 : 0,
+            useTickFetchTarget != 0 ? 1 : 0
         );
         context.logger().warn(
             "[RightUseRouter] Minecraft 1.26.51.1 stable fingerprint validation failed; right-use disabled"
@@ -731,6 +801,11 @@ bool RightUseRouter::install(pl::mod::ModContext& context) noexcept {
         kSelectedItemRva,
         kSelectedItemFingerprint
     );
+    const auto inventoryGetTarget = resolveHookTarget(
+        "Inventory::getItem",
+        kInventoryGetItemRva,
+        kInventoryGetItemFingerprint
+    );
     bool blockUsePreHooked = false;
     const auto blockUseTarget = resolveHookTarget(
         "GameMode::useItemOnBlock",
@@ -750,8 +825,8 @@ bool RightUseRouter::install(pl::mod::ModContext& context) noexcept {
     );
 
     if (
-        selectedTarget == 0 || blockUseTarget == 0 ||
-        useTarget == 0 || releaseTarget == 0
+        selectedTarget == 0 || inventoryGetTarget == 0 ||
+        blockUseTarget == 0 || useTarget == 0 || releaseTarget == 0
     ) {
         context.logger().warn(
             "[RightUseRouter] Minecraft 1.26.51.1 live hook target resolution failed; right-use disabled"
@@ -769,6 +844,7 @@ bool RightUseRouter::install(pl::mod::ModContext& context) noexcept {
     gItemStackDtor = reinterpret_cast<ItemStackDtorFn>(dtorTarget);
 
     mSelectedItemTarget = selectedTarget;
+    mInventoryGetItemTarget = inventoryGetTarget;
     mReleaseUsingItemTarget = releaseTarget;
     mBaseUseItemTarget = useTarget;
     mUseItemOnBlockTarget = blockUseTarget;
@@ -776,6 +852,22 @@ bool RightUseRouter::install(pl::mod::ModContext& context) noexcept {
     sInstance = this;
     gStopUsingItem = reinterpret_cast<CompleteUsingItemFn>(stopTarget);
     gReleaseCallback = minecraftModuleBase() + kReleaseCallbackRva;
+
+    mInventoryGetItemHook = std::make_unique<pl::memory::HookHandle>(
+        reinterpret_cast<void*>(mInventoryGetItemTarget),
+        reinterpret_cast<void*>(&RightUseRouter::inventoryGetItemDetour),
+        &mInventoryGetItemOriginal,
+        pl::memory::HookPriority::Normal
+    );
+    if (
+        !mInventoryGetItemHook ||
+        !mInventoryGetItemHook->installed() ||
+        mInventoryGetItemOriginal == nullptr
+    ) {
+        context.logger().warn("[RightUseRouter] native long-use Inventory::getItem bridge hook failed");
+        uninstall(context);
+        return false;
+    }
 
     mSelectedItemHook = std::make_unique<pl::memory::HookHandle>(
         reinterpret_cast<void*>(mSelectedItemTarget),
@@ -851,6 +943,7 @@ bool RightUseRouter::install(pl::mod::ModContext& context) noexcept {
     mLoggedAttackOnlyYield.store(false, std::memory_order_relaxed);
     mLoggedLongUse.store(false, std::memory_order_relaxed);
     mLoggedOffhandWriteback.store(false, std::memory_order_relaxed);
+    gLoggedUseTickBridge.store(false, std::memory_order_relaxed);
     context.logger().info(
         "[RightUseRouter] Minecraft 1.26.51.1 right-use active: MAINHAND first, OFFHAND fallback; left-click remains vanilla mainhand"
     );
@@ -886,7 +979,12 @@ void RightUseRouter::uninstall(pl::mod::ModContext& context) noexcept {
         mSelectedItemHook->reset();
         mSelectedItemHook.reset();
     }
+    if (mInventoryGetItemHook) {
+        mInventoryGetItemHook->reset();
+        mInventoryGetItemHook.reset();
+    }
 
+    mInventoryGetItemOriginal = nullptr;
     mUseItemOnBlockOriginal = nullptr;
     mBaseUseItemOriginal = nullptr;
     mReleaseUsingItemOriginal = nullptr;
@@ -896,6 +994,7 @@ void RightUseRouter::uninstall(pl::mod::ModContext& context) noexcept {
     mBaseUseItemTarget = 0;
     mReleaseUsingItemTarget = 0;
     mSelectedItemTarget = 0;
+    mInventoryGetItemTarget = 0;
     gGetOffhandSlot = nullptr;
     gSetItemInHandSlot = nullptr;
     gStackIsNull = nullptr;
@@ -926,6 +1025,8 @@ bool RightUseRouter::installed() const noexcept {
         mSetSelectedItemHook != nullptr && mSetSelectedItemHook->installed() &&
         mCompleteUsingItemOriginal != nullptr && mSetSelectedItemOriginal != nullptr &&
         mSelectedItemHook != nullptr && mSelectedItemHook->installed() &&
+        mInventoryGetItemHook != nullptr && mInventoryGetItemHook->installed() &&
+        mInventoryGetItemOriginal != nullptr &&
         mReleaseUsingItemHook != nullptr && mReleaseUsingItemHook->installed() &&
         mBaseUseItemHook != nullptr && mBaseUseItemHook->installed() &&
         mUseItemOnBlockHook != nullptr && mUseItemOnBlockHook->installed() &&
@@ -996,11 +1097,6 @@ bool RightUseRouter::baseUseItemDetour(
         if (activeUseMatches(player, gGetOffhandSlot(player))) {
             gSessionPlayer = player;
             gSessionGameMode = gameMode;
-            gUseSessionSelectedCallers.fill(0);
-            gUseSessionSelectedCallerCount = 0;
-            gLoggedUseSessionNotUsing.store(false, std::memory_order_relaxed);
-            gLoggedUseSessionMismatch.store(false, std::memory_order_relaxed);
-            gLoggedCompleteEntry.store(false, std::memory_order_relaxed);
             expected = false;
             if (instance->mLoggedLongUse.compare_exchange_strong(
                     expected, true, std::memory_order_relaxed
@@ -1257,6 +1353,47 @@ std::uint32_t RightUseRouter::useItemOnBlockDetour(
     return offResult != 0u ? offResult : mainFallback();
 }
 
+const void* RightUseRouter::inventoryGetItemDetour(
+    const void* inventory,
+    int slot
+) noexcept {
+    auto* instance = sInstance;
+    if (
+        instance == nullptr ||
+        instance->mInventoryGetItemOriginal == nullptr
+    ) {
+        return nullptr;
+    }
+
+    const auto original = reinterpret_cast<InventoryGetItemFn>(
+        instance->mInventoryGetItemOriginal
+    );
+
+    const auto returnAddress = reinterpret_cast<std::uintptr_t>(
+        __builtin_return_address(0)
+    );
+    const void* offStack = offhandStackForNativeUseTick(
+        inventory,
+        returnAddress,
+        instance->featureEnabled()
+    );
+    if (offStack == nullptr) {
+        return original(inventory, slot);
+    }
+
+    bool expected = false;
+    if (gLoggedUseTickBridge.compare_exchange_strong(
+            expected, true, std::memory_order_relaxed
+        )) {
+        __android_log_print(
+            ANDROID_LOG_INFO,
+            kLogTag,
+            "[RightUseRouter] native long-use tick reads live OFFHAND instead of selected MAIN"
+        );
+    }
+    return offStack;
+}
+
 const void* RightUseRouter::selectedItemDetour(const void* player) noexcept {
     auto* instance = sInstance;
     if (instance == nullptr || instance->mSelectedItemOriginal == nullptr) {
@@ -1300,64 +1437,15 @@ const void* RightUseRouter::selectedItemDetour(const void* player) noexcept {
     }
 
     if (sessionOffhand) {
-        const auto caller = reinterpret_cast<std::uintptr_t>(
-            __builtin_return_address(0)
-        );
-        bool seenCaller = false;
-        for (std::size_t i = 0; i < gUseSessionSelectedCallerCount; ++i) {
-            if (gUseSessionSelectedCallers[i] == caller) {
-                seenCaller = true;
-                break;
-            }
-        }
-        if (
-            !seenCaller &&
-            gUseSessionSelectedCallerCount < gUseSessionSelectedCallers.size()
-        ) {
-            gUseSessionSelectedCallers[gUseSessionSelectedCallerCount++] = caller;
-            const auto base = minecraftModuleBase();
-            const auto callerRva =
-                base != 0 && caller >= base ? caller - base : 0;
-            __android_log_print(
-                ANDROID_LOG_INFO,
-                kLogTag,
-                "[UseTickDiag] selectedItem during OFF session callerRva=0x%llX",
-                static_cast<unsigned long long>(callerRva)
-            );
-        }
-
         if (
             gPlayerIsUsingItem == nullptr || !gPlayerIsUsingItem(player) ||
             gItemInUseStack == nullptr
         ) {
-            bool expected = false;
-            if (gLoggedUseSessionNotUsing.compare_exchange_strong(
-                    expected, true, std::memory_order_relaxed
-                )) {
-                __android_log_print(
-                    ANDROID_LOG_INFO,
-                    kLogTag,
-                    "[UseTickDiag] OFF session lost native isUsingItem before completion"
-                );
-            }
             clearSession();
             return original(player);
         }
         const void* active = gItemInUseStack(player);
         if (stackIsNull(active) || !stacksMatch(active, offStack)) {
-            bool expected = false;
-            if (gLoggedUseSessionMismatch.compare_exchange_strong(
-                    expected, true, std::memory_order_relaxed
-                )) {
-                __android_log_print(
-                    ANDROID_LOG_INFO,
-                    kLogTag,
-                    "[UseTickDiag] OFF session active stack diverged active=%p off=%p activeNull=%d",
-                    active,
-                    offStack,
-                    stackIsNull(active) ? 1 : 0
-                );
-            }
             clearSession();
             return original(player);
         }
@@ -1383,19 +1471,6 @@ void RightUseRouter::completeUsingItemDetour(void* player) noexcept {
     // explicitly tracked OFF session.
     const bool ownsSession = gSessionPlayer == player;
     const bool uniqueNativeOff = activeUseMatches(player, off) && !activeUseMatches(player, main);
-    bool completeExpected = false;
-    if (gLoggedCompleteEntry.compare_exchange_strong(
-            completeExpected, true, std::memory_order_relaxed
-        )) {
-        __android_log_print(
-            ANDROID_LOG_INFO,
-            kLogTag,
-            "[UseTickDiag] completeUsingItem entered ownsSession=%d uniqueNativeOff=%d offNull=%d",
-            ownsSession ? 1 : 0,
-            uniqueNativeOff ? 1 : 0,
-            stackIsNull(off) ? 1 : 0
-        );
-    }
     if (!ownsSession && !uniqueNativeOff) {
         ScopedActionHand mainScope(ActionHand::MainHand, ActionKind::UseAir);
         original(player);

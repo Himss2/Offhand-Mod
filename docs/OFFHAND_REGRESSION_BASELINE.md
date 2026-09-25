@@ -263,23 +263,24 @@ Candidate ownership rule:
 
 Required device checks: Bow and Crossbow with no visual pack, then with Actions & Stuff/XNova/HMI-style packs. Each must render exactly one offhand model. Also verify Bow/Crossbow use animations and the build-#711/#714 F-swap/manual inventory behavior remain unchanged.
 
-## OFFHAND food consumption — origin-agnostic candidate
+## OFFHAND food consumption — native tick bridge candidate
 
-Current main before this candidate: `12447d1ad3a6d9ad96ef817636aea58b295cab20`. Swap/storage behavior is not modified.
+Parent gameplay/render baseline: `12447d1ad3a6d9ad96ef817636aea58b295cab20`. Swap code is unchanged.
 
-The existing native consumption lifecycle is retained:
+Exact 1.26.51.1 RE from the user-supplied ELF establishes why start-use alone cannot support OFFHAND food:
 
-- OFF self-use calls `GameMode::baseUseItem` with a detached OFFHAND snapshot and native `hand=1`;
-- active use is pinned only when Minecraft's in-use stack matches the live OFFHAND stack;
-- completion scopes `Player::setSelectedItem` writeback to `Actor::setItemInHandSlot(hand=1)`;
-- empty results and container replacements remain OFFHAND-owned;
-- stale/replaced OFF stacks cancel instead of consuming MAIN.
+1. `Player::startUsingItem`-like function `0xF9E8D94..0xF9E93B0` copies the supplied stack to `Player+0x6D8`, but snapshots selected-MAIN metadata from `Player+0x570` into `Player+0x770/+0x774`. It stores no hand=0/1 owner.
+2. Player virtual tick `0xF9E6358..0xF9E7E14` checks active-use state, then at `0xF9E71A0..0xF9E71B4` directly reads selected Inventory/slot and calls Inventory vtable `+0x40`; it does not call the hooked `Player::getSelectedItem`.
+3. Player's selected Inventory is constructed at `0xF9E0AA0` through `0xF881CB0`; RTTI is `Inventory`, owner Player is stored at `+0x158`, and vtable `+0x40` resolves to `0xF883B58`.
+4. The selected stack returned into x20 must match `Player+0x6D8` through `0xFF83708`; it is then compared against the active-use copy via `0xFFA5B04`. Failures branch to `Player::stopUsingItem @ 0xF9E86C0`.
+5. Successful duration depletion reaches `0xF9E7450 -> Player::completeUsingItem @ 0xF9E8094`.
 
-New entry fix: when the upper dispatcher input and selected MAIN stack are both native-null/empty, they are treated as the same MAIN context even if `ItemStackBase::_differsForUse` distinguishes their representations. This permits OFFHAND food to start with an empty MAIN while preserving exact matching for every non-empty MAIN stack.
+Candidate implementation hooks only `0xF883B58`, guarded by exact getter fingerprint plus the exact `0xF9E71A0` callsite fingerprint. Redirection requires return PC `base+0xF9E71B4`, Inventory owner == thread-local OFF session Player, non-null live OFFHAND, and active-use/native stack match. Otherwise the original getter executes.
 
-Origin invariant: no swap API, swap flag, or transfer history may participate in right-use. Manual slot-34 insertion and F-swap are equivalent once they produce the same live OFFHAND stack.
+This bridge preserves Minecraft's own tick duration, stop/cancel conditions, completion call, hunger/effect logic and native transaction envelope. Completion/writeback remains the existing scoped OFFHAND path. It does not depend on whether the item entered slot 34 manually or through F swap.
 
-Host tests `eat_offhand_manual` and `eat_offhand_swap_result` must both execute start -> active session -> completion and produce OFF count 16 -> 15 with zero MAIN writes. Device testing remains mandatory because host tests do not emulate Bedrock's network inventory transaction.
+Device matrix: manual food and F-swapped food; MAIN empty and MAIN attack-only tool; hold-to-finish; release early; stack 16->15; last item; bowl/bottle replacement; move/replace OFF during use; verify MAIN remains unchanged.
+
 
 ## Documentation rule
 

@@ -130,31 +130,22 @@ The candidate changes FPP to **native-first, fallback-only**:
 Swap, manual inventory, right-use, placement and all non-Bow/Crossbow item visuals are unchanged.
 
 
-### OFFHAND eating candidate — manual and F-swap equivalent
+### OFFHAND eating candidate — native long-use tick bridge
 
-This candidate keeps the current gameplay/storage baseline and changes only the OFFHAND self-use entry condition in `RightUseRouter`.
+This candidate is based on current main `12447d1ad3a6d9ad96ef817636aea58b295cab20` and does not modify `src/swap/*`.
 
-Minecraft's upper use dispatcher can pass a local/canonical empty ItemStack that is not byte-equivalent to the empty stack returned by `Player::getSelectedItem`. The previous strict `stacksMatch()` gate could therefore reject the click before OFFHAND food was attempted when MAINHAND was empty.
+Device testing proved OFFHAND food already enters `GameMode::baseUseItem(..., hand=1)` and pins Minecraft's active-use stack, but holding right-click never reaches completion. Reverse engineering of the exact uploaded Minecraft 1.26.51.1 ELF (SHA-256 `b8a6351503d330628335a80e8131acd45291fa9a747465f0f34a31b2346847b4`) found the missing native boundary:
 
-The router now treats **input empty + selected MAIN empty** as the same MAINHAND context. Non-empty MAIN items still require the exact native stack match and keep Java-style priority. OFFHAND food is then started through the existing detached stack + native `hand=1` path, and native completion is written back only through `Actor::setItemInHandSlot(hand=1)`.
+- Player's virtual tick function is `0xF9E6358..0xF9E7E14`.
+- At `0xF9E71A0` the long-use path inlines selected-MAIN lookup: selected Inventory at state `+0xB8`, selected slot at `+0x10`, vtable `+0x40`, then `blr` at `0xF9E71B0`.
+- The concrete Player Inventory vtable resolves `+0x40` to `0xF883B58`; its RTTI is `Inventory`, and its constructor `0xF881CB0` stores the owning Player at `Inventory+0x158`.
+- The tick compares this returned selected-MAIN stack with the active-use stack at `Player+0x6D8`. OFFHAND food therefore starts correctly and is stopped on the next tick because MAIN is empty/different.
+- The native completion call remains `0xF9E7450 -> 0xF9E8094`.
 
-The mechanism is intentionally origin-agnostic: `RightUseRouter` has no dependency on SwapEngine/SwapRuntime and reads only the live OFFHAND slot at click time. An item placed manually into slot 34 and the same item produced there by F swap therefore enter the same start/session/completion path.
+The fix hooks only `Inventory::getItem @ 0xF883B58`. It redirects **only** when the return PC is exact long-use tick `0xF9E71B4`, the Inventory owner equals the active OFFHAND session Player, and Minecraft's active-use stack still matches the live OFFHAND slot. Every other Inventory caller runs unchanged. No selected-item global spoof, custom timer, physical hand swap, synthetic packet, or swap-history check is used.
 
-Required device checks: eat from manually inserted OFFHAND food and from F-swapped OFFHAND food with MAIN empty; repeat with Sword/Axe/Pickaxe in MAIN; verify stack decrement, last-item removal, bowl/bottle replacement where applicable, cancellation, and that MAIN is never consumed.
+Because the bridge reads only the live OFFHAND slot/session, manually inserted food and F-swapped food are intentionally identical. Existing native completion/writeback still performs consumption/container replacement through OFFHAND hand 1.
 
-1. Bow offhand FPP: exactly one Bow is visible on the left/offhand side.
-2. Bow offhand TPP: exactly one Bow is attached to the left hand; inventory/player preview must remain unaffected.
-3. Trident offhand FPP: one native 3D Trident is visible on the left and follows normal/raise/use animation without a generic 2D duplicate.
-4. Trident TPP and mainhand Bow/Trident remain vanilla.
-5. Crafting and pickup must not auto-route ordinary items into slot 34.
-6. Manual arbitrary-item placement into offhand remains available.
-7. MAINHAND item with no right-click action + placeable block in OFFHAND: right-click places from OFFHAND; left-click remains MAINHAND.
-8. After OFFHAND placement, the remaining item can still be removed/moved normally from slot 34.
-9. F swap with one empty hand works repeatedly without ghost/duplicate stacks.
-10. F swap with both MAINHAND and OFFHAND occupied alternates correctly, and the new OFFHAND item can immediately be removed through normal inventory UI.
-
-
-Renderer review also corrected six 1.26.51.1 callsite translations for spear admission and native owner-vector/matrix lookup. Their BL targets are verified by the binary test.
 
 ### Banner FPP — build #470 logic ported to 1.26.51.1
 
