@@ -505,3 +505,37 @@ for marker in (
             f"non-relocating native scope lifetime contract missing {marker}"
         )
 
+# Exact 1.26.51.1 RE: OFFHAND uses two different slot indices depending on
+# transaction layer. Legacy InventoryAction container 119 uses slot 0, while
+# predictive ContainerType::Hand (19) uses SimplePlayerContainer slot 1.
+for marker in (
+    "kOffhandLegacySlot=0",
+    "kHandOffhandSlot=1",
+    "recordChangedSlot(screen,kHandContainerType,kHandOffhandSlot)",
+):
+    if marker not in engine.replace(" ", "") and marker not in engine:
+        raise AssertionError(f"OFF slot-domain split missing {marker}")
+
+if "recordChangedSlot(screen,kHandContainerType,kOffhandLocalSlot)" in engine.replace(" ", ""):
+    raise AssertionError("predictive Hand OFF must not use legacy container-119 slot 0")
+
+# Device #702 showed OFF->MAIN storage was healthy but settled was sampled
+# while the predictive request was still open. Close request first, then
+# inspect the legacy transaction manager.
+swap_body = engine[engine.index("bool SwapEngine::swap"):]
+compact_swap = swap_body.replace(" ", "").replace("\n", "")
+off_start = compact_swap.index("if(offEmpty){")
+main_start = compact_swap.index("if(mainEmpty){", off_start)
+occ_start = compact_swap.index("Snapshotmain(", main_start)
+for body, name in (
+    (compact_swap[off_start:main_start], "MAIN->OFF"),
+    (compact_swap[main_start:occ_start], "OFF->MAIN"),
+    (compact_swap[occ_start:], "OCCUPIED"),
+):
+    close = body.find("screenSlots.finish()")
+    settle = body.find("legacyTransactionSettled(player)")
+    if close < 0 or settle < 0 or close > settle:
+        raise AssertionError(
+            f"{name} must close predictive scope before settlement check"
+        )
+
