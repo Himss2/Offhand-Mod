@@ -410,7 +410,7 @@ for marker in (
     "kScreenStackIndexOffset=0x20",
     "currentLegacyRequestScreen(",
     "index>>6",
-    "index&0x1FF",
+    "0x1FF",
     "[SwapEngine][legacy-screen-slots] direct screen=",
 ):
     if marker not in engine.replace(" ", "") and marker not in engine:
