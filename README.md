@@ -26,6 +26,16 @@ Protected swap invariants:
 
 Historical branch findings retained before branch cleanup are summarized in [docs/BRANCH_ARCHIVE.md](docs/BRANCH_ARCHIVE.md).
 
+### NativeOffhandPolicy Mod Menu lifecycle candidate
+
+This candidate starts from the protected build #721 swap baseline and does not modify `src/swap/*`, RightUseRouter, or renderer behavior.
+
+The lifecycle bug was caused by using `NativeOffhandPolicy::installed()` as the Mod Menu toggle guard. `installed()` intentionally reports whether the native patch is currently applied, so toggling Offhand OFF reverted the patch and made the next ON callback skip the policy entirely.
+
+The policy now exposes `available()` for lifecycle readiness (`mInstruction != 0`). Mod Menu toggle/disable code uses that state, while `installed()` keeps its original meaning: target resolved **and patch currently applied**. Therefore OFF can revert the exact native policy patch and a later ON can reapply it through the existing fingerprint-checked `applyPatch()` path.
+
+Required device check: toggle Offhand OFF -> ON repeatedly without restarting Minecraft, then confirm arbitrary manual items can again be placed into OFFHAND after each ON. F-swap behavior must remain identical to build #721.
+
 
 Native Levi Launcher Android mod for Minecraft Bedrock **1.26.45.1** and **1.26.51.1**.
 

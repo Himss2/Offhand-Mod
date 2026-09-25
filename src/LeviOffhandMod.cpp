@@ -35,7 +35,7 @@ void onModuleToggle(std::string_view moduleId, bool enabled) {
     }
 
     auto& policy=runtime::NativeOffhandPolicy::instance();
-    if(policy.installed()) {
+    if(policy.available()) {
         policy.setFeatureEnabled(enabled);
     }
 
@@ -206,7 +206,7 @@ public:
         Patch::instance().uninstall(context);
 
         auto& policy=runtime::NativeOffhandPolicy::instance();
-        if(policy.installed()) {
+        if(policy.available()) {
             policy.setFeatureEnabled(false);
         }
 

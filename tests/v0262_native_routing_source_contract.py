@@ -112,6 +112,21 @@ assert "auto& autoInsert=runtime::AutoInsertRouting::instance();" in disable_bod
 assert "if(autoInsert.installed())" in disable_body
 assert "autoInsert.setFeatureEnabled(false);" in disable_body
 assert "auto& policy=runtime::NativeOffhandPolicy::instance();" in disable_body
-assert "if(policy.installed())" in disable_body
+assert "if(policy.available())" in disable_body
+assert "if(policy.installed())" not in disable_body
 assert "policy.setFeatureEnabled(false);" in disable_body
+
+toggle_start = mod_text.index("void onModuleToggle(std::string_view moduleId, bool enabled)")
+toggle_end = mod_text.index("} // namespace", toggle_start)
+toggle_body = mod_text[toggle_start:toggle_end]
+assert "auto& policy=runtime::NativeOffhandPolicy::instance();" in toggle_body
+assert "if(policy.available())" in toggle_body
+assert "if(policy.installed())" not in toggle_body
+assert "policy.setFeatureEnabled(enabled);" in toggle_body
+
+policy_header = texts["src/runtime/NativeOffhandPolicy.hpp"]
+assert "[[nodiscard]] bool available() const noexcept;" in policy_header
+assert "bool NativeOffhandPolicy::available() const noexcept" in policy_text
+assert "return mInstruction != 0;" in policy_text
+assert "return available() && mPatchApplied.load(std::memory_order_acquire);" in policy_text
 print("v0.2.62 lifecycle fail-safe contract passed")

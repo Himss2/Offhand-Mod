@@ -245,6 +245,22 @@ Only after this matrix passes may swap be reintroduced. When that happens, add s
 16. Occupied MAIN=A / OFF=B repeated F swaps alternate A/B correctly.
 17. Immediately after occupied swap, the new OFFHAND item can be moved/removed normally and right-click behavior still follows the existing MAINHAND ownership rules.
 
+## NativeOffhandPolicy OFF -> ON lifecycle regression
+
+Protected swap baseline: build #721 (`73336dccfa4c86476ebb2940de99a00e321ff7b2`). This fix must not alter any swap source, transaction ordering, selected-item access, or predictive bookkeeping.
+
+Root cause: `NativeOffhandPolicy::installed()` was used as the Mod Menu callback guard even though it represents the **currently applied patch**. OFF calls `revertPatch()`, which clears `mPatchApplied`; the following ON callback therefore saw `installed()==false` and never called `setFeatureEnabled(true)`.
+
+Fix boundary:
+
+- add `available()` to represent a resolved policy target that remains toggleable while the patch is temporarily disabled;
+- use `available()` in Mod Menu toggle and mod-disable lifecycle guards;
+- keep `installed()` as the active-patch predicate;
+- keep the existing exact 1.26.51.1 target/signature/fingerprint checks and the existing patch/revert implementation;
+- no changes to `src/swap/*`, RightUseRouter, AutoInsertRouting behavior, renderer, or native storage transaction code.
+
+Device regression check: fresh launch -> manual arbitrary OFF insertion -> Mod Menu OFF -> ON -> manual arbitrary OFF insertion again; repeat OFF/ON several times. Then rerun one-empty and occupied F swaps to confirm build-#721 behavior is unchanged.
+
 ## Documentation rule
 
 Any change that touches:

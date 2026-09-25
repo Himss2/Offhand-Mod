@@ -17,6 +17,7 @@ public:
     void setFeatureEnabled(bool enabled) noexcept;
 
     [[nodiscard]] bool featureEnabled() const noexcept;
+    [[nodiscard]] bool available() const noexcept;
     [[nodiscard]] bool installed() const noexcept;
 
 private:

@@ -343,8 +343,12 @@ bool NativeOffhandPolicy::featureEnabled() const noexcept {
     return mFeatureEnabled.load(std::memory_order_acquire);
 }
 
+bool NativeOffhandPolicy::available() const noexcept {
+    return mInstruction != 0;
+}
+
 bool NativeOffhandPolicy::installed() const noexcept {
-    return mInstruction != 0 && mPatchApplied.load(std::memory_order_acquire);
+    return available() && mPatchApplied.load(std::memory_order_acquire);
 }
 
 } // namespace levioffhand::runtime
