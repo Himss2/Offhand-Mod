@@ -288,18 +288,20 @@ if "mSetItemInHandSlot(" in compact_swap:
         "screen-slot bookkeeping must not change the #662 OFF storage writer"
     )
 
-# Native legacy scope cleanup must honor std::function storage mode.
-# The Player-aware 0xF88A434 wrapper can return either an inline or heap
-# callable; using +0x20 unconditionally is not a valid destruction contract.
+# Exact-binary RE correction for the final_action/std::function object:
+# every return path of 0xF88A434 -> 0xF88D960 stores the scope base itself at
+# scope+0x20 (0xF88A480, 0xF88D9E8, 0xF88DA40). For this exact wrapper the
+# callable is therefore ALWAYS inline. If the pointer is external, the object
+# has been relocated/corrupted and must fail closed rather than call heap
+# destroy (+0x28) on a stack address.
 for marker in (
     "kNativeFunctionDestroyInlineVtableOffset=0x20",
-    "kNativeFunctionDestroyHeapVtableOffset=0x28",
-    "inlineCallable=",
-    "callable==static_cast<void*>(scope.storage.data())",
+    "callable!=static_cast<void*>(scope.storage.data())",
+    "native scope self-pointer mismatch",
 ):
     if marker not in engine.replace(" ", "") and marker not in engine:
         raise AssertionError(
-            f"safe native legacy-scope cleanup missing {marker}"
+            f"inline-only native legacy-scope cleanup missing {marker}"
         )
 
 finish_start = engine.index("[[nodiscard]] bool finishNativeClientLegacyScope")
@@ -308,9 +310,9 @@ finish_end = engine.index(
     finish_start
 )
 finish_body = engine[finish_start:finish_end]
-if "kNativeFunctionDestroyHeapVtableOffset" not in finish_body:
+if "kNativeFunctionDestroyHeapVtableOffset" in finish_body:
     raise AssertionError(
-        "legacy-scope cleanup must select heap destroy slot when callable is external"
+        "exact 1.26.51.1 final_action cleanup must never heap-destroy a relocated scope"
     )
 
 # Never dereference the native callable vtable before proving it belongs to a
