@@ -321,3 +321,66 @@ projectile, decrement, packet, or physical hand swap.
 
 Block placement, Sword/Shears routing, swap storage, renderer, long-use tick,
 completion, and release paths are unchanged by this candidate.
+
+
+---
+
+## Accepted baseline reset — build #773
+
+**Accepted gameplay baseline:** GitHub Actions build **#773**, commit
+`5264f002cd2a018a1fed4fa678e807802a5a91e4`.
+
+All experimental builds/commits produced **after build #773 are rejected as
+behavior baselines** for the next debugging cycle. Do not cherry-pick their
+gameplay/action-routing changes back into the new work unless a change is
+re-derived and independently verified from the #773 baseline.
+
+The runtime/source baseline for new fixes is therefore exactly build #773.
+Documentation-only commits made after this point do not change that runtime
+baseline.
+
+### Known gameplay bugs on build #773
+
+1. **Throwable / instant right-click items work from OFFHAND, but MAINHAND-first
+   ownership is not yet universal.** If MAIN and OFF both contain usable
+   right-click items, one input can still reach both hands in some
+   combinations. MAIN must always own the action when MAIN has a valid
+   right-click action; OFF may run only when MAIN genuinely has no action for
+   that context.
+2. **Shovel and Hoe OFFHAND actions work, but have the same priority defect.**
+   Their contextual block action must respect MAINHAND-first ownership rather
+   than racing/falling through to OFF incorrectly.
+3. **Other right-click item families remain inconsistent when MAIN is occupied.**
+   Some non-throwable / non-firework-style items can work from OFF with an
+   empty MAIN but fail or route incorrectly when MAIN contains another item.
+   This must be solved through generic ownership/context routing rather than
+   per-item exceptions.
+4. **MAIN Spear hold-use can mix with OFF block placement.** Holding right-click
+   with a Spear in MAIN can keep the Spear hold action active while also placing
+   the OFFHAND block. A valid MAIN hold-use must be terminal for that input;
+   OFF block placement must not execute simultaneously.
+
+These four issues are the next action-routing scope. Do not begin visual /
+animation hook work until this routing baseline is stable again.
+
+### Test-branch version rule
+
+For every new test branch created from this baseline, `manifest.json` must use
+a human-readable test label instead of a normal numeric release version.
+
+Examples:
+
+```json
+"version": "test 1"
+```
+
+then:
+
+```json
+"version": "test 2"
+```
+
+and so on.
+
+Do **not** bump test branches as `0.2.69`, `0.2.70`, etc. Numeric release
+versions are reserved for an accepted/release baseline after device validation.

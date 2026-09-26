@@ -403,3 +403,75 @@ Verified RE anchors for the first device target:
 This is not evidence of successful device gameplay yet. Device validation must
 confirm projectile spawn, teleport, OFF count decrement, manual-vs-F parity,
 MAIN priority, block placement, Sword/Shears, and Mod Menu disabled behavior.
+
+
+---
+
+## 2026-09-26 — hard reset to accepted build #773
+
+The next debugging cycle starts from **build #773 only**:
+
+```text
+Actions build: #773
+Commit: 5264f002cd2a018a1fed4fa678e807802a5a91e4
+Branch at build time: test/instant-offhand-air-use-752
+Result: success
+```
+
+All gameplay/action-routing experiments after #773 are considered **rejected**
+for baseline purposes. They must not influence the new implementation by
+merge/cherry-pick. Any useful idea from a later rejected build must first be
+re-derived against #773 and revalidated independently.
+
+A documentation-only commit may sit on top of #773 in `main`; this does not
+change the accepted runtime/source baseline.
+
+### Known bugs that must be preserved as open tests
+
+1. **MAINHAND-first is incomplete for throwable/instant use.**
+   OFF throwable support itself works, but when both hands have valid
+   right-click actions the router can still execute more than one hand.
+   Required rule: valid MAIN action is terminal; OFF is fallback only.
+2. **Shovel/Hoe contextual use works from OFF but priority is wrong.**
+   Context-sensitive block actions need the same MAIN-first arbitration without
+   regressing Sword/Pickaxe/Axe/block-placement behavior.
+3. **Other item families are inconsistent with occupied MAIN.**
+   Some OFF right-click actions that work with empty MAIN fail or route
+   incorrectly once MAIN holds another item. Solve this as a generic ownership
+   problem, not an item-ID whitelist.
+4. **Spear MAIN hold-use + OFF block can execute together.**
+   MAIN hold/use must suppress OFF block placement for the same right-click
+   sequence.
+
+### Required invariant for the next fix branch
+
+```text
+MAIN has a valid action in the current context
+    -> execute MAIN only
+
+MAIN genuinely passes / has no valid action
+    -> OFF may attempt the action
+
+Never:
+MAIN valid action + OFF valid action
+    -> execute both from one input
+```
+
+### Test manifest naming
+
+Every new test branch from this baseline must change `manifest.json` from the
+release-style numeric version to a test label:
+
+```json
+"version": "test 1"
+```
+
+Increment the label per test branch/build family (`test 2`, `test 3`, ...).
+Do not use a numeric release version for experimental branches. Restore/bump a
+numeric release version only after the candidate is accepted on device.
+
+### Scope gate before renderer/animation work
+
+Do not start new visual/animation hooks until the four action-routing bugs above
+are device-validated. Renderer work must not be used to mask or compensate for
+incorrect hand ownership.
