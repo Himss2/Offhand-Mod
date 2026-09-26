@@ -1678,7 +1678,7 @@ bool RightUseRouter::upperUseDetour(
         gUpperMainClaimed = previousClaimed;
         if (mainClaimed) {
             __android_log_print(
-                ANDROID_LOG_DEBUG,
+                ANDROID_LOG_INFO,
                 kLogTag,
                 "[RightUseRouter] upper-use MAIN claimed; OFF suppressed"
             );
@@ -1700,7 +1700,7 @@ bool RightUseRouter::upperUseDetour(
     gUpperMainClaimed = previousClaimed;
 
     __android_log_print(
-        ANDROID_LOG_DEBUG,
+        ANDROID_LOG_INFO,
         kLogTag,
         "[RightUseRouter] upper-use OFF fallback handled=%d",
         offHandled ? 1 : 0
