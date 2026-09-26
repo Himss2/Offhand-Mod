@@ -1571,8 +1571,35 @@ bool RightUseRouter::baseUseItemDetour(
     // MAIN first, OFF only when MAIN genuinely passes.
     const auto result = routeUseAction(
         [&]() noexcept {
+            const bool diagPearl =
+                itemUseRvaForDiag(mainStack) == kEnderPearlUseRva;
+            if (diagPearl) {
+                __android_log_print(
+                    ANDROID_LOG_INFO,
+                    kLogTag,
+                    "[InstantAirDiag] MAIN Pearl calling baseUseItem hand=%u mainCount=%u offCount=%u",
+                    static_cast<unsigned int>(hand),
+                    static_cast<unsigned int>(stackCount(mainStack)),
+                    static_cast<unsigned int>(stackCount(offStack))
+                );
+            }
             const bool nativeHandled = original(gameMode, itemStack, hand);
-            return nativeHandled || activeUseMatches(player, mainStack);
+            const bool activeMain = activeUseMatches(player, mainStack);
+            if (diagPearl) {
+                const void* liveOff =
+                    gGetOffhandSlot != nullptr ? gGetOffhandSlot(player) : nullptr;
+                const void* liveMain = selectedOriginal(player);
+                __android_log_print(
+                    ANDROID_LOG_INFO,
+                    kLogTag,
+                    "[InstantAirDiag] MAIN Pearl baseUseItem returned handled=%d mainCount=%u offCount=%u activeMain=%d",
+                    nativeHandled ? 1 : 0,
+                    static_cast<unsigned int>(stackCount(liveMain)),
+                    static_cast<unsigned int>(stackCount(liveOff)),
+                    activeMain ? 1 : 0
+                );
+            }
+            return nativeHandled || activeMain;
         },
         attemptOffhandUse,
         []() noexcept {},
@@ -2005,9 +2032,55 @@ void RightUseRouter::handTransactionDetour(void* player, unsigned char hand, voi
         reinterpret_cast<std::uintptr_t>(callback) == gReleaseCallback) {
         hand = kOffHand;
     }
+    if (action && action->kind == ActionKind::UseAir) {
+        const auto base = minecraftModuleBase();
+        const auto callbackAddress = reinterpret_cast<std::uintptr_t>(callback);
+        const auto callbackRva =
+            base != 0 && callbackAddress >= base
+            ? callbackAddress - base
+            : 0;
+        const void* off =
+            gGetOffhandSlot != nullptr ? gGetOffhandSlot(player) : nullptr;
+        const auto selected =
+            instance->mSelectedItemOriginal != nullptr
+            ? reinterpret_cast<SelectedItemFn>(instance->mSelectedItemOriginal)
+            : nullptr;
+        const void* main = selected != nullptr ? selected(player) : nullptr;
+        __android_log_print(
+            ANDROID_LOG_INFO,
+            kLogTag,
+            "[InstantAirDiag] handTransaction ENTER requestedHand=%u scopeHand=%u envelope=%d callbackRva=0x%llX mainCount=%u offCount=%u",
+            static_cast<unsigned int>(hand),
+            action->hand == ActionHand::OffHand ? 1u : 0u,
+            envelope != nullptr ? 1 : 0,
+            static_cast<unsigned long long>(callbackRva),
+            static_cast<unsigned int>(stackCount(main)),
+            static_cast<unsigned int>(stackCount(off))
+        );
+    }
+
     // Forward the same native envelope/callback/context exactly once. The
     // wrapper owns callback lifetime; never copy its C++ closure manually.
     original(player, hand, envelope, callback, context);
+
+    if (action && action->kind == ActionKind::UseAir) {
+        const void* off =
+            gGetOffhandSlot != nullptr ? gGetOffhandSlot(player) : nullptr;
+        const auto selected =
+            instance->mSelectedItemOriginal != nullptr
+            ? reinterpret_cast<SelectedItemFn>(instance->mSelectedItemOriginal)
+            : nullptr;
+        const void* main = selected != nullptr ? selected(player) : nullptr;
+        __android_log_print(
+            ANDROID_LOG_INFO,
+            kLogTag,
+            "[InstantAirDiag] handTransaction EXIT requestedHand=%u scopeHand=%u mainCount=%u offCount=%u",
+            static_cast<unsigned int>(hand),
+            action->hand == ActionHand::OffHand ? 1u : 0u,
+            static_cast<unsigned int>(stackCount(main)),
+            static_cast<unsigned int>(stackCount(off))
+        );
+    }
 }
 
 } // namespace levioffhand::runtime
