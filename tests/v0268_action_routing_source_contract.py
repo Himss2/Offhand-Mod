@@ -196,7 +196,8 @@ def main() -> int:
     require(
         base_use,
         "useInputRepresentsSelected(itemStack, mainStack)",
-        "if (!stackClaimsMainhandRightClick(mainStack))",
+        "mainAlreadyTriedForPending",
+        "!stackClaimsMainhandRightClick(mainStack)",
         "ScopedActionHand offScope(ActionHand::OffHand, ActionKind::UseAir)",
         "original(gameMode, offSnapshot.get(), kOffHand)",
         "ScopedItemStackSnapshot offSnapshot(currentOff)",
@@ -206,7 +207,7 @@ def main() -> int:
         "activeUseMatches(player, resultingOff)",
         "original(gameMode, itemStack, hand)",
     )
-    if base_use.index("if (!stackClaimsMainhandRightClick(mainStack))") > base_use.index("routeUseAction("):
+    if base_use.index("!stackClaimsMainhandRightClick(mainStack)") > base_use.index("routeUseAction("):
         raise AssertionError(
             "attack-only/no-owner MAINHAND must be classified before generic main-first routing"
         )
