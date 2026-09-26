@@ -336,17 +336,36 @@ def main() -> int:
     if "upperUseDetour" in combined or "mUpperUseHook" in combined:
         raise AssertionError("broad upper-use replay must not be installed")
 
-    accepted_pos = use_block.index("if ((offResult & 1u) != 0u)")
+    # Validate the new upper OffOnly placement reconciliation independently.
+    upper_off_pos = use_block.index("if (gUpperUseAttempt == UpperUseAttempt::OffOnly)")
+    upper_result_pos = use_block.index("if ((result & 1u) != 0u)", upper_off_pos)
+    upper_writeback_pos = use_block.index("gSetItemInHandSlot(", upper_result_pos)
+    upper_trigger_pos = use_block.index(
+        "OffhandPlacementAnimation::instance().trigger()", upper_result_pos
+    )
+    upper_result_return = use_block.index("return result;", upper_trigger_pos)
+    if not (
+        upper_off_pos < upper_result_pos < upper_writeback_pos <
+        upper_trigger_pos < upper_result_return
+    ):
+        raise AssertionError(
+            "upper OffOnly placement must reconcile count before its visual trigger"
+        )
+
+    # Keep the proven #773 legacy path contract intact as well.
+    accepted_pos = use_block.index("if ((offResult & 1u) != 0u)", prehook_pos)
     writeback_pos = use_block.index("gSetItemInHandSlot(", accepted_pos)
-    trigger_pos = use_block.index("OffhandPlacementAnimation::instance().trigger()")
+    trigger_pos = use_block.index(
+        "OffhandPlacementAnimation::instance().trigger()", accepted_pos
+    )
     if not (accepted_pos < writeback_pos < trigger_pos):
         raise AssertionError(
-            "OFFHAND count reconciliation must occur after accepted placement and before visual trigger"
+            "legacy OFFHAND count reconciliation must occur after accepted placement and before visual trigger"
         )
     accepted_return_pos = use_block.index("return offResult;", accepted_pos)
     if not (accepted_pos < trigger_pos < accepted_return_pos):
         raise AssertionError(
-            "placement animation must trigger only inside accepted OFFHAND block-use"
+            "legacy placement animation must trigger only inside accepted OFFHAND block-use"
         )
 
     pre_offhand = use_block[:first_off_assignment]
