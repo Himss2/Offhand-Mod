@@ -312,7 +312,7 @@ using ItemStackDtorFn = void (*)(void*);
 using GetMaxUseDurationFn = int (*)(const void*, const void*);
 using GetAttackDamageFn = int (*)(const void*);
 using ItemBoolFn = bool (*)(const void*);
-using ItemHasTagFn = bool (*)(const void*);
+using ItemHasTagFn = bool (*)(const void*, const void*);
 using UpperRightUseFn = bool (*)(
     void*, std::uintptr_t, std::uintptr_t, std::uintptr_t
 );
