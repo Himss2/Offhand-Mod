@@ -265,7 +265,9 @@ def main() -> int:
     use_block = function_body(router, "RightUseRouter::useItemOnBlockDetour(")
     require(
         use_block,
-        "stackClaimsMainhandRightClick(mainStack, &yieldedAttackOnly)",
+        "mainClaimsAir = stackClaimsMainhandRightClick(",
+        "mainStack, &yieldedAttackOnly, false",
+        "stackClaimsMainhandBlockRightClick(mainStack)",
         "ScopedItemStackSnapshot offSnapshot(offStack)",
         "std::uint32_t offResult = 0;",
         "if (instance->mUseItemOnBlockPreHooked)",
@@ -294,7 +296,7 @@ def main() -> int:
     )
 
     classifier_pos = use_block.index(
-        "stackClaimsMainhandRightClick(mainStack, &yieldedAttackOnly)"
+        "mainClaimsAir = stackClaimsMainhandRightClick("
     )
     first_off_assignment = use_block.index("offResult = original(")
     if classifier_pos > first_off_assignment:
