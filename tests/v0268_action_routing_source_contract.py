@@ -421,6 +421,31 @@ def main() -> int:
         "applyUpperAirUseGatePatch(upperAirUseGateTarget)",
     )
 
+    # Server-side ItemUseInventoryTransaction::handle hard-rejects
+    # hand=1 with "offhand parity experiment not enabled" before entering the
+    # otherwise hand-aware container-119/source-stack validation path.
+    require(
+        router,
+        "kOffhandParityGateRva = 0x10021264",
+        "kOffhandParityGateFingerprint",
+        "kOffhandParityGatePatchName",
+        "kOffhandParityGateAllowBranch",
+        "0x24, 0x00, 0x00, 0x14",
+        "applyOffhandParityGatePatch",
+        "revertOffhandParityGatePatch",
+    )
+    require(
+        install,
+        "offhandParityGateTarget = resolveExactTarget(",
+        "kOffhandParityGateRva",
+        "kOffhandParityGateFingerprint",
+        "applyOffhandParityGatePatch(offhandParityGateTarget)",
+    )
+    require(
+        header,
+        "mOffhandParityGatePatchApplied",
+    )
+
     require(cmake, "src/runtime/RightUseRouter.cpp")
 
     print("v0268/1.26.51.1 native-hand right-use source contract: PASS")
