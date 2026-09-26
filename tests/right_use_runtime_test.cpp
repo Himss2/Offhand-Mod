@@ -73,7 +73,7 @@ static const Item* offWeak = &offItem;
 static Stack mainStack, offStack, activeStack;
 static std::vector<unsigned char> calls;
 static std::uint32_t mainResult = 0, offResult = 1;
-static bool usingItem = false, startUse = false, detached = true;
+static bool usingItem = false, startUse = false, startMainUse = false, detached = true;
 static int copies = 0, destroys = 0;
 static bool mutateOffOnMain = false;
 static bool mutateOffCountOnBlock = false;
@@ -130,6 +130,10 @@ static bool airUse(void*, const void* stack, unsigned char hand) {
     ++airCalls;
     calls.push_back(hand);
     if (hand == 0 && mutateOffOnMain) offStack.count = 7;
+    if (hand == 0 && startMainUse) {
+        usingItem = true;
+        activeStack = mainStack;
+    }
     if (hand == 1) {
         offInputCount = static_cast<const Stack*>(stack)->count;
         detached &= stack != &offStack;
@@ -271,7 +275,7 @@ int main(int argc, char** argv) {
         mainItem.duration = 32;
         mainResult = 0;
         offResult = 1;
-        startUse = true;
+        startMainUse = true;
 
         RightUseRouter::useItemOnBlockDetour(
             &gameMode, &mainStack, nullptr, 0, nullptr, 0, 0, false
@@ -537,8 +541,18 @@ int main(int argc, char** argv) {
         ok &= check(RightUseRouter::selectedItemDetour(&player) == &mainStack, "explicit MAIN scope must override a prior OFF session");
     } else if (test == "off_terminal") {
         offResult = 2;
-        const auto result = RightUseRouter::useItemOnBlockDetour(&gameMode, &mainStack, nullptr, 0, nullptr, 0, 0, false);
-        ok &= check(result == 2 && calls == std::vector<unsigned char>{1}, "nonzero OFF result must not replay MAIN");
+        const auto first = RightUseRouter::useItemOnBlockDetour(
+            &gameMode, &mainStack, nullptr, 0, nullptr, 0, 0, false
+        );
+        ok &= check(first == 0u && calls.empty(),
+                    "neutral MAIN defers terminal OFF result until MAIN air pass");
+        const bool handled = RightUseRouter::baseUseItemDetour(
+            &gameMode, &mainStack, 0
+        );
+        ok &= check(
+            handled && calls == std::vector<unsigned char>{0,1},
+            "nonzero pending OFF result must terminate after one MAIN air pass"
+        );
     } else if (test == "air_main_pass") {
         mainTable[0x290/8] = reinterpret_cast<void*>(testBase + 0xFF78D40);
         mainItem.duration = 32;
