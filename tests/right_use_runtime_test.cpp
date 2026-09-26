@@ -80,6 +80,7 @@ static bool mutateOffCountOnBlock = false;
 static int offInputCount = -1;
 static int offhandSetterCalls = 0;
 static int shovelTagToken = 1, axeTagToken = 2, hoeTagToken = 3;
+#ifdef LEVIOFFHAND_CONTEXTUAL_TAG_ROUTING
 static bool hasSemanticTag(const void* rawItem, const void* rawTag) {
     const auto* item = static_cast<const Item*>(rawItem);
     if (rawTag == &shovelTagToken) return (item->semanticTags & 0x1u) != 0;
@@ -87,6 +88,7 @@ static bool hasSemanticTag(const void* rawItem, const void* rawTag) {
     if (rawTag == &hoeTagToken) return (item->semanticTags & 0x4u) != 0;
     return false;
 }
+#endif
 static int damage(const void* p) { return static_cast<const Item*>(p)->damage; }
 static int duration(const void* p, const void*) { return static_cast<const Item*>(p)->duration; }
 static bool cannotAttack(const void*) { return false; }
@@ -178,10 +180,12 @@ int main(int argc, char** argv) {
     router.mUseItemOnBlockOriginal = reinterpret_cast<void*>(&blockUse);
     router.mBaseUseItemOriginal = reinterpret_cast<void*>(&airUse);
     gGetOffhandSlot = offhand; gSetItemInHandSlot = setHand;
+#ifdef LEVIOFFHAND_CONTEXTUAL_TAG_ROUTING
     gItemHasTag = hasSemanticTag;
     gShovelTag = &shovelTagToken;
     gAxeTag = &axeTagToken;
     gHoeTag = &hoeTagToken;
+#endif
     gStackIsNull = isNull;
     gPlayerIsUsingItem = isUsing; gItemInUseStack = active;
     gStackDiffersForUse = differs; gItemStackCopyCtor = copyStack; gItemStackDtor = destroyStack;
