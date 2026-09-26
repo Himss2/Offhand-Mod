@@ -90,6 +90,30 @@ constexpr std::array<std::uint8_t, 4> kUpperAirUseGateNop{
     0x1F, 0x20, 0x03, 0xD5, // nop
 };
 
+// ItemUseInventoryTransaction::handle server-side offhand parity gate.
+// 1.26.51.1 exact code at 0x10021264:
+//
+//   b.ne 0x100212F4
+//
+// hand != 1 already enters the normal handler. hand == 1 falls through into
+// the explicit "offhand parity experiment not enabled" / ApiDenied path.
+// Replace only that conditional branch with an unconditional branch to the
+// same normal handler. The code after 0x100212F4 is already hand-aware:
+// it resolves hand=1, validates the live OFF stack, uses legacy container 119,
+// and propagates the hand through the native transaction callback.
+constexpr std::uintptr_t kOffhandParityGateRva = 0x10021264;
+constexpr char kOffhandParityGatePatchName[] =
+    "levi_offhand.item_use_offhand_parity_gate";
+constexpr std::array<std::uint8_t, 16> kOffhandParityGateFingerprint{
+    0x81, 0x04, 0x00, 0x54, // b.ne 0x100212F4
+    0xE0, 0x03, 0x15, 0xAA, // mov x0,x21
+    0x89, 0xF9, 0xD4, 0x97, // bl 0xF55F890
+    0x08, 0x00, 0x40, 0xF9, // ldr x8,[x0]
+};
+constexpr std::array<std::uint8_t, 4> kOffhandParityGateAllowBranch{
+    0x24, 0x00, 0x00, 0x14, // b 0x100212F4
+};
+
 // Exact native long-use tick patch, recovered from the uploaded 1.26.51.1
 // ELF (SHA-256 b8a63515...6847b4).
 //
@@ -964,6 +988,33 @@ void revertUpperAirUseGatePatch() noexcept {
     }
 }
 
+[[nodiscard]] bool applyOffhandParityGatePatch(
+    std::uintptr_t target
+) noexcept {
+    if (target == 0) {
+        return false;
+    }
+
+    return pl::memory::writeBytes(
+        target,
+        std::span<const std::uint8_t>(
+            kOffhandParityGateAllowBranch.data(),
+            kOffhandParityGateAllowBranch.size()
+        ),
+        kOffhandParityGatePatchName
+    );
+}
+
+void revertOffhandParityGatePatch() noexcept {
+    if (!pl::memory::revertPatch(kOffhandParityGatePatchName)) {
+        __android_log_print(
+            ANDROID_LOG_WARN,
+            kLogTag,
+            "[RightUseRouter] server offhand-parity gate patch revert reported failure"
+        );
+    }
+}
+
 [[nodiscard]] bool applyUseTickBridgePatch(
     std::uintptr_t target
 ) noexcept {
@@ -1052,6 +1103,9 @@ bool RightUseRouter::install(pl::mod::ModContext& context) noexcept {
     const auto upperAirUseGateTarget = resolveExactTarget(
         kUpperAirUseGateRva, kUpperAirUseGateFingerprint
     );
+    const auto offhandParityGateTarget = resolveExactTarget(
+        kOffhandParityGateRva, kOffhandParityGateFingerprint
+    );
     const auto interactionGateTarget = resolveExactTarget(
         kInteractionGateRva, kInteractionGateProbeBytes
     );
@@ -1068,12 +1122,13 @@ bool RightUseRouter::install(pl::mod::ModContext& context) noexcept {
         usingTarget == 0 || inUseTarget == 0 || differsTarget == 0 ||
         copyCtorTarget == 0 || dtorTarget == 0 || setHandTarget == 0 ||
         useTickBridgeTarget == 0 || upperAirUseGateTarget == 0 ||
+        offhandParityGateTarget == 0 ||
         interactionGateTarget == 0 || enderPearlUseTarget == 0
     ) {
         __android_log_print(
             ANDROID_LOG_WARN,
             kLogTag,
-            "[RightUseRouter] stable guard failed offhand=%d null=%d using=%d inUse=%d differs=%d copy=%d dtor=%d setHand=%d useTick=%d airGate=%d gateDiag=%d pearlDiag=%d",
+            "[RightUseRouter] stable guard failed offhand=%d null=%d using=%d inUse=%d differs=%d copy=%d dtor=%d setHand=%d useTick=%d airGate=%d parityGate=%d gateDiag=%d pearlDiag=%d",
             offhandTarget != 0 ? 1 : 0,
             nullTarget != 0 ? 1 : 0,
             usingTarget != 0 ? 1 : 0,
@@ -1084,6 +1139,7 @@ bool RightUseRouter::install(pl::mod::ModContext& context) noexcept {
             setHandTarget != 0 ? 1 : 0,
             useTickBridgeTarget != 0 ? 1 : 0,
             upperAirUseGateTarget != 0 ? 1 : 0,
+            offhandParityGateTarget != 0 ? 1 : 0,
             interactionGateTarget != 0 ? 1 : 0,
             enderPearlUseTarget != 0 ? 1 : 0
         );
@@ -1283,6 +1339,21 @@ bool RightUseRouter::install(pl::mod::ModContext& context) noexcept {
         static_cast<unsigned long long>(kUpperAirUseGateRva)
     );
 
+    if (!applyOffhandParityGatePatch(offhandParityGateTarget)) {
+        context.logger().warn(
+            "[RightUseRouter] exact server offhand-parity gate patch failed"
+        );
+        uninstall(context);
+        return false;
+    }
+    mOffhandParityGatePatchApplied = true;
+    __android_log_print(
+        ANDROID_LOG_INFO,
+        kLogTag,
+        "[InstantAirDiag] server offhand parity gate allowed RVA=0x%llX -> 0x100212F4",
+        static_cast<unsigned long long>(kOffhandParityGateRva)
+    );
+
     mFeatureEnabled.store(true, std::memory_order_release);
     mLoggedOffhandUse.store(false, std::memory_order_relaxed);
     mLoggedBlockUse.store(false, std::memory_order_relaxed);
@@ -1299,6 +1370,11 @@ bool RightUseRouter::install(pl::mod::ModContext& context) noexcept {
 void RightUseRouter::uninstall(pl::mod::ModContext& context) noexcept {
     mFeatureEnabled.store(false, std::memory_order_release);
     clearSession();
+
+    if (mOffhandParityGatePatchApplied) {
+        revertOffhandParityGatePatch();
+        mOffhandParityGatePatchApplied = false;
+    }
 
     if (mUpperAirUseGatePatchApplied) {
         revertUpperAirUseGatePatch();
@@ -1388,6 +1464,7 @@ bool RightUseRouter::installed() const noexcept {
         mSelectedItemHook != nullptr && mSelectedItemHook->installed() &&
         mUseTickPatchApplied &&
         mUpperAirUseGatePatchApplied &&
+        mOffhandParityGatePatchApplied &&
         mReleaseUsingItemHook != nullptr && mReleaseUsingItemHook->installed() &&
         mBaseUseItemHook != nullptr && mBaseUseItemHook->installed() &&
         mUseItemOnBlockHook != nullptr && mUseItemOnBlockHook->installed() &&

@@ -80,6 +80,7 @@ private:
     bool mUseItemOnBlockPreHooked{false};
     bool mUseTickPatchApplied{false};
     bool mUpperAirUseGatePatchApplied{false};
+    bool mOffhandParityGatePatchApplied{false};
 
     std::atomic_bool mFeatureEnabled{false};
     std::atomic_bool mLoggedOffhandUse{false};
