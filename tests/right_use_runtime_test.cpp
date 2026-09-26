@@ -46,6 +46,7 @@ struct Item {
     std::uint8_t maxStackSize = 64;
     std::byte padA9{};
     std::int16_t itemId = 0;
+    std::uint8_t semanticTags = 0;
 };
 static_assert(offsetof(Item, maxStackSize) == 0xA8);
 static_assert(offsetof(Item, itemId) == 0xAA);
@@ -78,6 +79,14 @@ static bool mutateOffOnMain = false;
 static bool mutateOffCountOnBlock = false;
 static int offInputCount = -1;
 static int offhandSetterCalls = 0;
+static int shovelTagToken = 1, axeTagToken = 2, hoeTagToken = 3;
+static bool hasSemanticTag(const void* rawItem, const void* rawTag) {
+    const auto* item = static_cast<const Item*>(rawItem);
+    if (rawTag == &shovelTagToken) return (item->semanticTags & 0x1u) != 0;
+    if (rawTag == &axeTagToken) return (item->semanticTags & 0x2u) != 0;
+    if (rawTag == &hoeTagToken) return (item->semanticTags & 0x4u) != 0;
+    return false;
+}
 static int damage(const void* p) { return static_cast<const Item*>(p)->damage; }
 static int duration(const void* p, const void*) { return static_cast<const Item*>(p)->duration; }
 static bool cannotAttack(const void*) { return false; }
@@ -169,6 +178,10 @@ int main(int argc, char** argv) {
     router.mUseItemOnBlockOriginal = reinterpret_cast<void*>(&blockUse);
     router.mBaseUseItemOriginal = reinterpret_cast<void*>(&airUse);
     gGetOffhandSlot = offhand; gSetItemInHandSlot = setHand;
+    gItemHasTag = hasSemanticTag;
+    gShovelTag = &shovelTagToken;
+    gAxeTag = &axeTagToken;
+    gHoeTag = &hoeTagToken;
     gStackIsNull = isNull;
     gPlayerIsUsingItem = isUsing; gItemInUseStack = active;
     gStackDiffersForUse = differs; gItemStackCopyCtor = copyStack; gItemStackDtor = destroyStack;
@@ -236,6 +249,34 @@ int main(int argc, char** argv) {
             calls == std::vector<unsigned char>{0},
             "Shears must never invoke OFFHAND block placement"
         );
+    } else if (
+        test == "context_tool_main_success" ||
+        test == "context_tool_main_pass"
+    ) {
+        // Shovel/Axe/Hoe are Digger-like (attackDamage > 0) but own a
+        // contextual native use-on for specific blocks. They must get one
+        // MAIN attempt before OFF, while preserving true PASS fallback.
+        mainItem.damage = 3;
+        mainItem.semanticTags = 0x1u; // minecraft:is_shovel
+        mainResult = test == "context_tool_main_success" ? 1u : 0u;
+        offResult = 1u;
+
+        const auto result = RightUseRouter::useItemOnBlockDetour(
+            &gameMode, &mainStack, nullptr, 0, nullptr, 0, 0, false
+        );
+        if (test == "context_tool_main_success") {
+            ok &= check(
+                calls == std::vector<unsigned char>{0},
+                "handled contextual MAIN tool must suppress OFFHAND"
+            );
+            ok &= check(result == 1u, "handled contextual MAIN result preserved");
+        } else {
+            ok &= check(
+                calls == std::vector<unsigned char>{0, 1},
+                "contextual MAIN PASS must fall through to OFFHAND exactly once"
+            );
+            ok &= check(result == 1u, "OFFHAND handles after contextual MAIN PASS");
+        }
     } else if (test == "sword") {
         mainItem.damage = 7;
         // Exact native WeaponItem::use is mov x0,x1; ret. An override is not an action.
