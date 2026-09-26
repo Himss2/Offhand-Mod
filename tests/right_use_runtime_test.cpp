@@ -253,6 +253,7 @@ int main(int argc, char** argv) {
         );
         ok &= check(copies == 0, "deferred OFF block must not snapshot or mutate OFF");
     } else if (test == "main_block_priority") {
+        mainStack.block = reinterpret_cast<void*>(0x1234);
         mainResult = 1;
         offResult = 1;
         const auto result = RightUseRouter::useItemOnBlockDetour(
