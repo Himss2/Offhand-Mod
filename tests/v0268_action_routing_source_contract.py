@@ -126,6 +126,10 @@ def main() -> int:
         "kComponentItemRequiresInteractRva = 0xFDAA1FC",
         "kBaseItemUseOnRva = 0xFF84B84",
         "kComponentItemUseOnRva = 0xFDA8A20",
+        "kItemHasTagRva = 0x1010DA9C",
+        "kAxeItemTagRva = 0x134F13F0",
+        "kHoeItemTagRva = 0x134F1418",
+        "kShovelItemTagRva = 0x134F15A8",
         "itemIsShears(",
         "itemId == kShearsItemId",
         "maxStackSize == 1",
@@ -214,6 +218,10 @@ def main() -> int:
         raise AssertionError(
             "ComponentItem::isUseable is too broad for MAINHAND priority"
         )
+    if "kShovelItemId" in router or "kAxeItemId" in router or "kHoeItemId" in router:
+        raise AssertionError(
+            "contextual MAINHAND priority must use semantic tags, not numeric item IDs"
+        )
     if "requiresInteract(item)" in classifier:
         raise AssertionError(
             "generic ComponentItem::requiresInteract must not claim MAINHAND priority"
@@ -235,6 +243,7 @@ def main() -> int:
         "maxUseDuration",
         "attackOnly",
         "itemIsShears(item)",
+        "itemHasContextualBlockUse(item)",
     )
     if classifier.index("itemIsShears(item)") > classifier.index("attackDamage"):
         raise AssertionError(
@@ -244,6 +253,19 @@ def main() -> int:
         raise AssertionError(
             "specialized native actions must be classified before axe-like attack fallback"
         )
+
+    contextual_helper = function_body(router, "itemHasContextualBlockUse(")
+    require(
+        contextual_helper,
+        "gItemHasTag(item, gShovelTag)",
+        "gItemHasTag(item, gAxeTag)",
+        "gItemHasTag(item, gHoeTag)",
+    )
+    if classifier.index("itemHasContextualBlockUse(item)") > classifier.index("attackDamage"):
+        raise AssertionError(
+            "contextual MAINHAND ownership must be decided before attack-only fallback"
+        )
+
     if classifier.index("attackDamage") > classifier.index("maxUseDuration"):
         raise AssertionError(
             "axe-like attack fallback must run before generic max-use duration"
@@ -359,6 +381,8 @@ def main() -> int:
         "differsTarget = resolveExactTarget(",
         "copyCtorTarget = resolveExactTarget(",
         "dtorTarget = resolveExactTarget(",
+        "itemHasTagTarget = resolveExactTarget(",
+        "contextualPriorityAvailable",
         "setHandExact = resolveExactTarget(",
         "kSetItemInHandSlotRva",
         'resolveHookTarget(\n        "Player::getSelectedItem"',
@@ -374,6 +398,19 @@ def main() -> int:
         raise AssertionError(
             "exact stable fingerprint guard must run before live hook-target fallback"
         )
+
+    # Contextual MAINHAND priority is additive to #773. Failure of the
+    # semantic tag helper must fall back to #773, never disable the router.
+    guard_region = install[install.index("if (\n        offhandTarget == 0"):install.index("if (setHandExact == 0)")]
+    if "itemHasTagTarget == 0" in guard_region or "!contextualPriorityAvailable" in guard_region:
+        raise AssertionError(
+            "optional contextual MAINHAND helper must not become a fatal #773 install dependency"
+        )
+    require(
+        install,
+        "contextual MAINHAND priority enabled for Axe/Hoe/Shovel",
+        "contextual MAINHAND priority unavailable; preserving #773 routing",
+    )
 
     require(
         levi,
