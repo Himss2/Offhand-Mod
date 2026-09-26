@@ -639,6 +639,39 @@ template <typename Fn>
     return true;
 }
 
+[[nodiscard]] std::uintptr_t itemUseRvaForDiag(
+    const void* stack
+) noexcept {
+    const void* item = itemFromStack(stack);
+    const auto base = minecraftModuleBase();
+    if (item == nullptr || base == 0) {
+        return 0;
+    }
+
+    const auto use = itemVirtual<void*>(item, kItemUseVtableOffset);
+    const auto address = reinterpret_cast<std::uintptr_t>(use);
+    if (address < base) {
+        return 0;
+    }
+    return address - base;
+}
+
+[[nodiscard]] int maxUseDurationForDiag(
+    const void* stack
+) noexcept {
+    const void* item = itemFromStack(stack);
+    if (item == nullptr) {
+        return -1;
+    }
+
+    const auto getMaxUseDuration = itemVirtual<GetMaxUseDurationFn>(
+        item, kItemGetMaxUseDurationVtableOffset
+    );
+    return getMaxUseDuration != nullptr
+        ? getMaxUseDuration(item, stack)
+        : -1;
+}
+
 [[nodiscard]] bool stackSupportsInstantOffhandAirUse(
     const void* stack
 ) noexcept {
@@ -1096,6 +1129,12 @@ bool RightUseRouter::install(pl::mod::ModContext& context) noexcept {
         return false;
     }
     mUpperAirUseGatePatchApplied = true;
+    __android_log_print(
+        ANDROID_LOG_INFO,
+        kLogTag,
+        "[InstantAirDiag] upper gate patched RVA=0x%llX",
+        static_cast<unsigned long long>(kUpperAirUseGateRva)
+    );
 
     mFeatureEnabled.store(true, std::memory_order_release);
     mLoggedOffhandUse.store(false, std::memory_order_relaxed);
@@ -1254,7 +1293,19 @@ bool RightUseRouter::baseUseItemDetour(
 
     if (mainEmpty) {
         const void* currentOff = offStack;
-        if (!stackSupportsInstantOffhandAirUse(currentOff)) {
+        const auto useRva = itemUseRvaForDiag(currentOff);
+        const int duration = maxUseDurationForDiag(currentOff);
+        const bool supported = stackSupportsInstantOffhandAirUse(currentOff);
+        __android_log_print(
+            ANDROID_LOG_INFO,
+            kLogTag,
+            "[InstantAirDiag] base-entry mainEmpty=1 offCount=%u useRva=0x%llX duration=%d supported=%d",
+            static_cast<unsigned int>(stackCount(currentOff)),
+            static_cast<unsigned long long>(useRva),
+            duration,
+            supported ? 1 : 0
+        );
+        if (!supported) {
             return false;
         }
     }
@@ -1306,9 +1357,30 @@ bool RightUseRouter::baseUseItemDetour(
             return false;
         }
         ScopedActionHand offScope(ActionHand::OffHand, ActionKind::UseAir);
+        if (mainEmpty) {
+            __android_log_print(
+                ANDROID_LOG_INFO,
+                kLogTag,
+                "[InstantAirDiag] calling baseUseItem OFF hand=1 liveCount=%u snapshotCount=%u",
+                static_cast<unsigned int>(stackCount(currentOff)),
+                static_cast<unsigned int>(stackCount(offSnapshot.get()))
+            );
+        }
         const bool nativeHandled = original(gameMode, offSnapshot.get(), kOffHand);
         const void* resultingOff = gGetOffhandSlot(player);
-        return finishOffhandUse(nativeHandled || activeUseMatches(player, resultingOff));
+        const bool activeOff = activeUseMatches(player, resultingOff);
+        if (mainEmpty) {
+            __android_log_print(
+                ANDROID_LOG_INFO,
+                kLogTag,
+                "[InstantAirDiag] baseUseItem OFF returned handled=%d liveCount=%u snapshotCount=%u activeOff=%d",
+                nativeHandled ? 1 : 0,
+                static_cast<unsigned int>(stackCount(resultingOff)),
+                static_cast<unsigned int>(stackCount(offSnapshot.get())),
+                activeOff ? 1 : 0
+            );
+        }
+        return finishOffhandUse(nativeHandled || activeOff);
     };
 
     // Critical Java-style rule for Sword/Axe/Pickaxe/empty-like MAINHAND:
@@ -1399,6 +1471,7 @@ std::uint32_t RightUseRouter::useItemOnBlockDetour(
         instance->mSelectedItemOriginal
     );
     const void* mainStack = selectedOriginal(player);
+    const bool mainEmptyForDiag = stackIsNull(mainStack);
 
     // Decide whether MAINHAND genuinely owns right-click *before* executing
     // GameMode::useItemOn.  Calling the generic MAINHAND use-on wrapper first
@@ -1453,6 +1526,16 @@ std::uint32_t RightUseRouter::useItemOnBlockDetour(
         return mainFallback();
     }
 
+    if (mainEmptyForDiag) {
+        __android_log_print(
+            ANDROID_LOG_INFO,
+            kLogTag,
+            "[InstantAirDiag] block-route mainEmpty=1 offCount=%u useRva=0x%llX",
+            static_cast<unsigned int>(stackCount(offStack)),
+            static_cast<unsigned long long>(itemUseRvaForDiag(offStack))
+        );
+    }
+
     // Preserve the transaction-safe detached before-state that fixed the
     // post-placement offhand-slot lock.  hand=1 still makes Minecraft mutate
     // the real offhand slot internally.
@@ -1495,6 +1578,24 @@ std::uint32_t RightUseRouter::useItemOnBlockDetour(
             extra,
             flag
         );
+    }
+
+    if (mainEmptyForDiag) {
+        __android_log_print(
+            ANDROID_LOG_INFO,
+            kLogTag,
+            "[InstantAirDiag] block-result offResult=0x%X liveCount=%u snapshotCount=%u",
+            static_cast<unsigned int>(offResult),
+            static_cast<unsigned int>(stackCount(offStack)),
+            static_cast<unsigned int>(stackCount(offSnapshot.get()))
+        );
+        if (offResult == 0u) {
+            __android_log_print(
+                ANDROID_LOG_INFO,
+                kLogTag,
+                "[InstantAirDiag] block OFF passed; MAIN empty fallback will run"
+            );
+        }
     }
 
     if ((offResult & 1u) != 0u) {
