@@ -176,6 +176,22 @@ constexpr std::uintptr_t kComponentItemRequiresInteractRva = 0xFDAA1FC;
 constexpr std::uintptr_t kBaseItemUseOnRva = 0xFF84B84;
 constexpr std::uintptr_t kComponentItemUseOnRva = 0xFDA8A20;
 
+// Optional semantic helper used only to distinguish contextual Digger tools
+// (Axe/Hoe/Shovel) from Sword/Pickaxe for MAINHAND block-use priority.
+// Failure to validate this helper must preserve the exact #773 routing.
+constexpr std::uintptr_t kItemHasTagRva = 0x1010DA9C;
+constexpr std::uintptr_t kAxeItemTagRva = 0x134F13F0;
+constexpr std::uintptr_t kHoeItemTagRva = 0x134F1418;
+constexpr std::uintptr_t kShovelItemTagRva = 0x134F15A8;
+constexpr std::uint64_t kAxeItemTagHash = 0xCB1D9DCFC8FA19CDULL;
+constexpr std::uint64_t kHoeItemTagHash = 0xCB3C94CFC914BA89ULL;
+constexpr std::uint64_t kShovelItemTagHash = 0xB4C59DBDE3006DF6ULL;
+
+constexpr std::array<std::uint8_t, 16> kItemHasTagFingerprint{
+    0xFD, 0x7B, 0xBD, 0xA9, 0xF5, 0x0B, 0x00, 0xF9,
+    0xF4, 0x4F, 0x02, 0xA9, 0xFD, 0x03, 0x00, 0x91,
+};
+
 constexpr std::size_t kGameModePlayerOffset = sizeof(void*);
 constexpr std::size_t kItemWeakPtrOffset = 0x08;
 constexpr std::size_t kItemGetMaxUseDurationVtableOffset = 0x30;
@@ -289,6 +305,7 @@ using ItemStackDtorFn = void (*)(void*);
 using GetMaxUseDurationFn = int (*)(const void*, const void*);
 using GetAttackDamageFn = int (*)(const void*);
 using ItemBoolFn = bool (*)(const void*);
+using ItemHasTagFn = bool (*)(const void*, const void*);
 
 OffhandItemFn gGetOffhandSlot = nullptr;
 SetItemInHandSlotFn gSetItemInHandSlot = nullptr;
@@ -298,6 +315,10 @@ ItemInUseStackFn gItemInUseStack = nullptr;
 StackDiffersForUseFn gStackDiffersForUse = nullptr;
 ItemStackCopyCtorFn gItemStackCopyCtor = nullptr;
 ItemStackDtorFn gItemStackDtor = nullptr;
+ItemHasTagFn gItemHasTag = nullptr;
+const void* gAxeTag = nullptr;
+const void* gHoeTag = nullptr;
+const void* gShovelTag = nullptr;
 
 using InteractionGateFn = std::uint32_t (*)(void*, const void*);
 using EnderPearlUseFn = void* (*)(void*, void*, void*, unsigned char);
@@ -572,6 +593,40 @@ template <typename Fn>
     return function;
 }
 
+[[nodiscard]] bool runtimeTagHashMatches(
+    const void* tag,
+    std::uint64_t expected
+) noexcept {
+    if (tag == nullptr) {
+        return false;
+    }
+    std::uint64_t actual = 0;
+    std::memcpy(&actual, tag, sizeof(actual));
+    return actual == expected;
+}
+
+[[nodiscard]] bool itemHasContextualBlockUse(
+    const void* item
+) noexcept {
+    if (
+        item == nullptr ||
+        gItemHasTag == nullptr ||
+        gShovelTag == nullptr ||
+        gAxeTag == nullptr ||
+        gHoeTag == nullptr
+    ) {
+        return false;
+    }
+
+    // Target sensitivity remains native. This only says the MAINHAND item is
+    // capable of a contextual block action; Minecraft still decides whether
+    // the clicked block is actually handled or returns PASS.
+    return
+        gItemHasTag(item, gShovelTag) ||
+        gItemHasTag(item, gAxeTag) ||
+        gItemHasTag(item, gHoeTag);
+}
+
 [[nodiscard]] bool stackClaimsMainhandRightClick(
     const void* stack,
     bool* yieldedAttackOnly = nullptr,
@@ -633,6 +688,15 @@ template <typename Fn>
         specializedRequiresInteract ||
         (includeBlockUse && specializedUseOn)
     ) {
+        return true;
+    }
+
+    // #773 treated every Digger-like item as attack-only because modern
+    // Axe/Hoe/Shovel share ComponentItem::_useOn with Sword/Pickaxe. Give
+    // only these contextual tools MAINHAND block-use ownership. If MAIN
+    // returns PASS for the clicked block, the existing useItemOnBlock router
+    // falls through exactly once to OFFHAND.
+    if (includeBlockUse && itemHasContextualBlockUse(item)) {
         return true;
     }
 
@@ -1151,6 +1215,26 @@ bool RightUseRouter::install(pl::mod::ModContext& context) noexcept {
     const auto dtorTarget = resolveExactTarget(
         kItemStackDtorRva, kItemStackDtorFingerprint
     );
+
+    // Optional MAINHAND-priority extension. It is intentionally not part of
+    // the fatal #773 stable guard: if any semantic anchor mismatches, routing
+    // falls back to the known-good #773 classifier unchanged.
+    const auto itemHasTagTarget = resolveExactTarget(
+        kItemHasTagRva, kItemHasTagFingerprint
+    );
+    const auto moduleBase = minecraftModuleBase();
+    const void* axeTag =
+        moduleBase != 0 ? reinterpret_cast<const void*>(moduleBase + kAxeItemTagRva) : nullptr;
+    const void* hoeTag =
+        moduleBase != 0 ? reinterpret_cast<const void*>(moduleBase + kHoeItemTagRva) : nullptr;
+    const void* shovelTag =
+        moduleBase != 0 ? reinterpret_cast<const void*>(moduleBase + kShovelItemTagRva) : nullptr;
+    const bool contextualPriorityAvailable =
+        itemHasTagTarget != 0 &&
+        runtimeTagHashMatches(axeTag, kAxeItemTagHash) &&
+        runtimeTagHashMatches(hoeTag, kHoeItemTagHash) &&
+        runtimeTagHashMatches(shovelTag, kShovelItemTagHash);
+
     const auto setHandExact = resolveExactTarget(
         kSetItemInHandSlotRva, kSetItemInHandSlotFingerprint
     );
@@ -1269,6 +1353,22 @@ bool RightUseRouter::install(pl::mod::ModContext& context) noexcept {
     gStackDiffersForUse = reinterpret_cast<StackDiffersForUseFn>(differsTarget);
     gItemStackCopyCtor = reinterpret_cast<ItemStackCopyCtorFn>(copyCtorTarget);
     gItemStackDtor = reinterpret_cast<ItemStackDtorFn>(dtorTarget);
+    gItemHasTag = contextualPriorityAvailable
+        ? reinterpret_cast<ItemHasTagFn>(itemHasTagTarget)
+        : nullptr;
+    gAxeTag = contextualPriorityAvailable ? axeTag : nullptr;
+    gHoeTag = contextualPriorityAvailable ? hoeTag : nullptr;
+    gShovelTag = contextualPriorityAvailable ? shovelTag : nullptr;
+
+    if (contextualPriorityAvailable) {
+        context.logger().info(
+            "[RightUseRouter] contextual MAINHAND priority enabled for Axe/Hoe/Shovel"
+        );
+    } else {
+        context.logger().warn(
+            "[RightUseRouter] contextual MAINHAND priority unavailable; preserving #773 routing"
+        );
+    }
 
     mSelectedItemTarget = selectedTarget;
     mReleaseUsingItemTarget = releaseTarget;
@@ -1491,6 +1591,10 @@ void RightUseRouter::uninstall(pl::mod::ModContext& context) noexcept {
     mSelectedItemTarget = 0;
     gGetOffhandSlot = nullptr;
     gSetItemInHandSlot = nullptr;
+    gItemHasTag = nullptr;
+    gAxeTag = nullptr;
+    gHoeTag = nullptr;
+    gShovelTag = nullptr;
     gStackIsNull = nullptr;
     gPlayerIsUsingItem = nullptr;
     gItemInUseStack = nullptr;
