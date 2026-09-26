@@ -126,6 +126,11 @@ def main() -> int:
         "kComponentItemRequiresInteractRva = 0xFDAA1FC",
         "kBaseItemUseOnRva = 0xFF84B84",
         "kComponentItemUseOnRva = 0xFDA8A20",
+        "kItemHasTagRva = 0x1010DA9C",
+        "kAxeItemTagRva = 0x134F13F0",
+        "kHoeItemTagRva = 0x134F1418",
+        "kShovelItemTagRva = 0x134F15A8",
+        "kSpearItemTagRva = 0x1335AD50",
         "itemIsShears(",
         "itemId == kShearsItemId",
         "maxStackSize == 1",
@@ -192,7 +197,7 @@ def main() -> int:
     require(
         base_use,
         "useInputRepresentsSelected(itemStack, mainStack)",
-        "if (!stackClaimsMainhandRightClick(mainStack))",
+        "if (!stackClaimsMainhandRightClick(mainStack, nullptr, false))",
         "ScopedActionHand offScope(ActionHand::OffHand, ActionKind::UseAir)",
         "original(gameMode, offSnapshot.get(), kOffHand)",
         "ScopedItemStackSnapshot offSnapshot(currentOff)",
@@ -201,8 +206,10 @@ def main() -> int:
         "activeUseMatches(player, mainStack)",
         "activeUseMatches(player, resultingOff)",
         "original(gameMode, itemStack, hand)",
+        "gMainAirTransactionObserved",
+        "transactionObserved",
     )
-    if base_use.index("if (!stackClaimsMainhandRightClick(mainStack))") > base_use.index("routeUseAction("):
+    if base_use.index("if (!stackClaimsMainhandRightClick(mainStack, nullptr, false))") > base_use.index("routeUseAction("):
         raise AssertionError(
             "attack-only/no-owner MAINHAND must be classified before generic main-first routing"
         )
@@ -210,9 +217,17 @@ def main() -> int:
         raise AssertionError("1.26.51.1 routing must not use ItemStack pointer identity")
 
     classifier = function_body(router, "stackClaimsMainhandRightClick(")
-    if "isUseable(item)" in classifier:
+    require(
+        classifier,
+        "if (attackDamage <= 0)",
+        "kItemIsUseableVtableOffset",
+        "isUseable(item)",
+        "itemHasContextualBlockUse(item)",
+        "itemHasSpearSelfUse(item)",
+    )
+    if classifier.index("if (attackDamage <= 0)") > classifier.index("isUseable(item)"):
         raise AssertionError(
-            "ComponentItem::isUseable is too broad for MAINHAND priority"
+            "ComponentItem::isUseable must remain gated to non-attack items"
         )
     if "requiresInteract(item)" in classifier:
         raise AssertionError(
@@ -235,6 +250,8 @@ def main() -> int:
         "maxUseDuration",
         "attackOnly",
         "itemIsShears(item)",
+        "itemHasContextualBlockUse(item)",
+        "itemHasSpearSelfUse(item)",
     )
     if classifier.index("itemIsShears(item)") > classifier.index("attackDamage"):
         raise AssertionError(
@@ -244,10 +261,23 @@ def main() -> int:
         raise AssertionError(
             "specialized native actions must be classified before axe-like attack fallback"
         )
+    if classifier.index("itemHasSpearSelfUse(item)") > classifier.index("if (attackDamage > 0)"):
+        raise AssertionError(
+            "Spear self-use ownership must precede attack-only fallback"
+        )
     if classifier.index("attackDamage") > classifier.index("maxUseDuration"):
         raise AssertionError(
             "axe-like attack fallback must run before generic max-use duration"
         )
+
+    transaction = function_body(router, "RightUseRouter::handTransactionDetour(")
+    require(
+        transaction,
+        "action->kind == ActionKind::UseAir",
+        "action->hand == ActionHand::MainHand",
+        "hand == kMainHand",
+        "gMainAirTransactionObserved = true",
+    )
 
     use_block = function_body(router, "RightUseRouter::useItemOnBlockDetour(")
     require(
@@ -270,6 +300,16 @@ def main() -> int:
         raise AssertionError("block-use must stay on Minecraft native hand routing")
     require(use_block, "mainAttempted", "mainResult != 0u", "mainFallback()",
             "stackClaimsMainhandRightClick(mainStack, nullptr, false)")
+
+    contextual_helper = function_body(router, "itemHasContextualBlockUse(")
+    require(
+        contextual_helper,
+        "gItemHasTag(item, gShovelTag)",
+        "gItemHasTag(item, gAxeTag)",
+        "gItemHasTag(item, gHoeTag)",
+    )
+    spear_helper = function_body(router, "itemHasSpearSelfUse(")
+    require(spear_helper, "gItemHasTag(item, gSpearTag)")
 
     classifier_pos = use_block.index(
         "stackClaimsMainhandRightClick(mainStack, &yieldedAttackOnly)"
@@ -359,6 +399,8 @@ def main() -> int:
         "differsTarget = resolveExactTarget(",
         "copyCtorTarget = resolveExactTarget(",
         "dtorTarget = resolveExactTarget(",
+        "itemHasTagTarget = resolveExactTarget(",
+        "semanticPriorityAvailable",
         "setHandExact = resolveExactTarget(",
         "kSetItemInHandSlotRva",
         'resolveHookTarget(\n        "Player::getSelectedItem"',
@@ -373,6 +415,15 @@ def main() -> int:
     if stable_guard_pos > hook_target_pos:
         raise AssertionError(
             "exact stable fingerprint guard must run before live hook-target fallback"
+        )
+
+    guard_region = install[
+        install.index("if (\n        offhandTarget == 0"):
+        install.index("if (setHandExact == 0)")
+    ]
+    if "itemHasTagTarget == 0" in guard_region or "!semanticPriorityAvailable" in guard_region:
+        raise AssertionError(
+            "semantic priority helper must stay optional; #773 core routing cannot depend on it"
         )
 
     require(

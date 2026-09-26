@@ -321,3 +321,14 @@ projectile, decrement, packet, or physical hand swap.
 
 Block placement, Sword/Shears routing, swap storage, renderer, long-use tick,
 completion, and release paths are unchanged by this candidate.
+
+
+### MAINHAND-priority isolation from build #773
+
+This candidate starts from successful build #773 (`5264f002cd2a018a1fed4fa678e807802a5a91e4`) and changes only right-click ownership classification. OFFHAND block placement, detached placement snapshots, count reconciliation, swap storage and renderer code remain on the #773 path.
+
+- Axe/Hoe/Shovel semantic tags apply only to block-use classification and never claim air/self-use.
+- The 1.26.51.1 `minecraft:is_spear` ItemTag is used to keep component-driven Spear self-use MAIN-owned before the attack-only fallback.
+- `ComponentItem::isUseable` is consulted only when native attack damage is zero, avoiding the historical component-Sword false positive while admitting Snowball-like component instant use.
+- During a scoped MAIN air-use, an observed native `Player::handTransaction(hand=0)` is terminal ownership even if `GameMode::baseUseItem` returns false. OFF is therefore not attempted after a committed MAIN action.
+- Semantic tag validation is optional: failure falls back to #773 rather than disabling RightUseRouter.

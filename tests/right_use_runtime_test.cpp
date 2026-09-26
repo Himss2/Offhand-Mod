@@ -46,6 +46,8 @@ struct Item {
     std::uint8_t maxStackSize = 64;
     std::byte padA9{};
     std::int16_t itemId = 0;
+    std::uint8_t semanticTags = 0;
+    bool useable = false;
 };
 static_assert(offsetof(Item, maxStackSize) == 0xA8);
 static_assert(offsetof(Item, itemId) == 0xAA);
@@ -78,6 +80,18 @@ static bool mutateOffOnMain = false;
 static bool mutateOffCountOnBlock = false;
 static int offInputCount = -1;
 static int offhandSetterCalls = 0;
+static bool mainAirEmitsTransaction = false;
+static int shovelTagToken = 1, axeTagToken = 2, hoeTagToken = 3, spearTagToken = 4;
+
+static bool hasSemanticTag(const void* rawItem, const void* rawTag) {
+    const auto* item = static_cast<const Item*>(rawItem);
+    if (rawTag == &shovelTagToken) return (item->semanticTags & 0x1u) != 0;
+    if (rawTag == &axeTagToken) return (item->semanticTags & 0x2u) != 0;
+    if (rawTag == &hoeTagToken) return (item->semanticTags & 0x4u) != 0;
+    if (rawTag == &spearTagToken) return (item->semanticTags & 0x8u) != 0;
+    return false;
+}
+static bool useable(const void* p) { return static_cast<const Item*>(p)->useable; }
 static int damage(const void* p) { return static_cast<const Item*>(p)->damage; }
 static int duration(const void* p, const void*) { return static_cast<const Item*>(p)->duration; }
 static bool cannotAttack(const void*) { return false; }
@@ -112,9 +126,16 @@ static std::uint32_t blockUse(void*, const void* stack, const void*, int, const 
     }
     return hand == 0 ? mainResult : offResult;
 }
+static void noOpCallback(void*) {}
+
 static bool airUse(void*, const void* stack, unsigned char hand) {
     calls.push_back(hand);
     if (hand == 0 && mutateOffOnMain) offStack.count = 7;
+    if (hand == 0 && mainAirEmitsTransaction) {
+        RightUseRouter::handTransactionDetour(
+            &player, 0, nullptr, &noOpCallback, nullptr
+        );
+    }
     if (hand == 1) {
         offInputCount = static_cast<const Stack*>(stack)->count;
         detached &= stack != &offStack;
@@ -138,7 +159,9 @@ static void completeUse(void* owner) {
 static unsigned char transactionHand = 255;
 static int transactions = 0;
 static void transaction(void*, unsigned char hand, void*, void (*callback)(void*), void* context) {
-    ++transactions; transactionHand = hand; callback(context);
+    ++transactions;
+    transactionHand = hand;
+    if (callback != nullptr) callback(context);
 }
 static void releaseCallback(void* owner) { completeUse(owner); }
 static void releaseUse(void*) {
@@ -146,6 +169,7 @@ static void releaseUse(void*) {
 }
 static void configureTable(std::array<void*,134>& t) {
     t[0x30/8] = reinterpret_cast<void*>(&duration);
+    t[0xB0/8] = reinterpret_cast<void*>(&useable);
     t[0x130/8] = reinterpret_cast<void*>(&damage);
     t[0x298/8] = reinterpret_cast<void*>(&cannotAttack);
     t[0x290/8] = reinterpret_cast<void*>(testBase + kBaseItemUseRva);
@@ -169,6 +193,11 @@ int main(int argc, char** argv) {
     router.mUseItemOnBlockOriginal = reinterpret_cast<void*>(&blockUse);
     router.mBaseUseItemOriginal = reinterpret_cast<void*>(&airUse);
     gGetOffhandSlot = offhand; gSetItemInHandSlot = setHand;
+    gItemHasTag = hasSemanticTag;
+    gShovelTag = &shovelTagToken;
+    gAxeTag = &axeTagToken;
+    gHoeTag = &hoeTagToken;
+    gSpearTag = &spearTagToken;
     gStackIsNull = isNull;
     gPlayerIsUsingItem = isUsing; gItemInUseStack = active;
     gStackDiffersForUse = differs; gItemStackCopyCtor = copyStack; gItemStackDtor = destroyStack;
@@ -221,6 +250,118 @@ int main(int argc, char** argv) {
         gSessionPlayer = &player; usingItem = true; activeStack = offStack;
         RightUseRouter::setSelectedItemDetour(&player, &mainStack);
         ok &= check(mainWrites == 1 && offhandSetterCalls == 0, "session alone cannot redirect inventory writes");
+    } else if (test == "context_tool_block_priority") {
+        mainItem.damage = 3;
+        mainItem.semanticTags = 0x1u; // shovel
+        mainResult = 1;
+        offResult = 1;
+        const auto result = RightUseRouter::useItemOnBlockDetour(
+            &gameMode, &mainStack, nullptr, 0, nullptr, 0, 0, false
+        );
+        ok &= check(result == 1u, "contextual MAIN block use handled");
+        ok &= check(calls == std::vector<unsigned char>{0},
+                    "handled contextual MAIN must suppress OFF block");
+
+    } else if (test == "context_tool_air_does_not_claim") {
+        mainItem.damage = 3;
+        mainItem.semanticTags = 0x1u; // shovel is block-context only
+        offTable[0x290/8] = reinterpret_cast<void*>(testBase + 0xFFEA310);
+        offResult = 1;
+
+        const bool handled = RightUseRouter::baseUseItemDetour(
+            &gameMode, &mainStack, 0
+        );
+        ok &= check(handled, "contextual block tool must allow OFF air-use");
+        ok &= check(calls == std::vector<unsigned char>{1},
+                    "block-only MAIN ownership must not leak into air-use");
+
+    } else if (test == "component_instant_main_transaction_terminal") {
+        // Model a Snowball-like component item: generic ComponentItem::use,
+        // zero attack damage, isUseable=true, native bool=false, but the
+        // native MAIN transaction commits.
+        mainTable[0x290/8] =
+            reinterpret_cast<void*>(testBase + kComponentItemUseRva);
+        mainItem.damage = 0;
+        mainItem.duration = 0;
+        mainItem.useable = true;
+        mainResult = 0;
+        offResult = 1;
+        mainAirEmitsTransaction = true;
+
+        ok &= check(
+            stackClaimsMainhandRightClick(&mainStack, nullptr, false),
+            "non-attack component instant item must claim MAIN air-use"
+        );
+        const bool handled = RightUseRouter::baseUseItemDetour(
+            &gameMode, &mainStack, 0
+        );
+        ok &= check(
+            handled,
+            "MAIN transaction evidence must make routing terminal internally"
+        );
+        ok &= check(
+            calls == std::vector<unsigned char>{0},
+            "MAIN component instant transaction must suppress OFF"
+        );
+        ok &= check(
+            transactions == 1 && transactionHand == 0,
+            "only the MAIN native transaction may run"
+        );
+
+    } else if (test == "component_instant_main_suppresses_off_block") {
+        mainTable[0x290/8] =
+            reinterpret_cast<void*>(testBase + kComponentItemUseRva);
+        mainItem.damage = 0;
+        mainItem.duration = 0;
+        mainItem.useable = true;
+        mainResult = 0;
+        offResult = 1;
+
+        const auto result = RightUseRouter::useItemOnBlockDetour(
+            &gameMode, &mainStack, nullptr, 0, nullptr, 0, 0, false
+        );
+        ok &= check(result == 0u, "MAIN self-use owner defers to upper air phase");
+        ok &= check(
+            calls == std::vector<unsigned char>{0},
+            "Snowball-like MAIN must suppress OFF block placement"
+        );
+
+    } else if (test == "spear_main_priority") {
+        mainTable[0x290/8] =
+            reinterpret_cast<void*>(testBase + kComponentItemUseRva);
+        mainItem.damage = 6;
+        mainItem.duration = 0;
+        mainItem.semanticTags = 0x8u; // minecraft:is_spear
+        mainResult = 0;
+        offResult = 1;
+        mainAirEmitsTransaction = true;
+
+        ok &= check(
+            stackClaimsMainhandRightClick(&mainStack, nullptr, false),
+            "Spear semantic tag must override attack-only fallback"
+        );
+        const bool handled = RightUseRouter::baseUseItemDetour(
+            &gameMode, &mainStack, 0
+        );
+        ok &= check(handled, "Spear MAIN transaction owns the click");
+        ok &= check(calls == std::vector<unsigned char>{0},
+                    "Spear MAIN must suppress OFF air-use");
+
+    } else if (test == "sword_useable_still_yields") {
+        mainItem.damage = 7;
+        mainItem.useable = true;
+        mainTable[0x290/8] =
+            reinterpret_cast<void*>(testBase + kWeaponItemNoopUseRva);
+        ok &= check(
+            !stackClaimsMainhandRightClick(&mainStack, nullptr, false),
+            "broad ComponentItem::isUseable must not reclaim attack-only Sword"
+        );
+        RightUseRouter::useItemOnBlockDetour(
+            &gameMode, &mainStack, nullptr, 0, nullptr, 0, 0, false
+        );
+        ok &= check(calls == std::vector<unsigned char>{1},
+                    "useable Sword must still yield to OFF block");
+
     } else if (test == "shears") {
         mainItem.damage = 3;
         mainItem.maxStackSize = 1;

@@ -403,3 +403,16 @@ Verified RE anchors for the first device target:
 This is not evidence of successful device gameplay yet. Device validation must
 confirm projectile spawn, teleport, OFF count decrement, manual-vs-F parity,
 MAIN priority, block placement, Sword/Shears, and Mod Menu disabled behavior.
+
+
+## #773 MAINHAND-priority isolation candidate
+
+Baseline is build #773 / `5264f002cd2a018a1fed4fa678e807802a5a91e4`. This candidate must not change the #773 OFFHAND block placement algorithm.
+
+Priority invariants:
+1. MAIN Snowball-like component use suppresses OFF block/self-use when a native MAIN transaction commits, even if `baseUseItem` returns false.
+2. MAIN Spear remains MAIN-owned through the exact `minecraft:is_spear` semantic tag before attack-only classification.
+3. Axe/Hoe/Shovel semantic tags affect only block-targeted arbitration; they must not suppress OFF air/self-use.
+4. Sword/Pickaxe remain attack-only fallthrough candidates; broad `ComponentItem::isUseable` is accepted only when attack damage is zero.
+5. OFF block placement remains the exact #773 detached-snapshot + native `hand=1` path with count reconciliation.
+6. No upper dispatcher replay, physical stack swap, synthetic packet, or ContainerValidation hook is introduced.

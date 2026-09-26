@@ -176,6 +176,25 @@ constexpr std::uintptr_t kComponentItemRequiresInteractRva = 0xFDAA1FC;
 constexpr std::uintptr_t kBaseItemUseOnRva = 0xFF84B84;
 constexpr std::uintptr_t kComponentItemUseOnRva = 0xFDA8A20;
 
+// Optional 1.26.51.1 semantic tags. These refine MAINHAND ownership only;
+// failure to validate them must preserve the proven #773 router.
+constexpr std::uintptr_t kItemHasTagRva = 0x1010DA9C;
+constexpr std::uintptr_t kAxeItemTagRva = 0x134F13F0;
+constexpr std::uintptr_t kHoeItemTagRva = 0x134F1418;
+constexpr std::uintptr_t kShovelItemTagRva = 0x134F15A8;
+// RE of the uploaded 1.26.51.1 binary: minecraft:is_spear static ItemTag.
+constexpr std::uintptr_t kSpearItemTagRva = 0x1335AD50;
+
+constexpr std::uint64_t kAxeItemTagHash = 0xCB1D9DCFC8FA19CDULL;
+constexpr std::uint64_t kHoeItemTagHash = 0xCB3C94CFC914BA89ULL;
+constexpr std::uint64_t kShovelItemTagHash = 0xB4C59DBDE3006DF6ULL;
+constexpr std::uint64_t kSpearItemTagHash = 0xDFFA450674C95F4EULL;
+
+constexpr std::array<std::uint8_t, 16> kItemHasTagFingerprint{
+    0xFD, 0x7B, 0xBD, 0xA9, 0xF5, 0x0B, 0x00, 0xF9,
+    0xF4, 0x4F, 0x02, 0xA9, 0xFD, 0x03, 0x00, 0x91,
+};
+
 constexpr std::size_t kGameModePlayerOffset = sizeof(void*);
 constexpr std::size_t kItemWeakPtrOffset = 0x08;
 constexpr std::size_t kItemGetMaxUseDurationVtableOffset = 0x30;
@@ -289,6 +308,7 @@ using ItemStackDtorFn = void (*)(void*);
 using GetMaxUseDurationFn = int (*)(const void*, const void*);
 using GetAttackDamageFn = int (*)(const void*);
 using ItemBoolFn = bool (*)(const void*);
+using ItemHasTagFn = bool (*)(const void*, const void*);
 
 OffhandItemFn gGetOffhandSlot = nullptr;
 SetItemInHandSlotFn gSetItemInHandSlot = nullptr;
@@ -298,6 +318,16 @@ ItemInUseStackFn gItemInUseStack = nullptr;
 StackDiffersForUseFn gStackDiffersForUse = nullptr;
 ItemStackCopyCtorFn gItemStackCopyCtor = nullptr;
 ItemStackDtorFn gItemStackDtor = nullptr;
+ItemHasTagFn gItemHasTag = nullptr;
+const void* gAxeTag = nullptr;
+const void* gHoeTag = nullptr;
+const void* gShovelTag = nullptr;
+const void* gSpearTag = nullptr;
+
+// A MAIN air-use transaction is stronger evidence than GameMode::baseUseItem's
+// bool. Modern component items can commit their native transaction and still
+// return false; in that case OFF must not run for the same click.
+thread_local bool gMainAirTransactionObserved = false;
 
 using InteractionGateFn = std::uint32_t (*)(void*, const void*);
 using EnderPearlUseFn = void* (*)(void*, void*, void*, unsigned char);
@@ -572,6 +602,39 @@ template <typename Fn>
     return function;
 }
 
+[[nodiscard]] bool runtimeTagHashMatches(
+    const void* tag,
+    std::uint64_t expected
+) noexcept {
+    if (tag == nullptr) {
+        return false;
+    }
+    std::uint64_t actual = 0;
+    std::memcpy(&actual, tag, sizeof(actual));
+    return actual == expected;
+}
+
+[[nodiscard]] bool itemHasContextualBlockUse(const void* item) noexcept {
+    if (
+        item == nullptr || gItemHasTag == nullptr ||
+        gShovelTag == nullptr || gAxeTag == nullptr || gHoeTag == nullptr
+    ) {
+        return false;
+    }
+    return
+        gItemHasTag(item, gShovelTag) ||
+        gItemHasTag(item, gAxeTag) ||
+        gItemHasTag(item, gHoeTag);
+}
+
+[[nodiscard]] bool itemHasSpearSelfUse(const void* item) noexcept {
+    return
+        item != nullptr &&
+        gItemHasTag != nullptr &&
+        gSpearTag != nullptr &&
+        gItemHasTag(item, gSpearTag);
+}
+
 [[nodiscard]] bool stackClaimsMainhandRightClick(
     const void* stack,
     bool* yieldedAttackOnly = nullptr,
@@ -586,9 +649,6 @@ template <typename Fn>
         return false;
     }
 
-    // Shears keeps MAINHAND right-click ownership. On-device logs showed
-    // that the generic attack-damage fallback could classify it as
-    // attack-only and incorrectly invoke OFFHAND block placement.
     if (itemIsShears(item)) {
         return true;
     }
@@ -598,9 +658,6 @@ template <typename Fn>
         return false;
     }
 
-    // First classify concrete native actions by virtual identity.  This must
-    // happen before getMaxUseDuration: ComponentItem can carry non-zero use
-    // duration data even for attack-oriented items such as Swords.
     const auto use = itemVirtual<void*>(item, kItemUseVtableOffset);
     const auto requiresInteract = itemVirtual<void*>(
         item, kItemRequiresInteractVtableOffset
@@ -636,17 +693,39 @@ template <typename Fn>
         return true;
     }
 
-    // Axe/Pickaxe/Sword baseline: attack-oriented items with no specialized
-    // native right-click action yield the click to OFFHAND.  This uses the
-    // same virtual getAttackDamage path that DiggerItem overrides, so Sword
-    // follows the already-working Axe behavior instead of ComponentItem use
-    // metadata.  Trident/Shears/FishingRod are already returned above by
-    // their specialized right-click virtuals.
+    // Axe/Hoe/Shovel own only the target-specific block-use phase. Keeping
+    // this behind includeBlockUse prevents the #777 regression where a
+    // contextual tool could incorrectly suppress OFFHAND air/self-use.
+    if (includeBlockUse && itemHasContextualBlockUse(item)) {
+        return true;
+    }
+
+    // The new Spear is attack-capable but its right-click is component-driven,
+    // so vtable identity alone can look generic. Its exact native semantic tag
+    // establishes self-use ownership before the attack-only fallback.
+    if (itemHasSpearSelfUse(item)) {
+        return true;
+    }
+
     const auto getAttackDamage = itemVirtual<GetAttackDamageFn>(
         item, kItemGetAttackDamageVtableOffset
     );
     const int attackDamage =
         getAttackDamage != nullptr ? getAttackDamage(item) : 0;
+
+    // ComponentItem::isUseable is intentionally accepted only for non-attack
+    // items. Historical testing showed it is too broad for component Swords;
+    // the attackDamage guard preserves Sword/Pickaxe OFFHAND fallback while
+    // admitting Snowball-like component-driven instant use.
+    if (attackDamage <= 0) {
+        const auto isUseable = itemVirtual<ItemBoolFn>(
+            item, kItemIsUseableVtableOffset
+        );
+        if (isUseable != nullptr && isUseable(item)) {
+            return true;
+        }
+    }
+
     if (attackDamage > 0) {
         if (yieldedAttackOnly != nullptr) {
             *yieldedAttackOnly = true;
@@ -666,9 +745,6 @@ template <typename Fn>
         return false;
     }
 
-    // Secondary fallback for attack-oriented items whose native attack
-    // damage reports zero but whose Item ABI still marks them attack-capable.
-    // Specialized right-click actions were already returned above.
     const auto canUseAsAttack = itemVirtual<ItemBoolFn>(
         item, kItemCanUseAsAttackVtableOffset
     );
@@ -1151,6 +1227,26 @@ bool RightUseRouter::install(pl::mod::ModContext& context) noexcept {
     const auto dtorTarget = resolveExactTarget(
         kItemStackDtorRva, kItemStackDtorFingerprint
     );
+
+    const auto itemHasTagTarget = resolveExactTarget(
+        kItemHasTagRva, kItemHasTagFingerprint
+    );
+    const auto moduleBase = minecraftModuleBase();
+    const void* axeTag =
+        moduleBase != 0 ? reinterpret_cast<const void*>(moduleBase + kAxeItemTagRva) : nullptr;
+    const void* hoeTag =
+        moduleBase != 0 ? reinterpret_cast<const void*>(moduleBase + kHoeItemTagRva) : nullptr;
+    const void* shovelTag =
+        moduleBase != 0 ? reinterpret_cast<const void*>(moduleBase + kShovelItemTagRva) : nullptr;
+    const void* spearTag =
+        moduleBase != 0 ? reinterpret_cast<const void*>(moduleBase + kSpearItemTagRva) : nullptr;
+    const bool semanticPriorityAvailable =
+        itemHasTagTarget != 0 &&
+        runtimeTagHashMatches(axeTag, kAxeItemTagHash) &&
+        runtimeTagHashMatches(hoeTag, kHoeItemTagHash) &&
+        runtimeTagHashMatches(shovelTag, kShovelItemTagHash) &&
+        runtimeTagHashMatches(spearTag, kSpearItemTagHash);
+
     const auto setHandExact = resolveExactTarget(
         kSetItemInHandSlotRva, kSetItemInHandSlotFingerprint
     );
@@ -1269,6 +1365,23 @@ bool RightUseRouter::install(pl::mod::ModContext& context) noexcept {
     gStackDiffersForUse = reinterpret_cast<StackDiffersForUseFn>(differsTarget);
     gItemStackCopyCtor = reinterpret_cast<ItemStackCopyCtorFn>(copyCtorTarget);
     gItemStackDtor = reinterpret_cast<ItemStackDtorFn>(dtorTarget);
+    gItemHasTag = semanticPriorityAvailable
+        ? reinterpret_cast<ItemHasTagFn>(itemHasTagTarget)
+        : nullptr;
+    gAxeTag = semanticPriorityAvailable ? axeTag : nullptr;
+    gHoeTag = semanticPriorityAvailable ? hoeTag : nullptr;
+    gShovelTag = semanticPriorityAvailable ? shovelTag : nullptr;
+    gSpearTag = semanticPriorityAvailable ? spearTag : nullptr;
+
+    if (semanticPriorityAvailable) {
+        context.logger().info(
+            "[RightUseRouter] semantic MAINHAND priority enabled for contextual tools and Spear"
+        );
+    } else {
+        context.logger().warn(
+            "[RightUseRouter] optional semantic MAINHAND tags unavailable; preserving #773 fallback"
+        );
+    }
 
     mSelectedItemTarget = selectedTarget;
     mReleaseUsingItemTarget = releaseTarget;
@@ -1491,6 +1604,12 @@ void RightUseRouter::uninstall(pl::mod::ModContext& context) noexcept {
     mSelectedItemTarget = 0;
     gGetOffhandSlot = nullptr;
     gSetItemInHandSlot = nullptr;
+    gItemHasTag = nullptr;
+    gAxeTag = nullptr;
+    gHoeTag = nullptr;
+    gShovelTag = nullptr;
+    gSpearTag = nullptr;
+    gMainAirTransactionObserved = false;
     gStackIsNull = nullptr;
     gPlayerIsUsingItem = nullptr;
     gItemInUseStack = nullptr;
@@ -1730,7 +1849,7 @@ bool RightUseRouter::baseUseItemDetour(
     // action, which previously swallowed food/potion/other self-use in
     // OFFHAND.  The same capability classifier used by block placement is
     // authoritative here.
-    if (!stackClaimsMainhandRightClick(mainStack)) {
+    if (!stackClaimsMainhandRightClick(mainStack, nullptr, false)) {
         if (attemptOffhandUse()) {
             return true;
         }
@@ -1763,8 +1882,14 @@ bool RightUseRouter::baseUseItemDetour(
                     static_cast<unsigned int>(stackCount(offStack))
                 );
             }
+
+            const bool previousTransaction = gMainAirTransactionObserved;
+            gMainAirTransactionObserved = false;
             const bool nativeHandled = original(gameMode, itemStack, hand);
             const bool activeMain = activeUseMatches(player, mainStack);
+            const bool transactionObserved = gMainAirTransactionObserved;
+            gMainAirTransactionObserved = previousTransaction;
+
             if (diagPearl) {
                 const void* liveOff =
                     gGetOffhandSlot != nullptr ? gGetOffhandSlot(player) : nullptr;
@@ -1772,14 +1897,19 @@ bool RightUseRouter::baseUseItemDetour(
                 __android_log_print(
                     ANDROID_LOG_INFO,
                     kLogTag,
-                    "[InstantAirDiag] MAIN Pearl baseUseItem returned handled=%d mainCount=%u offCount=%u activeMain=%d",
+                    "[InstantAirDiag] MAIN Pearl baseUseItem returned handled=%d mainCount=%u offCount=%u activeMain=%d tx=%d",
                     nativeHandled ? 1 : 0,
                     static_cast<unsigned int>(stackCount(liveMain)),
                     static_cast<unsigned int>(stackCount(liveOff)),
-                    activeMain ? 1 : 0
+                    activeMain ? 1 : 0,
+                    transactionObserved ? 1 : 0
                 );
             }
-            return nativeHandled || activeMain;
+
+            // Native transaction/active-use proves MAIN consumed the click even
+            // when GameMode::baseUseItem reports false. This suppresses a
+            // second OFF action without hardcoding the item family.
+            return nativeHandled || activeMain || transactionObserved;
         },
         attemptOffhandUse,
         []() noexcept {},
@@ -2229,6 +2359,17 @@ void RightUseRouter::handTransactionDetour(void* player, unsigned char hand, voi
     if (!instance || !instance->mHandTransactionOriginal) return;
     const auto original = reinterpret_cast<HandTransactionFn>(instance->mHandTransactionOriginal);
     const auto action = currentScopedAction();
+
+    if (
+        instance->featureEnabled() &&
+        action.has_value() &&
+        action->kind == ActionKind::UseAir &&
+        action->hand == ActionHand::MainHand &&
+        hand == kMainHand
+    ) {
+        gMainAirTransactionObserved = true;
+    }
+
     if (instance->featureEnabled() && player && player == gReleasingPlayer &&
         action && action->hand == ActionHand::OffHand && hand == kMainHand &&
         reinterpret_cast<std::uintptr_t>(callback) == gReleaseCallback) {
