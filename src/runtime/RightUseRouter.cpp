@@ -1256,20 +1256,22 @@ bool RightUseRouter::install(pl::mod::ModContext& context) noexcept {
         ? setHandExact
         : resolveKnownBuildTarget(kSetItemInHandSlotRva);
 
+    const bool contextualPriorityAvailable =
+        itemHasTagTarget != 0 && contextualTagsValid;
+
+    // Keep the proven #752 placement/router prerequisites independent from
+    // later instant-air diagnostics and parity experiments. A missing optional
+    // target must never disable GameMode::useItemOnBlock routing.
     if (
         offhandTarget == 0 || nullTarget == 0 ||
         usingTarget == 0 || inUseTarget == 0 || differsTarget == 0 ||
         copyCtorTarget == 0 || dtorTarget == 0 ||
-        itemHasTagTarget == 0 || !contextualTagsValid ||
-        setHandTarget == 0 ||
-        useTickBridgeTarget == 0 || upperAirUseGateTarget == 0 ||
-        offhandParityGateTarget == 0 ||
-        interactionGateTarget == 0 || enderPearlUseTarget == 0
+        setHandTarget == 0 || useTickBridgeTarget == 0
     ) {
         __android_log_print(
             ANDROID_LOG_WARN,
             kLogTag,
-            "[RightUseRouter] stable guard failed offhand=%d null=%d using=%d inUse=%d differs=%d copy=%d dtor=%d itemTags=%d setHand=%d useTick=%d airGate=%d parityGate=%d gateDiag=%d pearlDiag=%d",
+            "[RightUseRouter] core guard failed offhand=%d null=%d using=%d inUse=%d differs=%d copy=%d dtor=%d setHand=%d useTick=%d",
             offhandTarget != 0 ? 1 : 0,
             nullTarget != 0 ? 1 : 0,
             usingTarget != 0 ? 1 : 0,
@@ -1277,18 +1279,19 @@ bool RightUseRouter::install(pl::mod::ModContext& context) noexcept {
             differsTarget != 0 ? 1 : 0,
             copyCtorTarget != 0 ? 1 : 0,
             dtorTarget != 0 ? 1 : 0,
-            itemHasTagTarget != 0 && contextualTagsValid ? 1 : 0,
             setHandTarget != 0 ? 1 : 0,
-            useTickBridgeTarget != 0 ? 1 : 0,
-            upperAirUseGateTarget != 0 ? 1 : 0,
-            offhandParityGateTarget != 0 ? 1 : 0,
-            interactionGateTarget != 0 ? 1 : 0,
-            enderPearlUseTarget != 0 ? 1 : 0
+            useTickBridgeTarget != 0 ? 1 : 0
         );
         context.logger().warn(
-            "[RightUseRouter] Minecraft 1.26.51.1 stable fingerprint validation failed; right-use disabled"
+            "[RightUseRouter] Minecraft 1.26.51.1 core fingerprint validation failed; right-use disabled"
         );
         return false;
+    }
+
+    if (!contextualPriorityAvailable) {
+        context.logger().warn(
+            "[RightUseRouter] contextual Axe/Hoe/Shovel tag helper unavailable; preserving #752 placement classifier fallback"
+        );
     }
 
     if (setHandExact == 0) {
@@ -1354,10 +1357,12 @@ bool RightUseRouter::install(pl::mod::ModContext& context) noexcept {
     gStackDiffersForUse = reinterpret_cast<StackDiffersForUseFn>(differsTarget);
     gItemStackCopyCtor = reinterpret_cast<ItemStackCopyCtorFn>(copyCtorTarget);
     gItemStackDtor = reinterpret_cast<ItemStackDtorFn>(dtorTarget);
-    gItemHasTag = reinterpret_cast<ItemHasTagFn>(itemHasTagTarget);
-    gAxeTag = axeTag;
-    gHoeTag = hoeTag;
-    gShovelTag = shovelTag;
+    gItemHasTag = contextualPriorityAvailable
+        ? reinterpret_cast<ItemHasTagFn>(itemHasTagTarget)
+        : nullptr;
+    gAxeTag = contextualPriorityAvailable ? axeTag : nullptr;
+    gHoeTag = contextualPriorityAvailable ? hoeTag : nullptr;
+    gShovelTag = contextualPriorityAvailable ? shovelTag : nullptr;
 
     mSelectedItemTarget = selectedTarget;
     mReleaseUsingItemTarget = releaseTarget;
@@ -1368,27 +1373,46 @@ bool RightUseRouter::install(pl::mod::ModContext& context) noexcept {
     gStopUsingItem = reinterpret_cast<CompleteUsingItemFn>(stopTarget);
     gReleaseCallback = minecraftModuleBase() + kReleaseCallbackRva;
 
-    gInteractionGateHook = std::make_unique<pl::memory::HookHandle>(
-        reinterpret_cast<void*>(interactionGateTarget),
-        reinterpret_cast<void*>(&interactionGateDiagDetour),
-        &gInteractionGateOriginal,
-        pl::memory::HookPriority::Normal
-    );
-    gEnderPearlUseHook = std::make_unique<pl::memory::HookHandle>(
-        reinterpret_cast<void*>(enderPearlUseTarget),
-        reinterpret_cast<void*>(&enderPearlUseDiagDetour),
-        &gEnderPearlUseOriginal,
-        pl::memory::HookPriority::Normal
-    );
-    if (
-        !gInteractionGateHook || !gInteractionGateHook->installed() ||
-        gInteractionGateOriginal == nullptr ||
-        !gEnderPearlUseHook || !gEnderPearlUseHook->installed() ||
-        gEnderPearlUseOriginal == nullptr
-    ) {
-        context.logger().warn("[RightUseRouter] instant-air diagnostic hooks failed");
-        uninstall(context);
-        return false;
+    // Post-#752 instant-air probes are diagnostic only. Install them when the
+    // exact targets are available, but never tear down the proven placement
+    // router if either diagnostic hook cannot be armed.
+    if (interactionGateTarget != 0 && enderPearlUseTarget != 0) {
+        gInteractionGateHook = std::make_unique<pl::memory::HookHandle>(
+            reinterpret_cast<void*>(interactionGateTarget),
+            reinterpret_cast<void*>(&interactionGateDiagDetour),
+            &gInteractionGateOriginal,
+            pl::memory::HookPriority::Normal
+        );
+        gEnderPearlUseHook = std::make_unique<pl::memory::HookHandle>(
+            reinterpret_cast<void*>(enderPearlUseTarget),
+            reinterpret_cast<void*>(&enderPearlUseDiagDetour),
+            &gEnderPearlUseOriginal,
+            pl::memory::HookPriority::Normal
+        );
+        if (
+            !gInteractionGateHook || !gInteractionGateHook->installed() ||
+            gInteractionGateOriginal == nullptr ||
+            !gEnderPearlUseHook || !gEnderPearlUseHook->installed() ||
+            gEnderPearlUseOriginal == nullptr
+        ) {
+            if (gEnderPearlUseHook) {
+                gEnderPearlUseHook->reset();
+                gEnderPearlUseHook.reset();
+            }
+            if (gInteractionGateHook) {
+                gInteractionGateHook->reset();
+                gInteractionGateHook.reset();
+            }
+            gEnderPearlUseOriginal = nullptr;
+            gInteractionGateOriginal = nullptr;
+            context.logger().warn(
+                "[RightUseRouter] optional instant-air diagnostic hooks unavailable; core placement remains active"
+            );
+        }
+    } else {
+        context.logger().warn(
+            "[RightUseRouter] optional instant-air diagnostic targets unavailable; core placement remains active"
+        );
     }
 
     mSelectedItemHook = std::make_unique<pl::memory::HookHandle>(
@@ -1470,35 +1494,39 @@ bool RightUseRouter::install(pl::mod::ModContext& context) noexcept {
     }
     mUseTickPatchApplied = true;
 
-    if (!applyUpperAirUseGatePatch(upperAirUseGateTarget)) {
-        context.logger().warn(
-            "[RightUseRouter] exact instant air-use upper-gate patch failed"
+    if (
+        upperAirUseGateTarget != 0 &&
+        applyUpperAirUseGatePatch(upperAirUseGateTarget)
+    ) {
+        mUpperAirUseGatePatchApplied = true;
+        __android_log_print(
+            ANDROID_LOG_INFO,
+            kLogTag,
+            "[InstantAirDiag] upper gate patched RVA=0x%llX",
+            static_cast<unsigned long long>(kUpperAirUseGateRva)
         );
-        uninstall(context);
-        return false;
+    } else {
+        context.logger().warn(
+            "[RightUseRouter] optional instant air-use upper gate unavailable; #752 block placement remains active"
+        );
     }
-    mUpperAirUseGatePatchApplied = true;
-    __android_log_print(
-        ANDROID_LOG_INFO,
-        kLogTag,
-        "[InstantAirDiag] upper gate patched RVA=0x%llX",
-        static_cast<unsigned long long>(kUpperAirUseGateRva)
-    );
 
-    if (!applyOffhandParityGatePatch(offhandParityGateTarget)) {
-        context.logger().warn(
-            "[RightUseRouter] exact server offhand-parity gate patch failed"
+    if (
+        offhandParityGateTarget != 0 &&
+        applyOffhandParityGatePatch(offhandParityGateTarget)
+    ) {
+        mOffhandParityGatePatchApplied = true;
+        __android_log_print(
+            ANDROID_LOG_INFO,
+            kLogTag,
+            "[InstantAirDiag] server offhand parity gate allowed RVA=0x%llX -> 0x100212F4",
+            static_cast<unsigned long long>(kOffhandParityGateRva)
         );
-        uninstall(context);
-        return false;
+    } else {
+        context.logger().warn(
+            "[RightUseRouter] optional server offhand-parity gate unavailable; #752 block placement remains active"
+        );
     }
-    mOffhandParityGatePatchApplied = true;
-    __android_log_print(
-        ANDROID_LOG_INFO,
-        kLogTag,
-        "[InstantAirDiag] server offhand parity gate allowed RVA=0x%llX -> 0x100212F4",
-        static_cast<unsigned long long>(kOffhandParityGateRva)
-    );
 
     mFeatureEnabled.store(true, std::memory_order_release);
     mLoggedOffhandUse.store(false, std::memory_order_relaxed);
@@ -1613,8 +1641,6 @@ bool RightUseRouter::installed() const noexcept {
         mCompleteUsingItemOriginal != nullptr && mSetSelectedItemOriginal != nullptr &&
         mSelectedItemHook != nullptr && mSelectedItemHook->installed() &&
         mUseTickPatchApplied &&
-        mUpperAirUseGatePatchApplied &&
-        mOffhandParityGatePatchApplied &&
         mReleaseUsingItemHook != nullptr && mReleaseUsingItemHook->installed() &&
         mBaseUseItemHook != nullptr && mBaseUseItemHook->installed() &&
         mUseItemOnBlockHook != nullptr && mUseItemOnBlockHook->installed() &&
@@ -1932,7 +1958,6 @@ std::uint32_t RightUseRouter::useItemOnBlockDetour(
         instance->mSelectedItemOriginal
     );
     const void* mainStack = selectedOriginal(player);
-    const bool mainEmptyForDiag = stackIsNull(mainStack);
 
     // Decide whether MAINHAND genuinely owns right-click *before* executing
     // GameMode::useItemOn.  Calling the generic MAINHAND use-on wrapper first
@@ -1969,28 +1994,6 @@ std::uint32_t RightUseRouter::useItemOnBlockDetour(
     };
 
     if (yieldedAttackOnly) {
-        __android_log_print(
-            ANDROID_LOG_INFO,
-            kLogTag,
-            "[BlockPriorityDiag] mainAttackOnly id=%d vtableRva=0x%llX attackFnRva=0x%llX useRva=0x%llX requiresRva=0x%llX useOnRva=0x%llX damage=%d duration=%d",
-            static_cast<int>(itemIdForDiag(mainStack)),
-            static_cast<unsigned long long>(itemVtableRvaForDiag(mainStack)),
-            static_cast<unsigned long long>(
-                itemVirtualRvaForDiag(mainStack, kItemGetAttackDamageVtableOffset)
-            ),
-            static_cast<unsigned long long>(
-                itemVirtualRvaForDiag(mainStack, kItemUseVtableOffset)
-            ),
-            static_cast<unsigned long long>(
-                itemVirtualRvaForDiag(mainStack, kItemRequiresInteractVtableOffset)
-            ),
-            static_cast<unsigned long long>(
-                itemVirtualRvaForDiag(mainStack, kItemUseOnVtableOffset)
-            ),
-            attackDamageForDiag(mainStack),
-            maxUseDurationForDiag(mainStack)
-        );
-
         bool expected = false;
         if (instance->mLoggedAttackOnlyYield.compare_exchange_strong(
                 expected, true, std::memory_order_relaxed
@@ -2007,16 +2010,6 @@ std::uint32_t RightUseRouter::useItemOnBlockDetour(
         gGetOffhandSlot != nullptr ? gGetOffhandSlot(player) : nullptr;
     if (stackIsNull(offStack)) {
         return mainFallback();
-    }
-
-    if (mainEmptyForDiag) {
-        __android_log_print(
-            ANDROID_LOG_INFO,
-            kLogTag,
-            "[InstantAirDiag] block-route mainEmpty=1 offCount=%u useRva=0x%llX",
-            static_cast<unsigned int>(stackCount(offStack)),
-            static_cast<unsigned long long>(itemUseRvaForDiag(offStack))
-        );
     }
 
     // Preserve the transaction-safe detached before-state that fixed the
@@ -2061,24 +2054,6 @@ std::uint32_t RightUseRouter::useItemOnBlockDetour(
             extra,
             flag
         );
-    }
-
-    if (mainEmptyForDiag) {
-        __android_log_print(
-            ANDROID_LOG_INFO,
-            kLogTag,
-            "[InstantAirDiag] block-result offResult=0x%X liveCount=%u snapshotCount=%u",
-            static_cast<unsigned int>(offResult),
-            static_cast<unsigned int>(stackCount(offStack)),
-            static_cast<unsigned int>(stackCount(offSnapshot.get()))
-        );
-        if (offResult == 0u) {
-            __android_log_print(
-                ANDROID_LOG_INFO,
-                kLogTag,
-                "[InstantAirDiag] block OFF passed; MAIN empty fallback will run"
-            );
-        }
     }
 
     if ((offResult & 1u) != 0u) {
