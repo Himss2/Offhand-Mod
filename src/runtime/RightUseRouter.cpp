@@ -2130,7 +2130,9 @@ std::uint32_t RightUseRouter::useItemOnBlockDetour(
     // Block-capable MAIN items keep the proven #773 native attempt. Air-only
     // owners do not touch useItemOnBlock; they are allowed to reach
     // baseUseItem without OFF stealing the click first.
-    if (mainClaimsBlock && !mainClaimsAir) {
+    const bool mainIsShears = itemIsShears(itemFromStack(mainStack));
+
+    if (mainClaimsBlock) {
         mainAttempted = true;
         gRightClickOwner = RightClickOwner::MainPending;
         ScopedActionHand mainScope(ActionHand::MainHand, ActionKind::UseBlock);
@@ -2138,6 +2140,13 @@ std::uint32_t RightUseRouter::useItemOnBlockDetour(
             gameMode, interaction, blockPos, face, hitPos, hand, extra, flag
         );
         if (mainResult != 0u) {
+            gRightClickOwner = RightClickOwner::MainOwned;
+            return mainResult;
+        }
+
+        // Preserve the proven #773 Shears rule: a neutral native result must
+        // not fall through into OFFHAND block placement.
+        if (mainIsShears) {
             gRightClickOwner = RightClickOwner::MainOwned;
             return mainResult;
         }
@@ -2199,7 +2208,11 @@ std::uint32_t RightUseRouter::useItemOnBlockDetour(
     // baseUseItem phase has run. This covers data-driven ComponentItem actions
     // such as Snowball whose Item::use virtual is generic and cannot be
     // classified by vtable identity alone.
-    if (!mainEmptyForDiag && !yieldedAttackOnly) {
+    if (
+        !mainEmptyForDiag &&
+        !yieldedAttackOnly &&
+        (mainClaimsAir || !mainClaimsBlock)
+    ) {
         gRightClickOwner = RightClickOwner::MainPending;
         capturePendingOffBlockUse(
             gameMode, player, blockPos, face, hitPos, extra, flag
