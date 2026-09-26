@@ -311,8 +311,30 @@ def main() -> int:
         raise AssertionError(
             "block placement must not pass the live offhand slot as transaction snapshot"
         )
-    if "upperUseDetour" in combined or "mUpperUseHook" in combined:
-        raise AssertionError("broad upper-use replay must not be installed")
+    # test-2 arbitration invariant: one physical right-click is owned at the
+    # verified upper dispatcher. Lower block/air hooks may bridge the chosen
+    # hand but must not independently run the other hand during that pass.
+    require(
+        router,
+        "kUpperUseDispatcherRva = 0x97F85F8",
+        "kUpperUseDispatcherFingerprint",
+        "UpperUsePass::Main",
+        "UpperUsePass::Off",
+        "gUpperMainClaimed",
+        "RightUseRouter::upperUseDetour(",
+        "upper-use MAIN claimed",
+        "upper-use OFF fallback",
+        "stackDeclaresNativeAirUse(",
+        "kItemIsFoodVtableOffset = 0xA0",
+        "kItemIsThrowableVtableOffset = 0xA8",
+        "kItemIsUseableVtableOffset = 0xB0",
+    )
+    require(
+        header,
+        "mUpperUseHook",
+        "mUpperUseOriginal",
+        "mUpperUseTarget",
+    )
 
     accepted_pos = use_block.index("if ((offResult & 1u) != 0u)")
     writeback_pos = use_block.index("gSetItemInHandSlot(", accepted_pos)
@@ -367,6 +389,8 @@ def main() -> int:
         "mUseItemOnBlockPreHooked = blockUsePreHooked",
         'resolveHookTarget(\n        "GameMode::baseUseItem"',
         'resolveHookTarget(\n        "GameMode::releaseUsingItem"',
+        'resolveHookTarget(\n        "upper right-use dispatcher"',
+        "mUpperUseHook = std::make_unique<pl::memory::HookHandle>",
     )
     stable_guard_pos = install.index("stable guard failed")
     hook_target_pos = install.index('resolveHookTarget(\n        "Player::getSelectedItem"')
@@ -395,8 +419,9 @@ def main() -> int:
         raise AssertionError("legacy storage failure must not abort 1.26.51.1 right-use install")
 
     # 1.26.51.1 upper dispatcher rejects an empty MAIN stack before
-    # GameMode::baseUseItem. The instant-use candidate must bridge exactly
-    # that verified gate and keep long-use closed.
+    # GameMode::baseUseItem. The gate remains bridged, but test-2 must route
+    # the entire OFF fallback through the upper dispatcher so ComponentItem
+    # throwable/food/hold use is no longer filtered by instant-only identity.
     require(
         router,
         "kUpperAirUseGateRva = 0x97F8E48",
@@ -409,9 +434,12 @@ def main() -> int:
     base_use = function_body(router, "bool RightUseRouter::baseUseItemDetour(")
     require(
         base_use,
-        "stackIsNull(mainStack)",
-        "stackSupportsInstantOffhandAirUse(currentOff)",
-        "return false;",
+        "gUpperUsePass == UpperUsePass::Main",
+        "gUpperUsePass == UpperUsePass::Off",
+        "activeUseMatches(player, mainStack)",
+        "stackDeclaresNativeAirUse(mainStack)",
+        "finishOffhandUse(",
+        "original(gameMode, itemStack, kOffHand)",
     )
     require(
         install,
