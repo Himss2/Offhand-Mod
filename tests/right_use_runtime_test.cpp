@@ -79,8 +79,8 @@ static bool mutateOffOnMain = false;
 static bool mutateOffCountOnBlock = false;
 static int offInputCount = -1;
 static int offhandSetterCalls = 0;
-static int shovelTagToken = 1, axeTagToken = 2, hoeTagToken = 3;
 #ifdef LEVIOFFHAND_CONTEXTUAL_TAG_ROUTING
+static int shovelTagToken = 1, axeTagToken = 2, hoeTagToken = 3;
 static bool hasSemanticTag(const void* rawItem, const void* rawTag) {
     const auto* item = static_cast<const Item*>(rawItem);
     if (rawTag == &shovelTagToken) return (item->semanticTags & 0x1u) != 0;
