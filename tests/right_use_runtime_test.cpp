@@ -275,6 +275,67 @@ int main(int argc, char** argv) {
         RightUseRouter::useItemOnBlockDetour(&gameMode, &mainStack, nullptr, 0, nullptr, 0, 0, false);
         ok &= check(calls == std::vector<unsigned char>{0}, "defer Bow MAIN self-use to upper dispatcher before OFF block-use");
     } else if (
+        test == "air_empty_main_instant_manual" ||
+        test == "air_empty_main_instant_swap"
+    ) {
+        mainStack.count = 0;
+        Stack dispatcherEmpty = mainStack;
+        dispatcherEmpty.id = 0;
+
+        // Model an instant native Item::use override such as EnderpearlItem.
+        offTable[0x290/8] = reinterpret_cast<void*>(testBase + 0xFFEA310);
+        offItem.duration = 0;
+
+        if (test == "air_empty_main_instant_swap") {
+            Stack swappedPearl = offStack;
+            offStack.count = 0;
+            setHand(&player, 1, &swappedPearl);
+            offhandSetterCalls = 0;
+        }
+
+        const bool handled = RightUseRouter::baseUseItemDetour(
+            &gameMode, &dispatcherEmpty, 0
+        );
+        ok &= check(handled, "empty MAIN must allow instant OFFHAND native use");
+        ok &= check(
+            calls == std::vector<unsigned char>{1},
+            "instant OFFHAND use must invoke native hand=1 exactly once"
+        );
+        ok &= check(
+            detached && copies == 1,
+            "instant OFFHAND use must use one detached live-slot snapshot"
+        );
+        ok &= check(
+            gSessionPlayer == nullptr && !usingItem,
+            "instant OFFHAND use must not create a long-use session"
+        );
+    } else if (test == "air_empty_main_long_use_blocked") {
+        mainStack.count = 0;
+        Stack dispatcherEmpty = mainStack;
+        dispatcherEmpty.id = 0;
+
+        // The new upper-gate bridge is intentionally instant-use-only.
+        // Food/Spyglass/Bow-style duration use remains disabled until its
+        // lifecycle is separately proven on device.
+        offItem.duration = 32;
+        startUse = true;
+
+        const bool handled = RightUseRouter::baseUseItemDetour(
+            &gameMode, &dispatcherEmpty, 0
+        );
+        ok &= check(
+            !handled,
+            "empty MAIN must not open unproven OFFHAND long-use through the instant gate"
+        );
+        ok &= check(
+            calls.empty() && copies == 0,
+            "blocked long-use must not call native use or snapshot the OFF stack"
+        );
+        ok &= check(
+            !usingItem && gSessionPlayer == nullptr,
+            "blocked long-use must not create an active OFF session"
+        );
+    } else if (
         test == "eat_offhand_manual" ||
         test == "eat_offhand_swap_result"
     ) {

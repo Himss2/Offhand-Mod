@@ -394,6 +394,33 @@ def main() -> int:
     if "return false;" in levi[auto_pos:right_pos]:
         raise AssertionError("legacy storage failure must not abort 1.26.51.1 right-use install")
 
+    # 1.26.51.1 upper dispatcher rejects an empty MAIN stack before
+    # GameMode::baseUseItem. The instant-use candidate must bridge exactly
+    # that verified gate and keep long-use closed.
+    require(
+        router,
+        "kUpperAirUseGateRva = 0x97F8E48",
+        "kUpperAirUseGateFingerprint",
+        "kUpperAirUseGatePatchName",
+        "applyUpperAirUseGatePatch",
+        "revertUpperAirUseGatePatch",
+        "stackSupportsInstantOffhandAirUse",
+    )
+    base_use = function_body(router, "bool RightUseRouter::baseUseItemDetour(")
+    require(
+        base_use,
+        "stackIsNull(mainStack)",
+        "stackSupportsInstantOffhandAirUse(currentOff)",
+        "return false;",
+    )
+    require(
+        install,
+        "upperAirUseGateTarget = resolveExactTarget(",
+        "kUpperAirUseGateRva",
+        "kUpperAirUseGateFingerprint",
+        "applyUpperAirUseGatePatch(upperAirUseGateTarget)",
+    )
+
     require(cmake, "src/runtime/RightUseRouter.cpp")
 
     print("v0268/1.26.51.1 native-hand right-use source contract: PASS")
