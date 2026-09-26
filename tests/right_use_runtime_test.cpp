@@ -248,8 +248,8 @@ int main(int argc, char** argv) {
         );
         ok &= check(result == 0u, "MAIN air owner keeps neutral block result");
         ok &= check(
-            calls == std::vector<unsigned char>{0},
-            "MAIN self-use candidate must suppress OFF block-use in this phase"
+            calls.empty(),
+            "MAIN air-only owner must skip block-use entirely and suppress OFF in this phase"
         );
         ok &= check(copies == 0, "deferred OFF block must not snapshot or mutate OFF");
     } else if (test == "main_block_priority") {
