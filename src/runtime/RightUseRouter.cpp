@@ -200,6 +200,7 @@ constexpr std::size_t kItemUseVtableOffset = 0x290;
 constexpr std::size_t kItemCanUseAsAttackVtableOffset = 0x298;
 constexpr std::size_t kItemUseOnVtableOffset = 0x418;
 constexpr std::size_t kItemStackStorageSize = 0x98;
+constexpr std::size_t kItemStackBlockOffset = 0x18;
 constexpr std::size_t kItemStackCountOffset = 0x22;
 constexpr std::size_t kItemMaxStackSizeOffset = 0xA8;
 constexpr std::size_t kItemIdOffset = 0xAA;
@@ -515,6 +516,19 @@ template <std::size_t N>
     return count;
 }
 
+[[nodiscard]] bool stackCarriesBlock(const void* stack) noexcept {
+    if (stack == nullptr || stackIsNull(stack)) {
+        return false;
+    }
+    const void* block = nullptr;
+    std::memcpy(
+        &block,
+        static_cast<const std::byte*>(stack) + kItemStackBlockOffset,
+        sizeof(block)
+    );
+    return block != nullptr;
+}
+
 [[nodiscard]] bool stacksMatch(const void* lhs, const void* rhs) noexcept {
     return lhs != nullptr && rhs != nullptr && gStackDiffersForUse != nullptr &&
         !gStackDiffersForUse(lhs, rhs);
@@ -795,6 +809,35 @@ void capturePendingOffBlockUse(
     }
 
     return true;
+}
+
+[[nodiscard]] bool stackClaimsMainhandBlockRightClick(
+    const void* stack
+) noexcept {
+    const void* item = itemFromStack(stack);
+    if (item == nullptr) {
+        return false;
+    }
+
+    if (
+        itemIsShears(item) ||
+        itemHasContextualBlockUse(item) ||
+        stackCarriesBlock(stack)
+    ) {
+        return true;
+    }
+
+    const auto moduleBase = minecraftModuleBase();
+    if (moduleBase == 0) {
+        return false;
+    }
+
+    const auto useOn = itemVirtual<void*>(item, kItemUseOnVtableOffset);
+    const auto useOnAddress = reinterpret_cast<std::uintptr_t>(useOn);
+    return
+        useOn != nullptr &&
+        useOnAddress != moduleBase + kBaseItemUseOnRva &&
+        useOnAddress != moduleBase + kComponentItemUseOnRva;
 }
 
 [[nodiscard]] std::uintptr_t itemUseRvaForDiag(
@@ -2117,12 +2160,17 @@ std::uint32_t RightUseRouter::useItemOnBlockDetour(
     // locally but fail to commit.  Items with a real native right-click
     // capability keep strict MAINHAND priority.
     bool yieldedAttackOnly = false;
-    const bool mainClaimsBlock = stackClaimsMainhandRightClick(
-        mainStack, &yieldedAttackOnly, true
-    );
     const bool mainClaimsAir = stackClaimsMainhandRightClick(
-        mainStack, nullptr, false
+        mainStack, &yieldedAttackOnly, false
     );
+    const bool mainClaimsBlock =
+        stackClaimsMainhandBlockRightClick(mainStack);
+
+    // Contextual/block-capable tools are not attack-only for this click even
+    // if their air-use classifier reports Digger-style attack damage.
+    if (mainClaimsBlock) {
+        yieldedAttackOnly = false;
+    }
 
     bool mainAttempted = false;
     std::uint32_t mainResult = 0;
