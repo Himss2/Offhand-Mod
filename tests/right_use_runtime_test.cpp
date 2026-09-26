@@ -77,6 +77,7 @@ static bool separateUpperResults = false;
 static std::uint32_t mainBlockResult = 0, offBlockResult = 1;
 static bool mainAirResult = false, offAirResult = true;
 static bool upperTryBlock = true;
+static bool forceMainUpperHandled = false;
 static bool usingItem = false, startUse = false, startMainUse = false, detached = true;
 static bool mainFood = false, mainThrowable = false, mainUseable = false;
 static bool offFood = false, offThrowable = false, offUseable = false;
@@ -150,17 +151,24 @@ static bool airUse(void*, const void* stack, unsigned char hand) {
 }
 static bool upperUse(void*, const void*, const void*, const void*) {
     const void* selectedNow = RightUseRouter::selectedItemDetour(&player);
+    bool handled = false;
     if (upperTryBlock) {
         const auto block = RightUseRouter::useItemOnBlockDetour(
             &gameMode, selectedNow, nullptr, 0, nullptr, 0, 0, false
         );
         if (block != 0u) {
-            return true;
+            handled = true;
         }
     }
-    return RightUseRouter::baseUseItemDetour(
-        &gameMode, selectedNow, 0
-    );
+    if (!handled) {
+        handled = RightUseRouter::baseUseItemDetour(
+            &gameMode, selectedNow, 0
+        );
+    }
+    if (forceMainUpperHandled && gUpperUsePass == UpperUsePass::Main) {
+        return true;
+    }
+    return handled;
 }
 static int mainWrites = 0, completions = 0, cancellations = 0;
 static bool returnContainer = false, emptyReadStayedOff = false;
@@ -325,6 +333,69 @@ int main(int argc, char** argv) {
         ok &= check(
             gSessionPlayer == &player && usingItem,
             "OFF food must pin the long-use session"
+        );
+    } else if (test == "upper_empty_spurious_handled_still_off") {
+        separateUpperResults = true;
+        upperTryBlock = false;
+        forceMainUpperHandled = true;
+        mainStack.count = 0;
+        offTable[0x290/8] =
+            reinterpret_cast<void*>(testBase + kComponentItemUseRva);
+        offThrowable = true;
+        mainAirResult = false;
+        offAirResult = true;
+        const bool handled = RightUseRouter::upperUseDetour(
+            nullptr, nullptr, nullptr, nullptr
+        );
+        ok &= check(
+            handled,
+            "spurious upper MAIN handled with empty MAIN must not suppress OFF"
+        );
+        ok &= check(
+            airCalls == std::vector<unsigned char>{0,1},
+            "empty MAIN must still retry OFF even when upper MAIN return is true"
+        );
+    } else if (test == "post_upper_main_hold_suppresses_late_block") {
+        separateUpperResults = true;
+        mainBlockResult = 0;
+        mainAirResult = false;
+        offBlockResult = 1;
+        startMainUse = true;
+        mainUseable = true;
+        RightUseRouter::upperUseDetour(
+            nullptr, nullptr, nullptr, nullptr
+        );
+        const auto late = RightUseRouter::useItemOnBlockDetour(
+            &gameMode, &mainStack, nullptr, 0, nullptr, 0, 0, false
+        );
+        ok &= check(
+            late == 0,
+            "late block callback after MAIN hold claim must be suppressed"
+        );
+        ok &= check(
+            blockCalls == std::vector<unsigned char>{0},
+            "MAIN hold ownership must survive after upper dispatcher returns"
+        );
+    } else if (test == "post_upper_main_block_suppresses_late_air") {
+        separateUpperResults = true;
+        mainBlockResult = 1;
+        offAirResult = true;
+        offTable[0x290/8] =
+            reinterpret_cast<void*>(testBase + kComponentItemUseRva);
+        offThrowable = true;
+        RightUseRouter::upperUseDetour(
+            nullptr, nullptr, nullptr, nullptr
+        );
+        const bool late = RightUseRouter::baseUseItemDetour(
+            &gameMode, &mainStack, 0
+        );
+        ok &= check(
+            !late,
+            "late air callback after MAIN block claim must be suppressed"
+        );
+        ok &= check(
+            airCalls.empty(),
+            "MAIN block ownership must suppress later OFF throwable/self-use"
         );
     } else if (test == "upper_sword_off_block_fallback") {
         separateUpperResults = true;
