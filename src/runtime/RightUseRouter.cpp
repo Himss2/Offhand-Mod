@@ -1583,6 +1583,17 @@ bool RightUseRouter::baseUseItemDetour(
     ScopedBool reentry(gInsideBaseUse);
     ScopedPlayer routedPlayer(player);
 
+    // Device evidence on 1.26.51.1: throwable MAIN use (Pearl/Egg/etc.)
+    // performs the native hand transaction while GameMode::baseUseItem still
+    // returns false. Treat a verified instant native MAIN use as terminal
+    // ownership, but preserve that original bool exactly. This prevents a
+    // second OFFHAND throwable from firing for the same click without
+    // synthesizing success or changing vanilla MAIN behavior.
+    if (!mainEmpty && stackSupportsInstantOffhandAirUse(mainStack)) {
+        ScopedActionHand mainScope(ActionHand::MainHand, ActionKind::UseAir);
+        return original(gameMode, itemStack, hand);
+    }
+
     const auto finishOffhandUse = [&](bool handled) noexcept {
         if (!handled) {
             return false;
