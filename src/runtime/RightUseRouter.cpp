@@ -56,6 +56,21 @@ constexpr std::uintptr_t kStackDiffersForUseRva = 0xFFA5B04;
 constexpr std::uintptr_t kItemStackCopyCtorRva = 0xFF9D748;
 constexpr std::uintptr_t kItemStackDtorRva = 0x85ADF98;
 
+// Diagnostic-only anchors for the instant OFFHAND investigation.
+// GameMode::useItem @ vtable+0x60 calls the interaction/event gate before
+// ItemStack::use. EnderpearlItem::use is the exact virtual target recovered
+// from RTTI/vtable relocation analysis of the uploaded 1.26.51.1 binary.
+constexpr std::uintptr_t kInteractionGateRva = 0xF8E61D4;
+constexpr std::array<std::uint8_t, 12> kInteractionGateProbeBytes{
+    0x08, 0x34, 0x40, 0xF9, 0xE2, 0x03, 0x01, 0xAA,
+    0xE1, 0x03, 0x08, 0xAA,
+};
+constexpr std::uintptr_t kEnderPearlUseRva = 0xFFEA310;
+constexpr std::array<std::uint8_t, 16> kEnderPearlUseProbeBytes{
+    0xFF, 0x03, 0x04, 0xD1, 0xFD, 0x7B, 0x0C, 0xA9,
+    0xF7, 0x6B, 0x00, 0xF9, 0xF6, 0x57, 0x0E, 0xA9,
+};
+
 // Upper right-use dispatcher 0x97F85F8 rejects an empty selected MAIN stack
 // before GameMode::baseUseItem.  At 0x97F8E48 the exact 1.26.51.1 code is:
 //
@@ -259,6 +274,13 @@ ItemInUseStackFn gItemInUseStack = nullptr;
 StackDiffersForUseFn gStackDiffersForUse = nullptr;
 ItemStackCopyCtorFn gItemStackCopyCtor = nullptr;
 ItemStackDtorFn gItemStackDtor = nullptr;
+
+using InteractionGateFn = std::uint32_t (*)(void*, const void*);
+using EnderPearlUseFn = void* (*)(void*, void*, void*, unsigned char);
+void* gInteractionGateOriginal = nullptr;
+void* gEnderPearlUseOriginal = nullptr;
+std::unique_ptr<pl::memory::HookHandle> gInteractionGateHook;
+std::unique_ptr<pl::memory::HookHandle> gEnderPearlUseHook;
 
 thread_local bool gInsideBaseUse = false;
 thread_local bool gInsideBlockUse = false;
@@ -707,6 +729,99 @@ template <typename Fn>
     return getMaxUseDuration(item, stack) <= 0;
 }
 
+[[nodiscard]] std::uintptr_t gameModeUseTargetRvaForDiag(
+    const void* gameMode
+) noexcept {
+    if (gameMode == nullptr) {
+        return 0;
+    }
+    const auto base = minecraftModuleBase();
+    if (base == 0) {
+        return 0;
+    }
+    const void* vtable = nullptr;
+    std::memcpy(&vtable, gameMode, sizeof(vtable));
+    if (vtable == nullptr) {
+        return 0;
+    }
+    const void* target = nullptr;
+    std::memcpy(
+        &target,
+        static_cast<const std::byte*>(vtable) + 0x60,
+        sizeof(target)
+    );
+    const auto address = reinterpret_cast<std::uintptr_t>(target);
+    return address >= base ? address - base : 0;
+}
+
+std::uint32_t interactionGateDiagDetour(
+    void* owner,
+    const void* context
+) noexcept {
+    const auto original =
+        reinterpret_cast<InteractionGateFn>(gInteractionGateOriginal);
+    if (original == nullptr) {
+        return 0;
+    }
+    const std::uint32_t result = original(owner, context);
+    const auto scoped = currentScopedAction();
+    if (scoped.has_value() && scoped->kind == ActionKind::UseAir) {
+        __android_log_print(
+            ANDROID_LOG_INFO,
+            kLogTag,
+            "[InstantAirDiag] interaction-gate hand=%u result=%u",
+            scoped->hand == ActionHand::OffHand ? 1u : 0u,
+            static_cast<unsigned int>(result)
+        );
+    }
+    return result;
+}
+
+void* enderPearlUseDiagDetour(
+    void* item,
+    void* stack,
+    void* player,
+    unsigned char hand
+) noexcept {
+    const auto original =
+        reinterpret_cast<EnderPearlUseFn>(gEnderPearlUseOriginal);
+    if (original == nullptr) {
+        return stack;
+    }
+
+    const auto scoped = currentScopedAction();
+    const bool scopedAir =
+        scoped.has_value() && scoped->kind == ActionKind::UseAir;
+    if (scopedAir) {
+        const void* liveOff =
+            gGetOffhandSlot != nullptr ? gGetOffhandSlot(player) : nullptr;
+        __android_log_print(
+            ANDROID_LOG_INFO,
+            kLogTag,
+            "[InstantAirDiag] EnderPearl::use ENTER argHand=%u scopeHand=%u stackCount=%u liveOffCount=%u",
+            static_cast<unsigned int>(hand),
+            scoped->hand == ActionHand::OffHand ? 1u : 0u,
+            static_cast<unsigned int>(stackCount(stack)),
+            static_cast<unsigned int>(stackCount(liveOff))
+        );
+    }
+
+    void* result = original(item, stack, player, hand);
+
+    if (scopedAir) {
+        const void* liveOff =
+            gGetOffhandSlot != nullptr ? gGetOffhandSlot(player) : nullptr;
+        __android_log_print(
+            ANDROID_LOG_INFO,
+            kLogTag,
+            "[InstantAirDiag] EnderPearl::use EXIT stackCount=%u liveOffCount=%u",
+            static_cast<unsigned int>(stackCount(stack)),
+            static_cast<unsigned int>(stackCount(liveOff))
+        );
+    }
+    return result;
+}
+
 class ScopedItemStackSnapshot final {
 public:
     explicit ScopedItemStackSnapshot(const void* source) noexcept {
@@ -937,6 +1052,12 @@ bool RightUseRouter::install(pl::mod::ModContext& context) noexcept {
     const auto upperAirUseGateTarget = resolveExactTarget(
         kUpperAirUseGateRva, kUpperAirUseGateFingerprint
     );
+    const auto interactionGateTarget = resolveExactTarget(
+        kInteractionGateRva, kInteractionGateProbeBytes
+    );
+    const auto enderPearlUseTarget = resolveExactTarget(
+        kEnderPearlUseRva, kEnderPearlUseProbeBytes
+    );
     const auto setHandTarget =
         setHandExact != 0
         ? setHandExact
@@ -946,12 +1067,13 @@ bool RightUseRouter::install(pl::mod::ModContext& context) noexcept {
         offhandTarget == 0 || nullTarget == 0 ||
         usingTarget == 0 || inUseTarget == 0 || differsTarget == 0 ||
         copyCtorTarget == 0 || dtorTarget == 0 || setHandTarget == 0 ||
-        useTickBridgeTarget == 0 || upperAirUseGateTarget == 0
+        useTickBridgeTarget == 0 || upperAirUseGateTarget == 0 ||
+        interactionGateTarget == 0 || enderPearlUseTarget == 0
     ) {
         __android_log_print(
             ANDROID_LOG_WARN,
             kLogTag,
-            "[RightUseRouter] stable guard failed offhand=%d null=%d using=%d inUse=%d differs=%d copy=%d dtor=%d setHand=%d useTick=%d airGate=%d",
+            "[RightUseRouter] stable guard failed offhand=%d null=%d using=%d inUse=%d differs=%d copy=%d dtor=%d setHand=%d useTick=%d airGate=%d gateDiag=%d pearlDiag=%d",
             offhandTarget != 0 ? 1 : 0,
             nullTarget != 0 ? 1 : 0,
             usingTarget != 0 ? 1 : 0,
@@ -961,7 +1083,9 @@ bool RightUseRouter::install(pl::mod::ModContext& context) noexcept {
             dtorTarget != 0 ? 1 : 0,
             setHandTarget != 0 ? 1 : 0,
             useTickBridgeTarget != 0 ? 1 : 0,
-            upperAirUseGateTarget != 0 ? 1 : 0
+            upperAirUseGateTarget != 0 ? 1 : 0,
+            interactionGateTarget != 0 ? 1 : 0,
+            enderPearlUseTarget != 0 ? 1 : 0
         );
         context.logger().warn(
             "[RightUseRouter] Minecraft 1.26.51.1 stable fingerprint validation failed; right-use disabled"
@@ -1041,6 +1165,29 @@ bool RightUseRouter::install(pl::mod::ModContext& context) noexcept {
     sInstance = this;
     gStopUsingItem = reinterpret_cast<CompleteUsingItemFn>(stopTarget);
     gReleaseCallback = minecraftModuleBase() + kReleaseCallbackRva;
+
+    gInteractionGateHook = std::make_unique<pl::memory::HookHandle>(
+        reinterpret_cast<void*>(interactionGateTarget),
+        reinterpret_cast<void*>(&interactionGateDiagDetour),
+        &gInteractionGateOriginal,
+        pl::memory::HookPriority::Normal
+    );
+    gEnderPearlUseHook = std::make_unique<pl::memory::HookHandle>(
+        reinterpret_cast<void*>(enderPearlUseTarget),
+        reinterpret_cast<void*>(&enderPearlUseDiagDetour),
+        &gEnderPearlUseOriginal,
+        pl::memory::HookPriority::Normal
+    );
+    if (
+        !gInteractionGateHook || !gInteractionGateHook->installed() ||
+        gInteractionGateOriginal == nullptr ||
+        !gEnderPearlUseHook || !gEnderPearlUseHook->installed() ||
+        gEnderPearlUseOriginal == nullptr
+    ) {
+        context.logger().warn("[RightUseRouter] instant-air diagnostic hooks failed");
+        uninstall(context);
+        return false;
+    }
 
     mSelectedItemHook = std::make_unique<pl::memory::HookHandle>(
         reinterpret_cast<void*>(mSelectedItemTarget),
@@ -1157,6 +1304,17 @@ void RightUseRouter::uninstall(pl::mod::ModContext& context) noexcept {
         revertUpperAirUseGatePatch();
         mUpperAirUseGatePatchApplied = false;
     }
+
+    if (gEnderPearlUseHook) {
+        gEnderPearlUseHook->reset();
+        gEnderPearlUseHook.reset();
+    }
+    gEnderPearlUseOriginal = nullptr;
+    if (gInteractionGateHook) {
+        gInteractionGateHook->reset();
+        gInteractionGateHook.reset();
+    }
+    gInteractionGateOriginal = nullptr;
 
     if (mUseTickPatchApplied) {
         revertUseTickBridgePatch();
@@ -1361,9 +1519,12 @@ bool RightUseRouter::baseUseItemDetour(
             __android_log_print(
                 ANDROID_LOG_INFO,
                 kLogTag,
-                "[InstantAirDiag] calling baseUseItem OFF hand=1 liveCount=%u snapshotCount=%u",
+                "[InstantAirDiag] calling baseUseItem OFF hand=1 liveCount=%u snapshotCount=%u gameModeUseRva=0x%llX",
                 static_cast<unsigned int>(stackCount(currentOff)),
-                static_cast<unsigned int>(stackCount(offSnapshot.get()))
+                static_cast<unsigned int>(stackCount(offSnapshot.get())),
+                static_cast<unsigned long long>(
+                    gameModeUseTargetRvaForDiag(gameMode)
+                )
             );
         }
         const bool nativeHandled = original(gameMode, offSnapshot.get(), kOffHand);
