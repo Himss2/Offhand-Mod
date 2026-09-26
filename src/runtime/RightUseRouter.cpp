@@ -1446,7 +1446,42 @@ bool RightUseRouter::baseUseItemDetour(
 
     const bool mainEmpty = stackIsNull(mainStack);
     if (offStack == nullptr || stackIsNull(offStack)) {
-        return mainEmpty ? false : original(gameMode, itemStack, hand);
+        if (mainEmpty) {
+            return false;
+        }
+
+        // Diagnostic comparison path only: when vanilla MAIN Pearl is used
+        // with an empty OFF slot, the normal router exits here before the
+        // routeUseAction diagnostics below. Wrap the untouched original call
+        // in a MAIN UseAir scope so the same gate, EnderPearl::use and
+        // handTransaction probes can observe the working vanilla path.
+        if (itemUseRvaForDiag(mainStack) == kEnderPearlUseRva) {
+            ScopedBool reentry(gInsideBaseUse);
+            ScopedPlayer routedPlayer(player);
+            ScopedActionHand mainScope(ActionHand::MainHand, ActionKind::UseAir);
+            __android_log_print(
+                ANDROID_LOG_INFO,
+                kLogTag,
+                "[InstantAirDiag] MAIN Pearl vanilla-path calling baseUseItem hand=%u mainCount=%u gameModeUseRva=0x%llX",
+                static_cast<unsigned int>(hand),
+                static_cast<unsigned int>(stackCount(mainStack)),
+                static_cast<unsigned long long>(
+                    gameModeUseTargetRvaForDiag(gameMode)
+                )
+            );
+            const bool nativeHandled = original(gameMode, itemStack, hand);
+            const void* resultingMain = selectedOriginal(player);
+            __android_log_print(
+                ANDROID_LOG_INFO,
+                kLogTag,
+                "[InstantAirDiag] MAIN Pearl vanilla-path returned handled=%d mainCount=%u",
+                nativeHandled ? 1 : 0,
+                static_cast<unsigned int>(stackCount(resultingMain))
+            );
+            return nativeHandled;
+        }
+
+        return original(gameMode, itemStack, hand);
     }
 
     if (mainEmpty) {
