@@ -309,6 +309,25 @@ int main(int argc, char** argv) {
             gSessionPlayer == nullptr && !usingItem,
             "instant OFFHAND use must not create a long-use session"
         );
+    } else if (test == "air_empty_main_instant_pass") {
+        mainStack.count = 0;
+        Stack dispatcherEmpty = mainStack;
+        dispatcherEmpty.id = 0;
+        offTable[0x290/8] = reinterpret_cast<void*>(testBase + 0xFFEA310);
+        offItem.duration = 0;
+        offResult = 0;
+
+        const bool handled = RightUseRouter::baseUseItemDetour(
+            &gameMode, &dispatcherEmpty, 0
+        );
+        ok &= check(
+            !handled,
+            "instant OFFHAND PASS with empty MAIN must remain unhandled"
+        );
+        ok &= check(
+            calls == std::vector<unsigned char>{1},
+            "instant OFFHAND PASS must not replay vanilla MAIN empty-use"
+        );
     } else if (test == "air_empty_main_long_use_blocked") {
         mainStack.count = 0;
         Stack dispatcherEmpty = mainStack;
