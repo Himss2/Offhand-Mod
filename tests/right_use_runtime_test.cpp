@@ -264,6 +264,30 @@ int main(int argc, char** argv) {
         ok &= check(calls == (mainResult ? std::vector<unsigned char>{0} : std::vector<unsigned char>{0,1}), "only PASS falls back; MAIN must run at most once");
         ok &= check(result == (mainResult ? mainResult : offResult), "preserve native result bits");
         ok &= check(detached, "placement uses detached offhand snapshot");
+    } else if (test == "air_main_instant_false_terminal") {
+        // Real throwable evidence from device: native MAIN Pearl/Egg can
+        // perform its transaction while GameMode::baseUseItem still returns
+        // false. A capable instant MAIN item therefore owns the click and
+        // OFFHAND must not be attempted for the same input.
+        mainTable[0x290/8] = reinterpret_cast<void*>(testBase + 0xFFEA310);
+        mainItem.duration = 0;
+        mainResult = 0;
+        offResult = 1;
+
+        const bool handled =
+            RightUseRouter::baseUseItemDetour(&gameMode, &mainStack, 0);
+        ok &= check(
+            !handled,
+            "instant MAIN must preserve the native false return"
+        );
+        ok &= check(
+            calls == std::vector<unsigned char>{0},
+            "instant MAIN native-use must be terminal even when native bool is false"
+        );
+        ok &= check(
+            copies == 0,
+            "terminal instant MAIN must not snapshot or attempt OFFHAND"
+        );
     } else if (test == "air_main_success") {
         mainTable[0x290/8] = reinterpret_cast<void*>(testBase + 0xFF78D40);
         mainResult = 1;
@@ -426,6 +450,7 @@ int main(int argc, char** argv) {
         ok &= check(result == 2 && calls == std::vector<unsigned char>{1}, "nonzero OFF result must not replay MAIN");
     } else if (test == "air_main_pass") {
         mainTable[0x290/8] = reinterpret_cast<void*>(testBase + 0xFF78D40);
+        mainItem.duration = 32;
         mutateOffOnMain = true;
         const bool result = RightUseRouter::baseUseItemDetour(&gameMode, &mainStack, 0);
         ok &= check(result && calls == std::vector<unsigned char>{0,1}, "MAIN air PASS falls through once");
