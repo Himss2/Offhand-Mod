@@ -702,6 +702,63 @@ template <typename Fn>
     return address - base;
 }
 
+[[nodiscard]] std::uintptr_t itemVtableRvaForDiag(
+    const void* stack
+) noexcept {
+    const void* item = itemFromStack(stack);
+    const auto base = minecraftModuleBase();
+    if (item == nullptr || base == 0) {
+        return 0;
+    }
+    const void* vtable = nullptr;
+    std::memcpy(&vtable, item, sizeof(vtable));
+    const auto address = reinterpret_cast<std::uintptr_t>(vtable);
+    return address >= base ? address - base : 0;
+}
+
+[[nodiscard]] std::uintptr_t itemVirtualRvaForDiag(
+    const void* stack,
+    std::size_t byteOffset
+) noexcept {
+    const void* item = itemFromStack(stack);
+    const auto base = minecraftModuleBase();
+    if (item == nullptr || base == 0) {
+        return 0;
+    }
+    const auto fn = itemVirtual<void*>(item, byteOffset);
+    const auto address = reinterpret_cast<std::uintptr_t>(fn);
+    return address >= base ? address - base : 0;
+}
+
+[[nodiscard]] std::int16_t itemIdForDiag(
+    const void* stack
+) noexcept {
+    const void* item = itemFromStack(stack);
+    if (item == nullptr) {
+        return 0;
+    }
+    std::int16_t itemId = 0;
+    std::memcpy(
+        &itemId,
+        static_cast<const std::byte*>(item) + kItemIdOffset,
+        sizeof(itemId)
+    );
+    return itemId;
+}
+
+[[nodiscard]] int attackDamageForDiag(
+    const void* stack
+) noexcept {
+    const void* item = itemFromStack(stack);
+    if (item == nullptr) {
+        return 0;
+    }
+    const auto fn = itemVirtual<GetAttackDamageFn>(
+        item, kItemGetAttackDamageVtableOffset
+    );
+    return fn != nullptr ? fn(item) : 0;
+}
+
 [[nodiscard]] int maxUseDurationForDiag(
     const void* stack
 ) noexcept {
@@ -1819,6 +1876,28 @@ std::uint32_t RightUseRouter::useItemOnBlockDetour(
     };
 
     if (yieldedAttackOnly) {
+        __android_log_print(
+            ANDROID_LOG_INFO,
+            kLogTag,
+            "[BlockPriorityDiag] mainAttackOnly id=%d vtableRva=0x%llX attackFnRva=0x%llX useRva=0x%llX requiresRva=0x%llX useOnRva=0x%llX damage=%d duration=%d",
+            static_cast<int>(itemIdForDiag(mainStack)),
+            static_cast<unsigned long long>(itemVtableRvaForDiag(mainStack)),
+            static_cast<unsigned long long>(
+                itemVirtualRvaForDiag(mainStack, kItemGetAttackDamageVtableOffset)
+            ),
+            static_cast<unsigned long long>(
+                itemVirtualRvaForDiag(mainStack, kItemUseVtableOffset)
+            ),
+            static_cast<unsigned long long>(
+                itemVirtualRvaForDiag(mainStack, kItemRequiresInteractVtableOffset)
+            ),
+            static_cast<unsigned long long>(
+                itemVirtualRvaForDiag(mainStack, kItemUseOnVtableOffset)
+            ),
+            attackDamageForDiag(mainStack),
+            maxUseDurationForDiag(mainStack)
+        );
+
         bool expected = false;
         if (instance->mLoggedAttackOnlyYield.compare_exchange_strong(
                 expected, true, std::memory_order_relaxed
