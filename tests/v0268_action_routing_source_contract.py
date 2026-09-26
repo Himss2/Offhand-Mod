@@ -318,10 +318,11 @@ def main() -> int:
             "both OFFHAND call sites must carry native hand=1"
         )
 
-    scope_pos = use_block.index(
-        "ScopedActionHand offScope(ActionHand::OffHand, ActionKind::UseBlock)"
-    )
     prehook_pos = use_block.index("if (instance->mUseItemOnBlockPreHooked)")
+    scope_pos = use_block.index(
+        "ScopedActionHand offScope(ActionHand::OffHand, ActionKind::UseBlock)",
+        prehook_pos,
+    )
     else_pos = use_block.index("} else {", prehook_pos)
     if not (prehook_pos < scope_pos < else_pos):
         raise AssertionError(
