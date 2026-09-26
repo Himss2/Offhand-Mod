@@ -176,6 +176,20 @@ constexpr std::uintptr_t kComponentItemRequiresInteractRva = 0xFDAA1FC;
 constexpr std::uintptr_t kBaseItemUseOnRva = 0xFF84B84;
 constexpr std::uintptr_t kComponentItemUseOnRva = 0xFDA8A20;
 
+// Exact 1.26.51.1 semantic tags. These are optional helpers: a mismatch must
+// never disable the proven #773 right-use router.
+constexpr std::uintptr_t kItemHasTagRva = 0x1010DA9C;
+constexpr std::uintptr_t kAxeItemTagRva = 0x134F13F0;
+constexpr std::uintptr_t kHoeItemTagRva = 0x134F1418;
+constexpr std::uintptr_t kShovelItemTagRva = 0x134F15A8;
+constexpr std::uint64_t kAxeItemTagHash = 0xCB1D9DCFC8FA19CDULL;
+constexpr std::uint64_t kHoeItemTagHash = 0xCB3C94CFC914BA89ULL;
+constexpr std::uint64_t kShovelItemTagHash = 0xB4C59DBDE3006DF6ULL;
+constexpr std::array<std::uint8_t, 16> kItemHasTagFingerprint{
+    0xFD, 0x7B, 0xBD, 0xA9, 0xF5, 0x0B, 0x00, 0xF9,
+    0xF4, 0x4F, 0x02, 0xA9, 0xFD, 0x03, 0x00, 0x91,
+};
+
 constexpr std::size_t kGameModePlayerOffset = sizeof(void*);
 constexpr std::size_t kItemWeakPtrOffset = 0x08;
 constexpr std::size_t kItemGetMaxUseDurationVtableOffset = 0x30;
@@ -289,6 +303,7 @@ using ItemStackDtorFn = void (*)(void*);
 using GetMaxUseDurationFn = int (*)(const void*, const void*);
 using GetAttackDamageFn = int (*)(const void*);
 using ItemBoolFn = bool (*)(const void*);
+using ItemHasTagFn = bool (*)(const void*, const void*);
 
 OffhandItemFn gGetOffhandSlot = nullptr;
 SetItemInHandSlotFn gSetItemInHandSlot = nullptr;
@@ -298,6 +313,10 @@ ItemInUseStackFn gItemInUseStack = nullptr;
 StackDiffersForUseFn gStackDiffersForUse = nullptr;
 ItemStackCopyCtorFn gItemStackCopyCtor = nullptr;
 ItemStackDtorFn gItemStackDtor = nullptr;
+ItemHasTagFn gItemHasTag = nullptr;
+const void* gAxeTag = nullptr;
+const void* gHoeTag = nullptr;
+const void* gShovelTag = nullptr;
 
 using InteractionGateFn = std::uint32_t (*)(void*, const void*);
 using EnderPearlUseFn = void* (*)(void*, void*, void*, unsigned char);
@@ -306,9 +325,32 @@ void* gEnderPearlUseOriginal = nullptr;
 std::unique_ptr<pl::memory::HookHandle> gInteractionGateHook;
 std::unique_ptr<pl::memory::HookHandle> gEnderPearlUseHook;
 
+enum class RightClickOwner : std::uint8_t {
+    Unknown,
+    MainPending,
+    MainOwned,
+    OffEligible,
+};
+
+struct PendingOffBlockUse {
+    bool active{false};
+    void* gameMode{nullptr};
+    const void* player{nullptr};
+    std::array<std::byte, 12> blockPos{};
+    std::array<std::byte, 12> hitPos{};
+    bool hasBlockPos{false};
+    bool hasHitPos{false};
+    int face{0};
+    std::uintptr_t extra{0};
+    bool flag{false};
+};
+
 thread_local bool gInsideBaseUse = false;
 thread_local bool gInsideBlockUse = false;
 thread_local const void* gScopedPlayer = nullptr;
+thread_local RightClickOwner gRightClickOwner = RightClickOwner::Unknown;
+thread_local PendingOffBlockUse gPendingOffBlockUse{};
+thread_local bool gMainUseCommitted = false;
 thread_local const void* gSessionPlayer = nullptr;
 thread_local void* gSessionGameMode = nullptr;
 std::atomic_bool gLoggedUseTickBridge{false};
@@ -572,6 +614,70 @@ template <typename Fn>
     return function;
 }
 
+[[nodiscard]] bool runtimeTagHashMatches(
+    const void* tag,
+    std::uint64_t expected
+) noexcept {
+    if (tag == nullptr) {
+        return false;
+    }
+    std::uint64_t actual = 0;
+    std::memcpy(&actual, tag, sizeof(actual));
+    return actual == expected;
+}
+
+[[nodiscard]] bool itemHasContextualBlockUse(const void* item) noexcept {
+    if (
+        item == nullptr || gItemHasTag == nullptr ||
+        gShovelTag == nullptr || gAxeTag == nullptr || gHoeTag == nullptr
+    ) {
+        return false;
+    }
+    return
+        gItemHasTag(item, gShovelTag) ||
+        gItemHasTag(item, gAxeTag) ||
+        gItemHasTag(item, gHoeTag);
+}
+
+void clearPendingOffBlockUse() noexcept {
+    gPendingOffBlockUse = {};
+    gRightClickOwner = RightClickOwner::Unknown;
+}
+
+void capturePendingOffBlockUse(
+    void* gameMode,
+    const void* player,
+    const void* blockPos,
+    int face,
+    const void* hitPos,
+    std::uintptr_t extra,
+    bool flag
+) noexcept {
+    gPendingOffBlockUse = {};
+    gPendingOffBlockUse.active = true;
+    gPendingOffBlockUse.gameMode = gameMode;
+    gPendingOffBlockUse.player = player;
+    gPendingOffBlockUse.face = face;
+    gPendingOffBlockUse.extra = extra;
+    gPendingOffBlockUse.flag = flag;
+    if (blockPos != nullptr) {
+        std::memcpy(
+            gPendingOffBlockUse.blockPos.data(),
+            blockPos,
+            gPendingOffBlockUse.blockPos.size()
+        );
+        gPendingOffBlockUse.hasBlockPos = true;
+    }
+    if (hitPos != nullptr) {
+        std::memcpy(
+            gPendingOffBlockUse.hitPos.data(),
+            hitPos,
+            gPendingOffBlockUse.hitPos.size()
+        );
+        gPendingOffBlockUse.hasHitPos = true;
+    }
+}
+
 [[nodiscard]] bool stackClaimsMainhandRightClick(
     const void* stack,
     bool* yieldedAttackOnly = nullptr,
@@ -633,6 +739,12 @@ template <typename Fn>
         specializedRequiresInteract ||
         (includeBlockUse && specializedUseOn)
     ) {
+        return true;
+    }
+
+    // Contextual Digger actions share ComponentItem::_useOn with ordinary
+    // Digger/Sword paths, so virtual identity alone cannot separate them.
+    if (includeBlockUse && itemHasContextualBlockUse(item)) {
         return true;
     }
 
@@ -1151,6 +1263,23 @@ bool RightUseRouter::install(pl::mod::ModContext& context) noexcept {
     const auto dtorTarget = resolveExactTarget(
         kItemStackDtorRva, kItemStackDtorFingerprint
     );
+
+    const auto itemHasTagTarget = resolveExactTarget(
+        kItemHasTagRva, kItemHasTagFingerprint
+    );
+    const auto moduleBase = minecraftModuleBase();
+    const void* axeTag =
+        moduleBase != 0 ? reinterpret_cast<const void*>(moduleBase + kAxeItemTagRva) : nullptr;
+    const void* hoeTag =
+        moduleBase != 0 ? reinterpret_cast<const void*>(moduleBase + kHoeItemTagRva) : nullptr;
+    const void* shovelTag =
+        moduleBase != 0 ? reinterpret_cast<const void*>(moduleBase + kShovelItemTagRva) : nullptr;
+    const bool contextualPriorityAvailable =
+        itemHasTagTarget != 0 &&
+        runtimeTagHashMatches(axeTag, kAxeItemTagHash) &&
+        runtimeTagHashMatches(hoeTag, kHoeItemTagHash) &&
+        runtimeTagHashMatches(shovelTag, kShovelItemTagHash);
+
     const auto setHandExact = resolveExactTarget(
         kSetItemInHandSlotRva, kSetItemInHandSlotFingerprint
     );
@@ -1269,6 +1398,22 @@ bool RightUseRouter::install(pl::mod::ModContext& context) noexcept {
     gStackDiffersForUse = reinterpret_cast<StackDiffersForUseFn>(differsTarget);
     gItemStackCopyCtor = reinterpret_cast<ItemStackCopyCtorFn>(copyCtorTarget);
     gItemStackDtor = reinterpret_cast<ItemStackDtorFn>(dtorTarget);
+    gItemHasTag = contextualPriorityAvailable
+        ? reinterpret_cast<ItemHasTagFn>(itemHasTagTarget)
+        : nullptr;
+    gAxeTag = contextualPriorityAvailable ? axeTag : nullptr;
+    gHoeTag = contextualPriorityAvailable ? hoeTag : nullptr;
+    gShovelTag = contextualPriorityAvailable ? shovelTag : nullptr;
+
+    if (contextualPriorityAvailable) {
+        context.logger().info(
+            "[RightUseRouter] contextual MAINHAND priority helper active"
+        );
+    } else {
+        context.logger().warn(
+            "[RightUseRouter] contextual priority helper unavailable; #773 core remains active"
+        );
+    }
 
     mSelectedItemTarget = selectedTarget;
     mReleaseUsingItemTarget = releaseTarget;
@@ -1491,6 +1636,12 @@ void RightUseRouter::uninstall(pl::mod::ModContext& context) noexcept {
     mSelectedItemTarget = 0;
     gGetOffhandSlot = nullptr;
     gSetItemInHandSlot = nullptr;
+    gItemHasTag = nullptr;
+    gAxeTag = nullptr;
+    gHoeTag = nullptr;
+    gShovelTag = nullptr;
+    clearPendingOffBlockUse();
+    gMainUseCommitted = false;
     gStackIsNull = nullptr;
     gPlayerIsUsingItem = nullptr;
     gItemInUseStack = nullptr;
@@ -1579,6 +1730,112 @@ bool RightUseRouter::baseUseItemDetour(
     }
 
     const bool mainEmpty = stackIsNull(mainStack);
+
+    // If useItemOnBlock deferred OFFHAND for this same click, MAIN gets its
+    // actual native air/self-use turn now. OFF is allowed only when MAIN
+    // produced no transaction and did not enter an active-use session.
+    if (
+        gPendingOffBlockUse.active &&
+        gPendingOffBlockUse.gameMode == gameMode &&
+        gPendingOffBlockUse.player == player &&
+        !mainEmpty
+    ) {
+        ScopedBool reentry(gInsideBaseUse);
+        ScopedPlayer routedPlayer(player);
+        gMainUseCommitted = false;
+        gRightClickOwner = RightClickOwner::MainPending;
+
+        bool nativeHandled = false;
+        {
+            ScopedActionHand mainScope(ActionHand::MainHand, ActionKind::UseAir);
+            nativeHandled = original(gameMode, itemStack, hand);
+        }
+
+        const bool activeMain = activeUseMatches(player, mainStack);
+        const bool mainCommitted = gMainUseCommitted || activeMain;
+
+        if (mainCommitted) {
+            clearPendingOffBlockUse();
+            gMainUseCommitted = false;
+            return nativeHandled || activeMain;
+        }
+
+        // MAIN genuinely did nothing. Only now may OFF consume the pending
+        // block interaction from this click.
+        const PendingOffBlockUse pending = gPendingOffBlockUse;
+        clearPendingOffBlockUse();
+        gMainUseCommitted = false;
+        gRightClickOwner = RightClickOwner::OffEligible;
+
+        const void* currentOff =
+            gGetOffhandSlot != nullptr ? gGetOffhandSlot(player) : nullptr;
+        if (!stackIsNull(currentOff)) {
+            ScopedItemStackSnapshot offSnapshot(currentOff);
+            if (offSnapshot.get() != nullptr) {
+                const auto blockOriginal = reinterpret_cast<UseItemOnBlockFn>(
+                    instance->mUseItemOnBlockOriginal
+                );
+                const void* pendingBlockPos =
+                    pending.hasBlockPos ? pending.blockPos.data() : nullptr;
+                const void* pendingHitPos =
+                    pending.hasHitPos ? pending.hitPos.data() : nullptr;
+
+                std::uint32_t offBlockResult = 0;
+                if (instance->mUseItemOnBlockPreHooked) {
+                    ScopedActionHand offScope(
+                        ActionHand::OffHand, ActionKind::UseBlock
+                    );
+                    ScopedPlayer offPlayer(player);
+                    offBlockResult = blockOriginal(
+                        gameMode,
+                        offSnapshot.get(),
+                        pendingBlockPos,
+                        pending.face,
+                        pendingHitPos,
+                        kOffHand,
+                        pending.extra,
+                        pending.flag
+                    );
+                } else {
+                    offBlockResult = blockOriginal(
+                        gameMode,
+                        offSnapshot.get(),
+                        pendingBlockPos,
+                        pending.face,
+                        pendingHitPos,
+                        kOffHand,
+                        pending.extra,
+                        pending.flag
+                    );
+                }
+
+                if ((offBlockResult & 1u) != 0u) {
+                    const std::uint8_t liveCount = stackCount(currentOff);
+                    const std::uint8_t placedCount =
+                        stackCount(offSnapshot.get());
+                    if (
+                        gSetItemInHandSlot != nullptr &&
+                        liveCount != placedCount
+                    ) {
+                        gSetItemInHandSlot(
+                            const_cast<void*>(player),
+                            kOffHand,
+                            offSnapshot.get()
+                        );
+                    }
+                    OffhandPlacementAnimation::instance().trigger();
+                }
+
+                if (offBlockResult != 0u) {
+                    return true;
+                }
+            }
+        }
+
+        // Pending OFF block also passed. Continue the Java-style order with
+        // OFF air/self-use using the untouched #773 implementation below.
+    }
+
     if (offStack == nullptr || stackIsNull(offStack)) {
         if (mainEmpty) {
             return false;
@@ -1639,6 +1896,9 @@ bool RightUseRouter::baseUseItemDetour(
 
     ScopedBool reentry(gInsideBaseUse);
     ScopedPlayer routedPlayer(player);
+
+    const bool mainAlreadyTriedForPending =
+        gRightClickOwner == RightClickOwner::OffEligible;
 
     // Device evidence on 1.26.51.1: throwable MAIN use (Pearl/Egg/etc.)
     // performs the native hand transaction while GameMode::baseUseItem still
@@ -1730,15 +1990,20 @@ bool RightUseRouter::baseUseItemDetour(
     // action, which previously swallowed food/potion/other self-use in
     // OFFHAND.  The same capability classifier used by block placement is
     // authoritative here.
-    if (!stackClaimsMainhandRightClick(mainStack)) {
+    if (
+        mainAlreadyTriedForPending ||
+        !stackClaimsMainhandRightClick(mainStack)
+    ) {
         if (attemptOffhandUse()) {
+            gRightClickOwner = RightClickOwner::Unknown;
             return true;
         }
 
         // The patched upper gate reaches this boundary only because vanilla
         // rejected an empty MAIN stack.  If the verified instant OFF use also
         // passes, remain unhandled; do not invent a MAIN empty-use replay.
-        if (mainEmpty) {
+        if (mainEmpty || mainAlreadyTriedForPending) {
+            gRightClickOwner = RightClickOwner::Unknown;
             return false;
         }
 
@@ -1841,6 +2106,10 @@ std::uint32_t RightUseRouter::useItemOnBlockDetour(
     const void* mainStack = selectedOriginal(player);
     const bool mainEmptyForDiag = stackIsNull(mainStack);
 
+    // Every block-use entry starts a fresh click ownership decision.
+    clearPendingOffBlockUse();
+    gMainUseCommitted = false;
+
     // Decide whether MAINHAND genuinely owns right-click *before* executing
     // GameMode::useItemOn.  Calling the generic MAINHAND use-on wrapper first
     // can mutate/prime the client transaction even when a Sword/Pickaxe has no
@@ -1848,19 +2117,28 @@ std::uint32_t RightUseRouter::useItemOnBlockDetour(
     // locally but fail to commit.  Items with a real native right-click
     // capability keep strict MAINHAND priority.
     bool yieldedAttackOnly = false;
+    const bool mainClaimsBlock = stackClaimsMainhandRightClick(
+        mainStack, &yieldedAttackOnly, true
+    );
+    const bool mainClaimsAir = stackClaimsMainhandRightClick(
+        mainStack, nullptr, false
+    );
+
     bool mainAttempted = false;
     std::uint32_t mainResult = 0;
-    if (stackClaimsMainhandRightClick(mainStack, &yieldedAttackOnly)) {
+
+    // Block-capable MAIN items keep the proven #773 native attempt. Air-only
+    // owners do not touch useItemOnBlock; they are allowed to reach
+    // baseUseItem without OFF stealing the click first.
+    if (mainClaimsBlock && !mainClaimsAir) {
         mainAttempted = true;
+        gRightClickOwner = RightClickOwner::MainPending;
         ScopedActionHand mainScope(ActionHand::MainHand, ActionKind::UseBlock);
         mainResult = original(
             gameMode, interaction, blockPos, face, hitPos, hand, extra, flag
         );
-        // Only a neutral native result may fall through. Preserve all bits.
-        // Bow/food/etc. still need the upper dispatcher to attempt MAIN air-use
-        // before OFF block-use: do not steal their click at this lower boundary.
-        if (mainResult != 0u ||
-            stackClaimsMainhandRightClick(mainStack, nullptr, false)) {
+        if (mainResult != 0u) {
+            gRightClickOwner = RightClickOwner::MainOwned;
             return mainResult;
         }
     }
@@ -1915,6 +2193,21 @@ std::uint32_t RightUseRouter::useItemOnBlockDetour(
     if (stackIsNull(offStack)) {
         return mainFallback();
     }
+
+    // Critical single-owner rule. For any non-empty MAIN that is not a proven
+    // attack-only/no-right-click tool, defer OFF block-use until MAIN's actual
+    // baseUseItem phase has run. This covers data-driven ComponentItem actions
+    // such as Snowball whose Item::use virtual is generic and cannot be
+    // classified by vtable identity alone.
+    if (!mainEmptyForDiag && !yieldedAttackOnly) {
+        gRightClickOwner = RightClickOwner::MainPending;
+        capturePendingOffBlockUse(
+            gameMode, player, blockPos, face, hitPos, extra, flag
+        );
+        return mainResult;
+    }
+
+    gRightClickOwner = RightClickOwner::OffEligible;
 
     if (mainEmptyForDiag) {
         __android_log_print(
@@ -2229,6 +2522,22 @@ void RightUseRouter::handTransactionDetour(void* player, unsigned char hand, voi
     if (!instance || !instance->mHandTransactionOriginal) return;
     const auto original = reinterpret_cast<HandTransactionFn>(instance->mHandTransactionOriginal);
     const auto action = currentScopedAction();
+
+    // Some data-driven instant items (notably Snowball-style ComponentItem
+    // use) perform their real action through a native hand transaction even
+    // when GameMode::baseUseItem returns false. That transaction is the
+    // authoritative ownership signal for the current MAIN attempt.
+    if (
+        instance->featureEnabled() &&
+        action &&
+        action->kind == ActionKind::UseAir &&
+        action->hand == ActionHand::MainHand &&
+        hand == kMainHand
+    ) {
+        gMainUseCommitted = true;
+        gRightClickOwner = RightClickOwner::MainOwned;
+    }
+
     if (instance->featureEnabled() && player && player == gReleasingPlayer &&
         action && action->hand == ActionHand::OffHand && hand == kMainHand &&
         reinterpret_cast<std::uintptr_t>(callback) == gReleaseCallback) {

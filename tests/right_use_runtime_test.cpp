@@ -46,6 +46,7 @@ struct Item {
     std::uint8_t maxStackSize = 64;
     std::byte padA9{};
     std::int16_t itemId = 0;
+    std::uint8_t semanticTags = 0;
 };
 static_assert(offsetof(Item, maxStackSize) == 0xA8);
 static_assert(offsetof(Item, itemId) == 0xAA);
@@ -78,9 +79,21 @@ static bool mutateOffOnMain = false;
 static bool mutateOffCountOnBlock = false;
 static int offInputCount = -1;
 static int offhandSetterCalls = 0;
+static int shovelTagToken = 1, axeTagToken = 2, hoeTagToken = 3;
+static bool mainAirTransaction = false;
+static int blockCalls = 0;
+static int airCalls = 0;
 static int damage(const void* p) { return static_cast<const Item*>(p)->damage; }
 static int duration(const void* p, const void*) { return static_cast<const Item*>(p)->duration; }
 static bool cannotAttack(const void*) { return false; }
+static bool hasSemanticTag(const void* rawItem, const void* rawTag) {
+    const auto* item = static_cast<const Item*>(rawItem);
+    if (rawTag == &shovelTagToken) return (item->semanticTags & 0x1u) != 0;
+    if (rawTag == &axeTagToken) return (item->semanticTags & 0x2u) != 0;
+    if (rawTag == &hoeTagToken) return (item->semanticTags & 0x4u) != 0;
+    return false;
+}
+static void noOpCallback(void*) {}
 static bool isNull(const void* p) { return !p || static_cast<const Stack*>(p)->count == 0; }
 static bool differs(const void* a, const void* b) {
     return static_cast<const Stack*>(a)->id != static_cast<const Stack*>(b)->id;
@@ -98,6 +111,7 @@ static const void* active(const void*) { return &activeStack; }
 static void copyStack(void* out, const void* in) { ++copies; std::memcpy(out, in, sizeof(Stack)); }
 static void destroyStack(void*) { ++destroys; }
 static std::uint32_t blockUse(void*, const void* stack, const void*, int, const void*, unsigned char hand, std::uintptr_t, bool) {
+    ++blockCalls;
     calls.push_back(hand);
     if (hand == 1) {
         detached &= stack != &offStack;
@@ -113,12 +127,18 @@ static std::uint32_t blockUse(void*, const void* stack, const void*, int, const 
     return hand == 0 ? mainResult : offResult;
 }
 static bool airUse(void*, const void* stack, unsigned char hand) {
+    ++airCalls;
     calls.push_back(hand);
     if (hand == 0 && mutateOffOnMain) offStack.count = 7;
     if (hand == 1) {
         offInputCount = static_cast<const Stack*>(stack)->count;
         detached &= stack != &offStack;
         if (startUse) { usingItem = true; activeStack = offStack; }
+    }
+    if (hand == 0 && mainAirTransaction) {
+        RightUseRouter::handTransactionDetour(
+            &player, 0, nullptr, &noOpCallback, nullptr
+        );
     }
     return hand == 0 ? mainResult : offResult;
 }
@@ -169,6 +189,10 @@ int main(int argc, char** argv) {
     router.mUseItemOnBlockOriginal = reinterpret_cast<void*>(&blockUse);
     router.mBaseUseItemOriginal = reinterpret_cast<void*>(&airUse);
     gGetOffhandSlot = offhand; gSetItemInHandSlot = setHand;
+    gItemHasTag = hasSemanticTag;
+    gAxeTag = &axeTagToken;
+    gHoeTag = &hoeTagToken;
+    gShovelTag = &shovelTagToken;
     gStackIsNull = isNull;
     gPlayerIsUsingItem = isUsing; gItemInUseStack = active;
     gStackDiffersForUse = differs; gItemStackCopyCtor = copyStack; gItemStackDtor = destroyStack;
@@ -221,6 +245,73 @@ int main(int argc, char** argv) {
         gSessionPlayer = &player; usingItem = true; activeStack = offStack;
         RightUseRouter::setSelectedItemDetour(&player, &mainStack);
         ok &= check(mainWrites == 1 && offhandSetterCalls == 0, "session alone cannot redirect inventory writes");
+    } else if (test == "owner_main_component_transaction") {
+        // Snowball-style data-driven ComponentItem: generic Item::use virtual,
+        // no specialized classifier signal, native bool false, real MAIN
+        // transaction proves the action happened.
+        mainResult = 0;
+        offResult = 1;
+        mainAirTransaction = true;
+
+        const auto blockResult = RightUseRouter::useItemOnBlockDetour(
+            &gameMode, &mainStack, nullptr, 0, nullptr, 0, 0, false
+        );
+        ok &= check(blockResult == 0u, "block phase must defer to MAIN air");
+        ok &= check(blockCalls == 0, "generic MAIN must not invoke OFF block early");
+        ok &= check(gPendingOffBlockUse.active, "OFF block must be pending");
+
+        const bool airResult = RightUseRouter::baseUseItemDetour(
+            &gameMode, &mainStack, 0
+        );
+        ok &= check(!airResult, "native false return is preserved");
+        ok &= check(airCalls == 1, "MAIN air must execute exactly once");
+        ok &= check(blockCalls == 0, "MAIN transaction must cancel pending OFF block");
+        ok &= check(!gPendingOffBlockUse.active, "pending OFF block must clear");
+    } else if (test == "owner_main_long_use") {
+        mainItem.duration = 32;
+        mainResult = 0;
+        offResult = 1;
+        startUse = true;
+
+        RightUseRouter::useItemOnBlockDetour(
+            &gameMode, &mainStack, nullptr, 0, nullptr, 0, 0, false
+        );
+        const bool handled = RightUseRouter::baseUseItemDetour(
+            &gameMode, &mainStack, 0
+        );
+        ok &= check(handled, "active MAIN long-use owns the click");
+        ok &= check(airCalls == 1 && blockCalls == 0,
+                    "MAIN long-use must suppress pending OFF block");
+    } else if (test == "owner_neutral_falls_to_off_block") {
+        mainResult = 0;
+        offResult = 1;
+
+        const auto first = RightUseRouter::useItemOnBlockDetour(
+            &gameMode, &mainStack, nullptr, 0, nullptr, 0, 0, false
+        );
+        ok &= check(first == 0u && blockCalls == 0,
+                    "neutral MAIN defers OFF until MAIN air really passes");
+
+        const bool handled = RightUseRouter::baseUseItemDetour(
+            &gameMode, &mainStack, 0
+        );
+        ok &= check(handled, "pending OFF block handles after MAIN true pass");
+        ok &= check(airCalls == 1, "neutral MAIN air attempted exactly once");
+        ok &= check(blockCalls == 1 && calls == std::vector<unsigned char>{0,1},
+                    "OFF block executes only after MAIN air pass");
+    } else if (test == "owner_contextual_main_block") {
+        mainItem.damage = 3;
+        mainItem.semanticTags = 0x1u;
+        mainResult = 1;
+        offResult = 1;
+
+        const auto result = RightUseRouter::useItemOnBlockDetour(
+            &gameMode, &mainStack, nullptr, 0, nullptr, 0, 0, false
+        );
+        ok &= check(result == 1u, "contextual MAIN block result preserved");
+        ok &= check(blockCalls == 1 && calls == std::vector<unsigned char>{0},
+                    "handled contextual MAIN suppresses OFF");
+        ok &= check(!gPendingOffBlockUse.active, "handled MAIN leaves no pending OFF");
     } else if (test == "shears") {
         mainItem.damage = 3;
         mainItem.maxStackSize = 1;

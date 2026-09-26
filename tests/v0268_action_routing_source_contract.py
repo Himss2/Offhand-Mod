@@ -126,6 +126,10 @@ def main() -> int:
         "kComponentItemRequiresInteractRva = 0xFDAA1FC",
         "kBaseItemUseOnRva = 0xFF84B84",
         "kComponentItemUseOnRva = 0xFDA8A20",
+        "kItemHasTagRva = 0x1010DA9C",
+        "kAxeItemTagRva = 0x134F13F0",
+        "kHoeItemTagRva = 0x134F1418",
+        "kShovelItemTagRva = 0x134F15A8",
         "itemIsShears(",
         "itemId == kShearsItemId",
         "maxStackSize == 1",
@@ -235,6 +239,7 @@ def main() -> int:
         "maxUseDuration",
         "attackOnly",
         "itemIsShears(item)",
+        "itemHasContextualBlockUse(item)",
     )
     if classifier.index("itemIsShears(item)") > classifier.index("attackDamage"):
         raise AssertionError(
@@ -244,6 +249,13 @@ def main() -> int:
         raise AssertionError(
             "specialized native actions must be classified before axe-like attack fallback"
         )
+    contextual = function_body(router, "itemHasContextualBlockUse(")
+    require(
+        contextual,
+        "gItemHasTag(item, gShovelTag)",
+        "gItemHasTag(item, gAxeTag)",
+        "gItemHasTag(item, gHoeTag)",
+    )
     if classifier.index("attackDamage") > classifier.index("maxUseDuration"):
         raise AssertionError(
             "axe-like attack fallback must run before generic max-use duration"
@@ -268,8 +280,17 @@ def main() -> int:
     )
     if "swap" in use_block.lower() or "Packet" in use_block:
         raise AssertionError("block-use must stay on Minecraft native hand routing")
-    require(use_block, "mainAttempted", "mainResult != 0u", "mainFallback()",
-            "stackClaimsMainhandRightClick(mainStack, nullptr, false)")
+    require(
+        use_block,
+        "mainClaimsBlock",
+        "mainClaimsAir",
+        "mainAttempted",
+        "mainResult != 0u",
+        "mainFallback()",
+        "capturePendingOffBlockUse(",
+        "RightClickOwner::MainPending",
+        "RightClickOwner::OffEligible",
+    )
 
     classifier_pos = use_block.index(
         "stackClaimsMainhandRightClick(mainStack, &yieldedAttackOnly)"
@@ -328,10 +349,39 @@ def main() -> int:
         )
 
     pre_offhand = use_block[:first_off_assignment]
-    if "const std::uint32_t mainResult = original(" in pre_offhand:
+    if "yieldedAttackOnly" not in pre_offhand:
         raise AssertionError(
-            "MAINHAND use-on must not prime transaction before OFFHAND fallback"
+            "attack-only MAIN safety must remain before OFFHAND fallback"
         )
+
+    pending_helper = function_body(router, "capturePendingOffBlockUse(")
+    require(
+        pending_helper,
+        "gPendingOffBlockUse.active = true",
+        "blockPos",
+        "hitPos",
+    )
+
+    hand_tx = function_body(router, "RightUseRouter::handTransactionDetour(")
+    require(
+        hand_tx,
+        "gMainUseCommitted = true",
+        "RightClickOwner::MainOwned",
+        "ActionKind::UseAir",
+        "ActionHand::MainHand",
+    )
+
+    base_use = function_body(router, "RightUseRouter::baseUseItemDetour(")
+    require(
+        base_use,
+        "gPendingOffBlockUse.active",
+        "gMainUseCommitted = false",
+        "activeUseMatches(player, mainStack)",
+        "mainCommitted",
+        "PendingOffBlockUse pending",
+        "offBlockResult",
+        "RightClickOwner::OffEligible",
+    )
 
     route = function_body(core, "UseRouteResult routeUseAction(")
     main = route.index("ScopedActionHand scope(ActionHand::MainHand")
@@ -359,6 +409,8 @@ def main() -> int:
         "differsTarget = resolveExactTarget(",
         "copyCtorTarget = resolveExactTarget(",
         "dtorTarget = resolveExactTarget(",
+        "itemHasTagTarget = resolveExactTarget(",
+        "contextualPriorityAvailable",
         "setHandExact = resolveExactTarget(",
         "kSetItemInHandSlotRva",
         'resolveHookTarget(\n        "Player::getSelectedItem"',
@@ -373,6 +425,15 @@ def main() -> int:
     if stable_guard_pos > hook_target_pos:
         raise AssertionError(
             "exact stable fingerprint guard must run before live hook-target fallback"
+        )
+
+    guard_region = install[
+        install.index("if (\n        offhandTarget == 0"):
+        install.index("if (setHandExact == 0)")
+    ]
+    if "itemHasTagTarget == 0" in guard_region or "!contextualPriorityAvailable" in guard_region:
+        raise AssertionError(
+            "contextual semantic tags are optional and must not disable #773"
         )
 
     require(
