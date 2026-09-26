@@ -79,6 +79,7 @@ private:
     // the chained OFFHAND call; the clean native path remains snapshot-only.
     bool mUseItemOnBlockPreHooked{false};
     bool mUseTickPatchApplied{false};
+    bool mUpperAirUseGatePatchApplied{false};
 
     std::atomic_bool mFeatureEnabled{false};
     std::atomic_bool mLoggedOffhandUse{false};

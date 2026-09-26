@@ -56,6 +56,25 @@ constexpr std::uintptr_t kStackDiffersForUseRva = 0xFFA5B04;
 constexpr std::uintptr_t kItemStackCopyCtorRva = 0xFF9D748;
 constexpr std::uintptr_t kItemStackDtorRva = 0x85ADF98;
 
+// Upper right-use dispatcher 0x97F85F8 rejects an empty selected MAIN stack
+// before GameMode::baseUseItem.  At 0x97F8E48 the exact 1.26.51.1 code is:
+//
+//   tbz w0,#0,0x97F8ED4
+//
+// where w0 is the result of the selected-stack validity predicate.  Replacing
+// only this branch with NOP lets the already-hooked baseUseItem boundary
+// decide whether a live OFFHAND item may handle the air-use.  The detour below
+// remains fail-closed for empty MAIN unless OFF owns a verified instant use.
+constexpr std::uintptr_t kUpperAirUseGateRva = 0x97F8E48;
+constexpr char kUpperAirUseGatePatchName[] =
+    "levi_offhand.instant_air_use_upper_gate";
+constexpr std::array<std::uint8_t, 4> kUpperAirUseGateFingerprint{
+    0x60, 0x04, 0x00, 0x36, // tbz w0,#0,0x97F8ED4
+};
+constexpr std::array<std::uint8_t, 4> kUpperAirUseGateNop{
+    0x1F, 0x20, 0x03, 0xD5, // nop
+};
+
 // Exact native long-use tick patch, recovered from the uploaded 1.26.51.1
 // ELF (SHA-256 b8a63515...6847b4).
 //
@@ -620,6 +639,41 @@ template <typename Fn>
     return true;
 }
 
+[[nodiscard]] bool stackSupportsInstantOffhandAirUse(
+    const void* stack
+) noexcept {
+    const void* item = itemFromStack(stack);
+    if (item == nullptr) {
+        return false;
+    }
+
+    const auto moduleBase = minecraftModuleBase();
+    if (moduleBase == 0) {
+        return false;
+    }
+
+    const auto use = itemVirtual<void*>(item, kItemUseVtableOffset);
+    const auto useAddress = reinterpret_cast<std::uintptr_t>(use);
+    const bool specializedUse =
+        use != nullptr &&
+        useAddress != moduleBase + kBaseItemUseRva &&
+        useAddress != moduleBase + kComponentItemUseRva &&
+        useAddress != moduleBase + kWeaponItemNoopUseRva;
+
+    if (!specializedUse) {
+        return false;
+    }
+
+    const auto getMaxUseDuration = itemVirtual<GetMaxUseDurationFn>(
+        item, kItemGetMaxUseDurationVtableOffset
+    );
+    if (getMaxUseDuration == nullptr) {
+        return false;
+    }
+
+    return getMaxUseDuration(item, stack) <= 0;
+}
+
 class ScopedItemStackSnapshot final {
 public:
     explicit ScopedItemStackSnapshot(const void* source) noexcept {
@@ -735,6 +789,33 @@ void clearSession() noexcept {
     return offStack;
 }
 
+[[nodiscard]] bool applyUpperAirUseGatePatch(
+    std::uintptr_t target
+) noexcept {
+    if (target == 0) {
+        return false;
+    }
+
+    return pl::memory::writeBytes(
+        target,
+        std::span<const std::uint8_t>(
+            kUpperAirUseGateNop.data(),
+            kUpperAirUseGateNop.size()
+        ),
+        kUpperAirUseGatePatchName
+    );
+}
+
+void revertUpperAirUseGatePatch() noexcept {
+    if (!pl::memory::revertPatch(kUpperAirUseGatePatchName)) {
+        __android_log_print(
+            ANDROID_LOG_WARN,
+            kLogTag,
+            "[RightUseRouter] instant air-use upper-gate patch revert reported failure"
+        );
+    }
+}
+
 [[nodiscard]] bool applyUseTickBridgePatch(
     std::uintptr_t target
 ) noexcept {
@@ -820,6 +901,9 @@ bool RightUseRouter::install(pl::mod::ModContext& context) noexcept {
     const auto useTickBridgeTarget = resolveExactTarget(
         kUseTickSelectedBlockRva, kUseTickSelectedBlockFingerprint
     );
+    const auto upperAirUseGateTarget = resolveExactTarget(
+        kUpperAirUseGateRva, kUpperAirUseGateFingerprint
+    );
     const auto setHandTarget =
         setHandExact != 0
         ? setHandExact
@@ -829,12 +913,12 @@ bool RightUseRouter::install(pl::mod::ModContext& context) noexcept {
         offhandTarget == 0 || nullTarget == 0 ||
         usingTarget == 0 || inUseTarget == 0 || differsTarget == 0 ||
         copyCtorTarget == 0 || dtorTarget == 0 || setHandTarget == 0 ||
-        useTickBridgeTarget == 0
+        useTickBridgeTarget == 0 || upperAirUseGateTarget == 0
     ) {
         __android_log_print(
             ANDROID_LOG_WARN,
             kLogTag,
-            "[RightUseRouter] stable guard failed offhand=%d null=%d using=%d inUse=%d differs=%d copy=%d dtor=%d setHand=%d useTick=%d",
+            "[RightUseRouter] stable guard failed offhand=%d null=%d using=%d inUse=%d differs=%d copy=%d dtor=%d setHand=%d useTick=%d airGate=%d",
             offhandTarget != 0 ? 1 : 0,
             nullTarget != 0 ? 1 : 0,
             usingTarget != 0 ? 1 : 0,
@@ -843,7 +927,8 @@ bool RightUseRouter::install(pl::mod::ModContext& context) noexcept {
             copyCtorTarget != 0 ? 1 : 0,
             dtorTarget != 0 ? 1 : 0,
             setHandTarget != 0 ? 1 : 0,
-            useTickBridgeTarget != 0 ? 1 : 0
+            useTickBridgeTarget != 0 ? 1 : 0,
+            upperAirUseGateTarget != 0 ? 1 : 0
         );
         context.logger().warn(
             "[RightUseRouter] Minecraft 1.26.51.1 stable fingerprint validation failed; right-use disabled"
@@ -1003,6 +1088,15 @@ bool RightUseRouter::install(pl::mod::ModContext& context) noexcept {
     }
     mUseTickPatchApplied = true;
 
+    if (!applyUpperAirUseGatePatch(upperAirUseGateTarget)) {
+        context.logger().warn(
+            "[RightUseRouter] exact instant air-use upper-gate patch failed"
+        );
+        uninstall(context);
+        return false;
+    }
+    mUpperAirUseGatePatchApplied = true;
+
     mFeatureEnabled.store(true, std::memory_order_release);
     mLoggedOffhandUse.store(false, std::memory_order_relaxed);
     mLoggedBlockUse.store(false, std::memory_order_relaxed);
@@ -1019,6 +1113,11 @@ bool RightUseRouter::install(pl::mod::ModContext& context) noexcept {
 void RightUseRouter::uninstall(pl::mod::ModContext& context) noexcept {
     mFeatureEnabled.store(false, std::memory_order_release);
     clearSession();
+
+    if (mUpperAirUseGatePatchApplied) {
+        revertUpperAirUseGatePatch();
+        mUpperAirUseGatePatchApplied = false;
+    }
 
     if (mUseTickPatchApplied) {
         revertUseTickBridgePatch();
@@ -1091,6 +1190,7 @@ bool RightUseRouter::installed() const noexcept {
         mCompleteUsingItemOriginal != nullptr && mSetSelectedItemOriginal != nullptr &&
         mSelectedItemHook != nullptr && mSelectedItemHook->installed() &&
         mUseTickPatchApplied &&
+        mUpperAirUseGatePatchApplied &&
         mReleaseUsingItemHook != nullptr && mReleaseUsingItemHook->installed() &&
         mBaseUseItemHook != nullptr && mBaseUseItemHook->installed() &&
         mUseItemOnBlockHook != nullptr && mUseItemOnBlockHook->installed() &&
@@ -1111,9 +1211,18 @@ bool RightUseRouter::baseUseItemDetour(
     }
 
     const auto original = reinterpret_cast<BaseUseItemFn>(instance->mBaseUseItemOriginal);
-    if (
-        !instance->featureEnabled() || gInsideBaseUse || hand == kOffHand
-    ) {
+
+    // The upper dispatcher gate is patched while the module is installed.
+    // When the feature is disabled, preserve the original vanilla rejection
+    // for an empty MAIN stack instead of replaying baseUseItem.
+    if (!instance->featureEnabled()) {
+        if (hand == kMainHand && stackIsNull(itemStack)) {
+            return false;
+        }
+        return original(gameMode, itemStack, hand);
+    }
+
+    if (gInsideBaseUse || hand == kOffHand) {
         return original(gameMode, itemStack, hand);
     }
 
@@ -1137,6 +1246,14 @@ bool RightUseRouter::baseUseItemDetour(
         offStack == nullptr || stackIsNull(offStack)
     ) {
         return original(gameMode, itemStack, hand);
+    }
+
+    const bool mainEmpty = stackIsNull(mainStack);
+    if (mainEmpty) {
+        const void* currentOff = offStack;
+        if (!stackSupportsInstantOffhandAirUse(currentOff)) {
+            return false;
+        }
     }
 
     ScopedBool reentry(gInsideBaseUse);
@@ -1200,6 +1317,13 @@ bool RightUseRouter::baseUseItemDetour(
     if (!stackClaimsMainhandRightClick(mainStack)) {
         if (attemptOffhandUse()) {
             return true;
+        }
+
+        // The patched upper gate reaches this boundary only because vanilla
+        // rejected an empty MAIN stack.  If the verified instant OFF use also
+        // passes, remain unhandled; do not invent a MAIN empty-use replay.
+        if (mainEmpty) {
+            return false;
         }
 
         // OFFHAND passed: preserve untouched vanilla MAINHAND fallback once.

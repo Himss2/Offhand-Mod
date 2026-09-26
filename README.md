@@ -291,3 +291,33 @@ The uploaded `libminecraftpe.so` was verified as ARM64 NDK r28c with Build ID `7
 Static binary analysis establishes `0xF88AA24` as the current-screen resolver used by the legacy predictive request lifecycle: `ItemStackNetManagerClient::_tryBeginClientLegacyTransactionRequest @ 0xF88D960` directly calls `0xF88AA24` at `0xF88D97C` before writing the generated negative-even request id to `manager+0x50`. The mod therefore resolves `0xF88AA24` only through its exact 32-byte fingerprint.
 
 The same binary also confirms `0xF88CE8C` maps legacy `ContainerType::Inventory (-1)` to player container enum 29 and `ContainerType::Hand (19)` to Offhand enum 34 before recording the requested slot. No gameplay storage writer or right-use route is changed by this correction.
+
+
+### Instant OFFHAND air-use gate candidate — Ender Pearl first
+
+Static RE of the exact Minecraft 1.26.51.1 ARM64 binary (SHA-256
+`b8a6351503d330628335a80e8131acd45291fa9a747465f0f34a31b2346847b4`)
+found that the upper right-use dispatcher rejects an empty selected MAIN stack
+at `0x97F8E48` before `GameMode::baseUseItem @ 0xF8A285C` can reach
+RightUseRouter. This explains why block placement can work while empty-MAIN
+air/self-use never reaches the existing native-hand detour.
+
+The test candidate replaces only the exact four-byte
+`tbz w0,#0,0x97F8ED4` gate with `nop` after fingerprint validation. The
+existing `baseUseItem` detour then remains fail-closed:
+
+- empty MAIN may route only a live OFF stack with a specialized native
+  `Item::use` and `getMaxUseDuration <= 0`;
+- duration/long-use items remain blocked on the newly opened empty-MAIN path;
+- an OFF instant-use PASS returns unhandled and never replays empty MAIN;
+- Mod Menu disabled state preserves the original empty-MAIN rejection;
+- manual inventory and F-swap share the same live OFF slot lookup.
+
+RE identified `EnderpearlItem::use @ 0xFFEA310`. Native
+`GameMode::baseUseItem(..., hand=1)` already carries OFF through
+`Player::handTransaction`, the item virtual use, stack decrement, and
+`Actor::setItemInHandSlot(hand=1)`, so this candidate does not synthesize a
+projectile, decrement, packet, or physical hand swap.
+
+Block placement, Sword/Shears routing, swap storage, renderer, long-use tick,
+completion, and release paths are unchanged by this candidate.

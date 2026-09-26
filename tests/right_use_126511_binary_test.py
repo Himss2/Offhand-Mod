@@ -38,7 +38,7 @@ def main():
     src = (ROOT/'src/runtime/RightUseRouter.cpp').read_text()
     constants = dict(re.findall(r'constexpr std::uintptr_t k(\w+)Rva = (0x[0-9A-F]+);', src))
     guards = re.findall(r'k(\w+)Fingerprint\{([^}]+)\}', src)
-    assert len(guards) == 11, 'review new/removed guards explicitly'
+    assert len(guards) == 12, 'review new/removed guards explicitly'
     for name, body in guards:
         expected = bytes(int(x, 16) for x in re.findall(r'0x([0-9A-F]{2})', body))
         assert at(int(constants[name], 16), len(expected)) == expected, name
@@ -62,7 +62,7 @@ def main():
         if immediate & 0x2000000:
             immediate -= 0x4000000
         assert callsite + immediate*4 == target, f"call target mismatch: {callsite:#x}"
-    print('PASS: 1.26.51.1 binary identity, 11 guards, WeaponItem no-op, Item/ComponentItem use ABI')
+    print('PASS: 1.26.51.1 binary identity, 12 guards, WeaponItem no-op, Item/ComponentItem use ABI')
 
 if __name__ == '__main__':
     main()

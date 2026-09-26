@@ -372,3 +372,34 @@ The uploaded `libminecraftpe.so` was verified as ARM64 NDK r28c with Build ID `7
 Static binary analysis establishes `0xF88AA24` as the current-screen resolver used by the legacy predictive request lifecycle: `ItemStackNetManagerClient::_tryBeginClientLegacyTransactionRequest @ 0xF88D960` directly calls `0xF88AA24` at `0xF88D97C` before writing the generated negative-even request id to `manager+0x50`. The mod therefore resolves `0xF88AA24` only through its exact 32-byte fingerprint.
 
 The same binary also confirms `0xF88CE8C` maps legacy `ContainerType::Inventory (-1)` to player container enum 29 and `ContainerType::Hand (19)` to Offhand enum 34 before recording the requested slot. No gameplay storage writer or right-use route is changed by this correction.
+
+
+## Instant OFFHAND air-use gate candidate — 1.26.51.1
+
+Root-cause tracing of the exact 1.26.51.1 binary located the missing boundary
+above RightUseRouter. Upper dispatcher `0x97F85F8` copies selected MAIN,
+checks it through `0x8627AB0`, and at `0x97F8E48` executes
+`tbz w0,#0,0x97F8ED4`. Empty MAIN therefore skips the
+`GameMode::baseUseItem` callsite at `0x97F8E94`; host tests that invoke
+`baseUseItemDetour` directly cannot reproduce that gate.
+
+Candidate scope is intentionally narrow:
+
+1. Exact fingerprint `60 04 00 36` at RVA `0x97F8E48`.
+2. Replace only that instruction with AArch64 NOP `1F 20 03 D5`.
+3. Empty MAIN may continue only when live OFF has a specialized native
+   `Item::use` and zero/non-positive max-use duration.
+4. OFF PASS is terminal for the newly opened empty-MAIN path.
+5. Feature-disabled empty MAIN remains rejected.
+6. No branch depends on whether the OFF stack arrived manually or via F-swap.
+
+Verified RE anchors for the first device target:
+
+- `GameMode::baseUseItem`: `0xF8A285C`
+- `EnderpearlItem::use`: `0xFFEA310`
+- `Actor::setItemInHandSlot`: `0xF579C50`
+- stack decrement helper: `0xFF9EA6C`
+
+This is not evidence of successful device gameplay yet. Device validation must
+confirm projectile spawn, teleport, OFF count decrement, manual-vs-F parity,
+MAIN priority, block placement, Sword/Shears, and Mod Menu disabled behavior.
