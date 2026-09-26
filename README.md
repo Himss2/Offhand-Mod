@@ -321,3 +321,22 @@ projectile, decrement, packet, or physical hand swap.
 
 Block placement, Sword/Shears routing, swap storage, renderer, long-use tick,
 completion, and release paths are unchanged by this candidate.
+
+
+### Contextual MAINHAND priority — native semantic tags
+
+The 1.26.51.1 binary exposes `Item::hasTag @ 0x1010DA9C` and runtime-initialized
+vanilla ItemTag objects for `minecraft:is_shovel`, `minecraft:is_axe`, and
+`minecraft:is_hoe`. The right-use router now uses those semantic tags to
+separate contextual Digger tools from Pickaxe/Sword without a numeric item-ID
+table.
+
+For those contextual tools only, block-use arbitration is target-sensitive:
+Minecraft receives exactly one MAINHAND `useItemOnBlock` attempt first. A
+non-zero native result is terminal; a true PASS falls through to the existing
+detached OFFHAND `hand=1` attempt. Pickaxe/Sword keep the proven OFF-first
+placement path, so the earlier MAIN transaction-priming regression is not
+reintroduced.
+
+Instant MAIN air-use remains terminal even when Bedrock reports
+`baseUseItem == false`, matching the observed Egg/Pearl transaction behavior.

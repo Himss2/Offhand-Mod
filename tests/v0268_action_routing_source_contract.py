@@ -126,6 +126,10 @@ def main() -> int:
         "kComponentItemRequiresInteractRva = 0xFDAA1FC",
         "kBaseItemUseOnRva = 0xFF84B84",
         "kComponentItemUseOnRva = 0xFDA8A20",
+        "kItemHasTagRva = 0x1010DA9C",
+        "kAxeItemTagRva = 0x134F13F0",
+        "kHoeItemTagRva = 0x134F1418",
+        "kShovelItemTagRva = 0x134F15A8",
         "itemIsShears(",
         "itemId == kShearsItemId",
         "maxStackSize == 1",
@@ -214,6 +218,10 @@ def main() -> int:
         raise AssertionError(
             "ComponentItem::isUseable is too broad for MAINHAND priority"
         )
+    if "kShovelItemId" in router or "kAxeItemId" in router or "kHoeItemId" in router:
+        raise AssertionError(
+            "contextual tool priority must use native semantic tags, not numeric item IDs"
+        )
     if "requiresInteract(item)" in classifier:
         raise AssertionError(
             "generic ComponentItem::requiresInteract must not claim MAINHAND priority"
@@ -235,6 +243,10 @@ def main() -> int:
         "maxUseDuration",
         "attackOnly",
         "itemIsShears(item)",
+        "itemHasContextualBlockUse(item)",
+        "gItemHasTag(item, gShovelTag)",
+        "gItemHasTag(item, gAxeTag)",
+        "gItemHasTag(item, gHoeTag)",
     )
     if classifier.index("itemIsShears(item)") > classifier.index("attackDamage"):
         raise AssertionError(
@@ -243,6 +255,10 @@ def main() -> int:
     if classifier.index("specializedUse") > classifier.index("attackDamage"):
         raise AssertionError(
             "specialized native actions must be classified before axe-like attack fallback"
+        )
+    if classifier.index("itemHasContextualBlockUse(item)") > classifier.index("attackDamage"):
+        raise AssertionError(
+            "contextual Shovel/Axe/Hoe tags must be checked before attack-only fallback"
         )
     if classifier.index("attackDamage") > classifier.index("maxUseDuration"):
         raise AssertionError(

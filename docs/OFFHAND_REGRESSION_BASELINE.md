@@ -403,3 +403,25 @@ Verified RE anchors for the first device target:
 This is not evidence of successful device gameplay yet. Device validation must
 confirm projectile spawn, teleport, OFF count decrement, manual-vs-F parity,
 MAIN priority, block placement, Sword/Shears, and Mod Menu disabled behavior.
+
+
+## Contextual MAINHAND block-use arbitration
+
+For Minecraft 1.26.51.1, contextual Shovel/Axe/Hoe behavior must not be
+identified with item IDs and must not cause all DiggerItems to execute MAIN
+before OFF. Exact RE anchors:
+
+- `Item::hasTag`: RVA `0x1010DA9C`.
+- `minecraft:is_axe` ItemTag: RVA `0x134F13F0`.
+- `minecraft:is_hoe` ItemTag: RVA `0x134F1418`.
+- `minecraft:is_shovel` ItemTag: RVA `0x134F15A8`.
+- `Item::hasTag` iterates Item tags at `Item+0x170` in `0x28`-byte entries.
+
+Required routing:
+
+1. Shovel/Axe/Hoe MAIN gets one native target-specific use-on attempt.
+2. If MAIN handles the block, OFF is not attempted.
+3. If MAIN returns PASS for that target, OFF gets one native `hand=1` attempt.
+4. Pickaxe/Sword remain on the existing no-MAIN-preprime path.
+5. Manual inventory and F-swap remain indistinguishable because routing reads
+   the live native OFF slot.
