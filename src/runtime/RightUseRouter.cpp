@@ -1242,13 +1242,16 @@ bool RightUseRouter::baseUseItemDetour(
     // so pointer identity with Player::getSelectedItem is invalid.
     if (
         itemStack == nullptr || mainStack == nullptr ||
-        !useInputRepresentsSelected(itemStack, mainStack) ||
-        offStack == nullptr || stackIsNull(offStack)
+        !useInputRepresentsSelected(itemStack, mainStack)
     ) {
         return original(gameMode, itemStack, hand);
     }
 
     const bool mainEmpty = stackIsNull(mainStack);
+    if (offStack == nullptr || stackIsNull(offStack)) {
+        return mainEmpty ? false : original(gameMode, itemStack, hand);
+    }
+
     if (mainEmpty) {
         const void* currentOff = offStack;
         if (!stackSupportsInstantOffhandAirUse(currentOff)) {
