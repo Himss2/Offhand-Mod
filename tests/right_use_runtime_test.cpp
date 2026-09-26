@@ -391,8 +391,13 @@ int main(int argc, char** argv) {
                     "successful MAIN air-use must not snapshot or attempt OFF");
     } else if (test == "bow_block_pass") {
         mainTable[0x290/8] = reinterpret_cast<void*>(testBase + 0xFF78D40);
-        RightUseRouter::useItemOnBlockDetour(&gameMode, &mainStack, nullptr, 0, nullptr, 0, 0, false);
-        ok &= check(calls == std::vector<unsigned char>{0}, "defer Bow MAIN self-use to upper dispatcher before OFF block-use");
+        const auto result = RightUseRouter::useItemOnBlockDetour(
+            &gameMode, &mainStack, nullptr, 0, nullptr, 0, 0, false
+        );
+        ok &= check(
+            result == 0u && calls.empty() && gPendingOffBlockUse.active,
+            "Bow MAIN air-use must skip block phase and hold OFF until baseUseItem"
+        );
     } else if (
         test == "air_empty_main_instant_manual" ||
         test == "air_empty_main_instant_swap"
