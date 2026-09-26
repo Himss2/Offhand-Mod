@@ -273,7 +273,8 @@ def main() -> int:
     use_block = function_body(router, "RightUseRouter::useItemOnBlockDetour(")
     require(
         use_block,
-        "stackClaimsMainhandRightClick(mainStack, &yieldedAttackOnly)",
+        "mainClaimsRightClick = stackClaimsMainhandRightClick(",
+        "mainStack, &yieldedAttackOnly, true",
         "ScopedItemStackSnapshot offSnapshot(offStack)",
         "std::uint32_t offResult = 0;",
         "if (instance->mUseItemOnBlockPreHooked)",
