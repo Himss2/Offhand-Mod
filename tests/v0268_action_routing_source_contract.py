@@ -107,6 +107,7 @@ def main() -> int:
         "0x3C, 0x00, 0x00, 0x14",
         "levi_offhand.use_tick_selected_stack_bridge",
         "kItemStackStorageSize = 0x98",
+        "kItemStackBlockOffset = 0x18",
         "kItemStackCountOffset = 0x22",
         "kItemMaxStackSizeOffset = 0xA8",
         "kItemIdOffset = 0xAA",
@@ -295,6 +296,8 @@ def main() -> int:
         "mainFallback()",
         "!stackIsNull(mainStack) && !yieldedAttackOnly",
         "stackMayOwnMainhandAirUse(mainStack)",
+        "stackCarriesBlock(mainStack)",
+        "mainClaimsRightClick || mainCarriesBlock",
     )
 
     may_air = function_body(router, "stackMayOwnMainhandAirUse(")
