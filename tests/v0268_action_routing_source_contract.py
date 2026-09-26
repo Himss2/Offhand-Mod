@@ -271,45 +271,52 @@ def main() -> int:
     require(use_block, "mainAttempted", "mainResult != 0u", "mainFallback()",
             "stackClaimsMainhandRightClick(mainStack, nullptr, false)")
 
-    classifier_pos = use_block.index(
+    # Test-2 has an explicit upper OFF bridge before the historical
+    # classifier.  Keep the old transaction-safety assertions scoped to the
+    # legacy fallback section rather than treating the upper bridge as a
+    # classifier-order violation.
+    legacy_start = use_block.index(
+        "// Decide whether MAINHAND genuinely owns right-click"
+    )
+    legacy_block = use_block[legacy_start:]
+    classifier_pos = legacy_block.index(
         "stackClaimsMainhandRightClick(mainStack, &yieldedAttackOnly)"
     )
-    first_off_assignment = use_block.index("offResult = original(")
+    first_off_assignment = legacy_block.index("offResult = original(")
     if classifier_pos > first_off_assignment:
         raise AssertionError(
-            "MAINHAND capability must be decided before OFFHAND use-on"
+            "legacy MAINHAND capability must be decided before legacy OFFHAND use-on"
         )
 
-    # The pre-hook compatibility path and clean native path are mutually
-    # exclusive, so source contains two assignments but runtime executes only
-    # one OFFHAND attempt per click.  Both must use the detached snapshot and
-    # native hand=1.
-    if use_block.count("offResult = original(") != 2:
+    # The legacy pre-hook compatibility path and clean native path remain
+    # mutually exclusive. The upper OFF bridge is a third, separately-scoped
+    # call site and is validated by the upper arbitration contract above.
+    if legacy_block.count("offResult = original(") != 2:
         raise AssertionError(
-            "block-use must contain exactly two mutually-exclusive OFFHAND call sites"
+            "legacy block-use must retain exactly two mutually-exclusive OFFHAND call sites"
         )
-    if use_block.count("offSnapshot.get()") < 2:
+    if legacy_block.count("offSnapshot.get()") < 2:
         raise AssertionError(
-            "both OFFHAND call sites must use the detached ItemStack snapshot"
+            "both legacy OFFHAND call sites must use the detached ItemStack snapshot"
         )
-    if use_block.count("kOffHand,") < 2:
+    if legacy_block.count("kOffHand,") < 2:
         raise AssertionError(
-            "both OFFHAND call sites must carry native hand=1"
+            "both legacy OFFHAND call sites must carry native hand=1"
         )
 
-    scope_pos = use_block.index(
+    scope_pos = legacy_block.index(
         "ScopedActionHand offScope(ActionHand::OffHand, ActionKind::UseBlock)"
     )
-    prehook_pos = use_block.index("if (instance->mUseItemOnBlockPreHooked)")
-    else_pos = use_block.index("} else {", prehook_pos)
+    prehook_pos = legacy_block.index("if (instance->mUseItemOnBlockPreHooked)")
+    else_pos = legacy_block.index("} else {", prehook_pos)
     if not (prehook_pos < scope_pos < else_pos):
         raise AssertionError(
-            "selected-item spoof must exist only inside the pre-hook compatibility branch"
+            "legacy selected-item spoof must exist only inside the pre-hook compatibility branch"
         )
 
-    if "gameMode,\n        offStack,\n        blockPos" in use_block:
+    if "gameMode,\n        offStack,\n        blockPos" in legacy_block:
         raise AssertionError(
-            "block placement must not pass the live offhand slot as transaction snapshot"
+            "legacy block placement must not pass the live offhand slot as transaction snapshot"
         )
     # test-2 arbitration invariant: one physical right-click is owned at the
     # verified upper dispatcher. Lower block/air hooks may bridge the chosen
@@ -336,20 +343,20 @@ def main() -> int:
         "mUpperUseTarget",
     )
 
-    accepted_pos = use_block.index("if ((offResult & 1u) != 0u)")
-    writeback_pos = use_block.index("gSetItemInHandSlot(", accepted_pos)
-    trigger_pos = use_block.index("OffhandPlacementAnimation::instance().trigger()")
+    accepted_pos = legacy_block.index("if ((offResult & 1u) != 0u)")
+    writeback_pos = legacy_block.index("gSetItemInHandSlot(", accepted_pos)
+    trigger_pos = legacy_block.index("OffhandPlacementAnimation::instance().trigger()")
     if not (accepted_pos < writeback_pos < trigger_pos):
         raise AssertionError(
             "OFFHAND count reconciliation must occur after accepted placement and before visual trigger"
         )
-    accepted_return_pos = use_block.index("return offResult;", accepted_pos)
+    accepted_return_pos = legacy_block.index("return offResult;", accepted_pos)
     if not (accepted_pos < trigger_pos < accepted_return_pos):
         raise AssertionError(
             "placement animation must trigger only inside accepted OFFHAND block-use"
         )
 
-    pre_offhand = use_block[:first_off_assignment]
+    pre_offhand = legacy_block[:first_off_assignment]
     if "const std::uint32_t mainResult = original(" in pre_offhand:
         raise AssertionError(
             "MAINHAND use-on must not prime transaction before OFFHAND fallback"
