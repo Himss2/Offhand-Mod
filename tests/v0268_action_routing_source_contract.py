@@ -126,6 +126,10 @@ def main() -> int:
         "kComponentItemRequiresInteractRva = 0xFDAA1FC",
         "kBaseItemUseOnRva = 0xFF84B84",
         "kComponentItemUseOnRva = 0xFDA8A20",
+        "kItemHasTagRva = 0x1010DA9C",
+        "kAxeItemTagRva = 0x134F13F0",
+        "kHoeItemTagRva = 0x134F1418",
+        "kShovelItemTagRva = 0x134F15A8",
         "itemIsShears(",
         "itemId == kShearsItemId",
         "maxStackSize == 1",
@@ -214,6 +218,10 @@ def main() -> int:
         raise AssertionError(
             "ComponentItem::isUseable is too broad for MAINHAND priority"
         )
+    if "kShovelItemId" in router or "kAxeItemId" in router or "kHoeItemId" in router:
+        raise AssertionError(
+            "contextual priority must use native semantic tags, not numeric item IDs"
+        )
     if "requiresInteract(item)" in classifier:
         raise AssertionError(
             "generic ComponentItem::requiresInteract must not claim MAINHAND priority"
@@ -235,6 +243,7 @@ def main() -> int:
         "maxUseDuration",
         "attackOnly",
         "itemIsShears(item)",
+        "itemHasContextualBlockUse(item)",
     )
     if classifier.index("itemIsShears(item)") > classifier.index("attackDamage"):
         raise AssertionError(
@@ -243,6 +252,17 @@ def main() -> int:
     if classifier.index("specializedUse") > classifier.index("attackDamage"):
         raise AssertionError(
             "specialized native actions must be classified before axe-like attack fallback"
+        )
+    contextual_helper = function_body(router, "itemHasContextualBlockUse(")
+    require(
+        contextual_helper,
+        "gItemHasTag(item, gShovelTag)",
+        "gItemHasTag(item, gAxeTag)",
+        "gItemHasTag(item, gHoeTag)",
+    )
+    if classifier.index("itemHasContextualBlockUse(item)") > classifier.index("attackDamage"):
+        raise AssertionError(
+            "contextual MAINHAND ownership must precede attack-only fallback"
         )
     if classifier.index("attackDamage") > classifier.index("maxUseDuration"):
         raise AssertionError(
@@ -268,8 +288,22 @@ def main() -> int:
     )
     if "swap" in use_block.lower() or "Packet" in use_block:
         raise AssertionError("block-use must stay on Minecraft native hand routing")
-    require(use_block, "mainAttempted", "mainResult != 0u", "mainFallback()",
-            "stackClaimsMainhandRightClick(mainStack, nullptr, false)")
+    require(
+        use_block,
+        "mainAttempted",
+        "mainResult != 0u",
+        "mainFallback()",
+        "!stackIsNull(mainStack) && !yieldedAttackOnly",
+        "stackMayOwnMainhandAirUse(mainStack)",
+    )
+
+    may_air = function_body(router, "stackMayOwnMainhandAirUse(")
+    require(
+        may_air,
+        "stackClaimsMainhandRightClick(stack, nullptr, false)",
+        "kItemIsUseableVtableOffset",
+        "isUseable(item)",
+    )
 
     classifier_pos = use_block.index(
         "stackClaimsMainhandRightClick(mainStack, &yieldedAttackOnly)"
@@ -328,9 +362,9 @@ def main() -> int:
         )
 
     pre_offhand = use_block[:first_off_assignment]
-    if "const std::uint32_t mainResult = original(" in pre_offhand:
+    if "yieldedAttackOnly" not in pre_offhand:
         raise AssertionError(
-            "MAINHAND use-on must not prime transaction before OFFHAND fallback"
+            "attack-only MAIN safety must remain before OFFHAND fallback"
         )
 
     route = function_body(core, "UseRouteResult routeUseAction(")
@@ -359,6 +393,8 @@ def main() -> int:
         "differsTarget = resolveExactTarget(",
         "copyCtorTarget = resolveExactTarget(",
         "dtorTarget = resolveExactTarget(",
+        "itemHasTagTarget = resolveExactTarget(",
+        "contextualPriorityAvailable",
         "setHandExact = resolveExactTarget(",
         "kSetItemInHandSlotRva",
         'resolveHookTarget(\n        "Player::getSelectedItem"',
@@ -374,6 +410,20 @@ def main() -> int:
         raise AssertionError(
             "exact stable fingerprint guard must run before live hook-target fallback"
         )
+
+    guard_region = install[
+        install.index("if (\n        offhandTarget == 0"):
+        install.index("if (setHandExact == 0)")
+    ]
+    if "itemHasTagTarget == 0" in guard_region or "!contextualPriorityAvailable" in guard_region:
+        raise AssertionError(
+            "optional contextual tags must never disable the #773 core router"
+        )
+    require(
+        install,
+        "optional contextual MAINHAND priority enabled",
+        "optional contextual tags unavailable; keeping #773 core routing",
+    )
 
     require(
         levi,

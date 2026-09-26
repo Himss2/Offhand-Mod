@@ -176,6 +176,21 @@ constexpr std::uintptr_t kComponentItemRequiresInteractRva = 0xFDAA1FC;
 constexpr std::uintptr_t kBaseItemUseOnRva = 0xFF84B84;
 constexpr std::uintptr_t kComponentItemUseOnRva = 0xFDA8A20;
 
+// Optional exact-build semantic tags used only to distinguish contextual
+// Axe/Hoe/Shovel use-on from attack-only Sword/Pickaxe. If validation fails,
+// the router stays installed and falls back to the proven #773 behavior.
+constexpr std::uintptr_t kItemHasTagRva = 0x1010DA9C;
+constexpr std::uintptr_t kAxeItemTagRva = 0x134F13F0;
+constexpr std::uintptr_t kHoeItemTagRva = 0x134F1418;
+constexpr std::uintptr_t kShovelItemTagRva = 0x134F15A8;
+constexpr std::uint64_t kAxeItemTagHash = 0xCB1D9DCFC8FA19CDULL;
+constexpr std::uint64_t kHoeItemTagHash = 0xCB3C94CFC914BA89ULL;
+constexpr std::uint64_t kShovelItemTagHash = 0xB4C59DBDE3006DF6ULL;
+constexpr std::array<std::uint8_t, 16> kItemHasTagFingerprint{
+    0xFD, 0x7B, 0xBD, 0xA9, 0xF5, 0x0B, 0x00, 0xF9,
+    0xF4, 0x4F, 0x02, 0xA9, 0xFD, 0x03, 0x00, 0x91,
+};
+
 constexpr std::size_t kGameModePlayerOffset = sizeof(void*);
 constexpr std::size_t kItemWeakPtrOffset = 0x08;
 constexpr std::size_t kItemGetMaxUseDurationVtableOffset = 0x30;
@@ -289,6 +304,7 @@ using ItemStackDtorFn = void (*)(void*);
 using GetMaxUseDurationFn = int (*)(const void*, const void*);
 using GetAttackDamageFn = int (*)(const void*);
 using ItemBoolFn = bool (*)(const void*);
+using ItemHasTagFn = bool (*)(const void*, const void*);
 
 OffhandItemFn gGetOffhandSlot = nullptr;
 SetItemInHandSlotFn gSetItemInHandSlot = nullptr;
@@ -298,6 +314,10 @@ ItemInUseStackFn gItemInUseStack = nullptr;
 StackDiffersForUseFn gStackDiffersForUse = nullptr;
 ItemStackCopyCtorFn gItemStackCopyCtor = nullptr;
 ItemStackDtorFn gItemStackDtor = nullptr;
+ItemHasTagFn gItemHasTag = nullptr;
+const void* gAxeTag = nullptr;
+const void* gHoeTag = nullptr;
+const void* gShovelTag = nullptr;
 
 using InteractionGateFn = std::uint32_t (*)(void*, const void*);
 using EnderPearlUseFn = void* (*)(void*, void*, void*, unsigned char);
@@ -572,6 +592,31 @@ template <typename Fn>
     return function;
 }
 
+[[nodiscard]] bool runtimeTagHashMatches(
+    const void* tag,
+    std::uint64_t expected
+) noexcept {
+    if (tag == nullptr) {
+        return false;
+    }
+    std::uint64_t actual = 0;
+    std::memcpy(&actual, tag, sizeof(actual));
+    return actual == expected;
+}
+
+[[nodiscard]] bool itemHasContextualBlockUse(const void* item) noexcept {
+    if (
+        item == nullptr || gItemHasTag == nullptr ||
+        gShovelTag == nullptr || gAxeTag == nullptr || gHoeTag == nullptr
+    ) {
+        return false;
+    }
+    return
+        gItemHasTag(item, gShovelTag) ||
+        gItemHasTag(item, gAxeTag) ||
+        gItemHasTag(item, gHoeTag);
+}
+
 [[nodiscard]] bool stackClaimsMainhandRightClick(
     const void* stack,
     bool* yieldedAttackOnly = nullptr,
@@ -636,6 +681,10 @@ template <typename Fn>
         return true;
     }
 
+    if (includeBlockUse && itemHasContextualBlockUse(item)) {
+        return true;
+    }
+
     // Axe/Pickaxe/Sword baseline: attack-oriented items with no specialized
     // native right-click action yield the click to OFFHAND.  This uses the
     // same virtual getAttackDamage path that DiggerItem overrides, so Sword
@@ -683,6 +732,24 @@ template <typename Fn>
     }
 
     return true;
+}
+
+[[nodiscard]] bool stackMayOwnMainhandAirUse(
+    const void* stack
+) noexcept {
+    if (stackClaimsMainhandRightClick(stack, nullptr, false)) {
+        return true;
+    }
+
+    const void* item = itemFromStack(stack);
+    if (item == nullptr) {
+        return false;
+    }
+
+    const auto isUseable = itemVirtual<ItemBoolFn>(
+        item, kItemIsUseableVtableOffset
+    );
+    return isUseable != nullptr && isUseable(item);
 }
 
 [[nodiscard]] std::uintptr_t itemUseRvaForDiag(
@@ -1151,6 +1218,23 @@ bool RightUseRouter::install(pl::mod::ModContext& context) noexcept {
     const auto dtorTarget = resolveExactTarget(
         kItemStackDtorRva, kItemStackDtorFingerprint
     );
+
+    const auto itemHasTagTarget = resolveExactTarget(
+        kItemHasTagRva, kItemHasTagFingerprint
+    );
+    const auto moduleBase = minecraftModuleBase();
+    const void* axeTag =
+        moduleBase != 0 ? reinterpret_cast<const void*>(moduleBase + kAxeItemTagRva) : nullptr;
+    const void* hoeTag =
+        moduleBase != 0 ? reinterpret_cast<const void*>(moduleBase + kHoeItemTagRva) : nullptr;
+    const void* shovelTag =
+        moduleBase != 0 ? reinterpret_cast<const void*>(moduleBase + kShovelItemTagRva) : nullptr;
+    const bool contextualPriorityAvailable =
+        itemHasTagTarget != 0 &&
+        runtimeTagHashMatches(axeTag, kAxeItemTagHash) &&
+        runtimeTagHashMatches(hoeTag, kHoeItemTagHash) &&
+        runtimeTagHashMatches(shovelTag, kShovelItemTagHash);
+
     const auto setHandExact = resolveExactTarget(
         kSetItemInHandSlotRva, kSetItemInHandSlotFingerprint
     );
@@ -1269,6 +1353,22 @@ bool RightUseRouter::install(pl::mod::ModContext& context) noexcept {
     gStackDiffersForUse = reinterpret_cast<StackDiffersForUseFn>(differsTarget);
     gItemStackCopyCtor = reinterpret_cast<ItemStackCopyCtorFn>(copyCtorTarget);
     gItemStackDtor = reinterpret_cast<ItemStackDtorFn>(dtorTarget);
+    gItemHasTag = contextualPriorityAvailable
+        ? reinterpret_cast<ItemHasTagFn>(itemHasTagTarget)
+        : nullptr;
+    gAxeTag = contextualPriorityAvailable ? axeTag : nullptr;
+    gHoeTag = contextualPriorityAvailable ? hoeTag : nullptr;
+    gShovelTag = contextualPriorityAvailable ? shovelTag : nullptr;
+
+    if (contextualPriorityAvailable) {
+        context.logger().info(
+            "[RightUseRouter] optional contextual MAINHAND priority enabled"
+        );
+    } else {
+        context.logger().warn(
+            "[RightUseRouter] optional contextual tags unavailable; keeping #773 core routing"
+        );
+    }
 
     mSelectedItemTarget = selectedTarget;
     mReleaseUsingItemTarget = releaseTarget;
@@ -1491,6 +1591,10 @@ void RightUseRouter::uninstall(pl::mod::ModContext& context) noexcept {
     mSelectedItemTarget = 0;
     gGetOffhandSlot = nullptr;
     gSetItemInHandSlot = nullptr;
+    gItemHasTag = nullptr;
+    gAxeTag = nullptr;
+    gHoeTag = nullptr;
+    gShovelTag = nullptr;
     gStackIsNull = nullptr;
     gPlayerIsUsingItem = nullptr;
     gItemInUseStack = nullptr;
@@ -1841,27 +1945,34 @@ std::uint32_t RightUseRouter::useItemOnBlockDetour(
     const void* mainStack = selectedOriginal(player);
     const bool mainEmptyForDiag = stackIsNull(mainStack);
 
-    // Decide whether MAINHAND genuinely owns right-click *before* executing
-    // GameMode::useItemOn.  Calling the generic MAINHAND use-on wrapper first
-    // can mutate/prime the client transaction even when a Sword/Pickaxe has no
-    // right-click action; a later OFFHAND placement can then report handled
-    // locally but fail to commit.  Items with a real native right-click
-    // capability keep strict MAINHAND priority.
+    // Preserve #773's attack-only safety, but give every non-attack MAIN item
+    // one native block-use attempt before OFFHAND. This makes MAIN block
+    // placement terminal while Sword/Pickaxe still yield without priming a
+    // bogus MAIN transaction.
     bool yieldedAttackOnly = false;
+    (void)stackClaimsMainhandRightClick(
+        mainStack, &yieldedAttackOnly, true
+    );
+
     bool mainAttempted = false;
     std::uint32_t mainResult = 0;
-    if (stackClaimsMainhandRightClick(mainStack, &yieldedAttackOnly)) {
+    if (!stackIsNull(mainStack) && !yieldedAttackOnly) {
         mainAttempted = true;
         ScopedActionHand mainScope(ActionHand::MainHand, ActionKind::UseBlock);
         mainResult = original(
             gameMode, interaction, blockPos, face, hitPos, hand, extra, flag
         );
-        // Only a neutral native result may fall through. Preserve all bits.
-        // Bow/food/etc. still need the upper dispatcher to attempt MAIN air-use
-        // before OFF block-use: do not steal their click at this lower boundary.
-        if (mainResult != 0u ||
-            stackClaimsMainhandRightClick(mainStack, nullptr, false)) {
+
+        if (mainResult != 0u) {
             return mainResult;
+        }
+
+        // A neutral use-on result is not permission for OFFHAND to steal the
+        // click when MAIN still owns an air/self-use phase (Snowball, Spear,
+        // food, Bow, etc.). Let the untouched upper dispatcher continue to
+        // GameMode::baseUseItem for MAIN. No replay and no second hand here.
+        if (stackMayOwnMainhandAirUse(mainStack)) {
+            return 0u;
         }
     }
 

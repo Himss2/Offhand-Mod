@@ -46,6 +46,8 @@ struct Item {
     std::uint8_t maxStackSize = 64;
     std::byte padA9{};
     std::int16_t itemId = 0;
+    std::uint8_t semanticTags = 0;
+    bool usable = false;
 };
 static_assert(offsetof(Item, maxStackSize) == 0xA8);
 static_assert(offsetof(Item, itemId) == 0xAA);
@@ -78,9 +80,18 @@ static bool mutateOffOnMain = false;
 static bool mutateOffCountOnBlock = false;
 static int offInputCount = -1;
 static int offhandSetterCalls = 0;
+static int shovelTagToken = 1, axeTagToken = 2, hoeTagToken = 3;
 static int damage(const void* p) { return static_cast<const Item*>(p)->damage; }
 static int duration(const void* p, const void*) { return static_cast<const Item*>(p)->duration; }
 static bool cannotAttack(const void*) { return false; }
+static bool isUseable(const void* p) { return static_cast<const Item*>(p)->usable; }
+static bool hasSemanticTag(const void* rawItem, const void* rawTag) {
+    const auto* item = static_cast<const Item*>(rawItem);
+    if (rawTag == &shovelTagToken) return (item->semanticTags & 0x1u) != 0;
+    if (rawTag == &axeTagToken) return (item->semanticTags & 0x2u) != 0;
+    if (rawTag == &hoeTagToken) return (item->semanticTags & 0x4u) != 0;
+    return false;
+}
 static bool isNull(const void* p) { return !p || static_cast<const Stack*>(p)->count == 0; }
 static bool differs(const void* a, const void* b) {
     return static_cast<const Stack*>(a)->id != static_cast<const Stack*>(b)->id;
@@ -147,6 +158,7 @@ static void releaseUse(void*) {
 static void configureTable(std::array<void*,134>& t) {
     t[0x30/8] = reinterpret_cast<void*>(&duration);
     t[0x130/8] = reinterpret_cast<void*>(&damage);
+    t[0xB0/8] = reinterpret_cast<void*>(&isUseable);
     t[0x298/8] = reinterpret_cast<void*>(&cannotAttack);
     t[0x290/8] = reinterpret_cast<void*>(testBase + kBaseItemUseRva);
     t[0x1a8/8] = reinterpret_cast<void*>(testBase + kBaseItemRequiresInteractRva);
@@ -169,6 +181,10 @@ int main(int argc, char** argv) {
     router.mUseItemOnBlockOriginal = reinterpret_cast<void*>(&blockUse);
     router.mBaseUseItemOriginal = reinterpret_cast<void*>(&airUse);
     gGetOffhandSlot = offhand; gSetItemInHandSlot = setHand;
+    gItemHasTag = hasSemanticTag;
+    gAxeTag = &axeTagToken;
+    gHoeTag = &hoeTagToken;
+    gShovelTag = &shovelTagToken;
     gStackIsNull = isNull;
     gPlayerIsUsingItem = isUsing; gItemInUseStack = active;
     gStackDiffersForUse = differs; gItemStackCopyCtor = copyStack; gItemStackDtor = destroyStack;
@@ -221,6 +237,52 @@ int main(int argc, char** argv) {
         gSessionPlayer = &player; usingItem = true; activeStack = offStack;
         RightUseRouter::setSelectedItemDetour(&player, &mainStack);
         ok &= check(mainWrites == 1 && offhandSetterCalls == 0, "session alone cannot redirect inventory writes");
+    } else if (test == "main_component_air_defers_off_block") {
+        // Models a data-driven throwable/self-use item whose Item::use virtual
+        // is generic ComponentItem but Item::isUseable says MAIN has a use.
+        mainItem.usable = true;
+        mainResult = 0;
+        offResult = 1;
+        const auto result = RightUseRouter::useItemOnBlockDetour(
+            &gameMode, &mainStack, nullptr, 0, nullptr, 0, 0, false
+        );
+        ok &= check(result == 0u, "MAIN air owner keeps neutral block result");
+        ok &= check(
+            calls == std::vector<unsigned char>{0},
+            "MAIN self-use candidate must suppress OFF block-use in this phase"
+        );
+        ok &= check(copies == 0, "deferred OFF block must not snapshot or mutate OFF");
+    } else if (test == "main_block_priority") {
+        mainResult = 1;
+        offResult = 1;
+        const auto result = RightUseRouter::useItemOnBlockDetour(
+            &gameMode, &mainStack, nullptr, 0, nullptr, 0, 0, false
+        );
+        ok &= check(result == 1u, "MAIN block-use result preserved");
+        ok &= check(
+            calls == std::vector<unsigned char>{0},
+            "handled MAIN block-use must suppress OFFHAND"
+        );
+    } else if (
+        test == "context_tool_main_success" ||
+        test == "context_tool_main_pass"
+    ) {
+        mainItem.damage = 3;
+        mainItem.semanticTags = 0x1u;
+        mainResult = test == "context_tool_main_success" ? 1u : 0u;
+        offResult = 1u;
+        const auto result = RightUseRouter::useItemOnBlockDetour(
+            &gameMode, &mainStack, nullptr, 0, nullptr, 0, 0, false
+        );
+        if (test == "context_tool_main_success") {
+            ok &= check(calls == std::vector<unsigned char>{0},
+                        "contextual MAIN handled must suppress OFF");
+            ok &= check(result == 1u, "contextual MAIN result preserved");
+        } else {
+            ok &= check(calls == std::vector<unsigned char>{0,1},
+                        "contextual MAIN PASS falls through to OFF exactly once");
+            ok &= check(result == 1u, "OFF handles contextual MAIN PASS");
+        }
     } else if (test == "shears") {
         mainItem.damage = 3;
         mainItem.maxStackSize = 1;
