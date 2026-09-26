@@ -244,9 +244,6 @@ def main() -> int:
         "attackOnly",
         "itemIsShears(item)",
         "itemHasContextualBlockUse(item)",
-        "gItemHasTag(item, gShovelTag)",
-        "gItemHasTag(item, gAxeTag)",
-        "gItemHasTag(item, gHoeTag)",
     )
     if classifier.index("itemIsShears(item)") > classifier.index("attackDamage"):
         raise AssertionError(
@@ -256,6 +253,14 @@ def main() -> int:
         raise AssertionError(
             "specialized native actions must be classified before axe-like attack fallback"
         )
+    contextual_helper = function_body(router, "itemHasContextualBlockUse(")
+    require(
+        contextual_helper,
+        "gItemHasTag(item, gShovelTag)",
+        "gItemHasTag(item, gAxeTag)",
+        "gItemHasTag(item, gHoeTag)",
+    )
+
     if classifier.index("itemHasContextualBlockUse(item)") > classifier.index("attackDamage"):
         raise AssertionError(
             "contextual Shovel/Axe/Hoe tags must be checked before attack-only fallback"
