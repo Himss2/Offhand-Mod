@@ -311,7 +311,7 @@ def main() -> int:
     )
 
     classifier_pos = use_block.index(
-        "stackClaimsMainhandRightClick(mainStack, &yieldedAttackOnly)"
+        "mainClaimsRightClick = stackClaimsMainhandRightClick("
     )
     first_off_assignment = use_block.index("offResult = original(")
     if classifier_pos > first_off_assignment:
