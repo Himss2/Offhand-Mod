@@ -769,7 +769,7 @@ template <typename Fn>
     return address - base;
 }
 
-[[nodiscard]] std::uintptr_t itemVtableRvaForDiag(
+[[nodiscard, maybe_unused]] std::uintptr_t itemVtableRvaForDiag(
     const void* stack
 ) noexcept {
     const void* item = itemFromStack(stack);
@@ -783,7 +783,7 @@ template <typename Fn>
     return address >= base ? address - base : 0;
 }
 
-[[nodiscard]] std::uintptr_t itemVirtualRvaForDiag(
+[[nodiscard, maybe_unused]] std::uintptr_t itemVirtualRvaForDiag(
     const void* stack,
     std::size_t byteOffset
 ) noexcept {
@@ -797,7 +797,7 @@ template <typename Fn>
     return address >= base ? address - base : 0;
 }
 
-[[nodiscard]] std::int16_t itemIdForDiag(
+[[nodiscard, maybe_unused]] std::int16_t itemIdForDiag(
     const void* stack
 ) noexcept {
     const void* item = itemFromStack(stack);
@@ -813,7 +813,7 @@ template <typename Fn>
     return itemId;
 }
 
-[[nodiscard]] int attackDamageForDiag(
+[[nodiscard, maybe_unused]] int attackDamageForDiag(
     const void* stack
 ) noexcept {
     const void* item = itemFromStack(stack);
