@@ -437,6 +437,19 @@ int main(int argc, char** argv) {
         gItemStackCopyCtor = nullptr;
         RightUseRouter::baseUseItemDetour(&gameMode, &mainStack, 0);
         ok &= check(calls == std::vector<unsigned char>{0} && copies == 0, "missing snapshot helper must preserve MAIN fallback");
+    } else if (test == "disabled_air_empty_main") {
+        router.mFeatureEnabled = false;
+        mainStack.count = 0;
+        Stack dispatcherEmpty = mainStack;
+        dispatcherEmpty.id = 0;
+        const bool handled = RightUseRouter::baseUseItemDetour(
+            &gameMode, &dispatcherEmpty, 0
+        );
+        ok &= check(!handled, "disabled router must preserve vanilla empty-MAIN gate");
+        ok &= check(
+            calls.empty(),
+            "disabled router must not replay baseUseItem for a vanilla-rejected empty MAIN"
+        );
     } else if (test == "disabled") {
         router.mFeatureEnabled = false;
         RightUseRouter::useItemOnBlockDetour(&gameMode, &mainStack, nullptr, 0, nullptr, 0, 0, false);
