@@ -1,5 +1,6 @@
 // Execute production detours with fake native ABI objects. These tests do not
 // emulate Bedrock transactions or establish in-game compatibility.
+#include <algorithm>
 #include <array>
 #include <atomic>
 #include <cstddef>
@@ -46,6 +47,7 @@ struct Item {
     std::uint8_t maxStackSize = 64;
     std::byte padA9{};
     std::int16_t itemId = 0;
+    std::uint8_t semanticTags = 0;
 };
 static_assert(offsetof(Item, maxStackSize) == 0xA8);
 static_assert(offsetof(Item, itemId) == 0xAA);
@@ -78,6 +80,19 @@ static bool mutateOffOnMain = false;
 static bool mutateOffCountOnBlock = false;
 static int offInputCount = -1;
 static int offhandSetterCalls = 0;
+static int shovelTagToken = 1, axeTagToken = 2, hoeTagToken = 3;
+static bool upperBlockTarget = false;
+static bool upperMainInstantTransaction = false;
+static bool upperOffInstantTransaction = false;
+static int upperCalls = 0;
+
+static bool hasSemanticTag(const void* rawItem, const void* rawTag) {
+    const auto* item = static_cast<const Item*>(rawItem);
+    if (rawTag == &shovelTagToken) return (item->semanticTags & 0x1u) != 0;
+    if (rawTag == &axeTagToken) return (item->semanticTags & 0x2u) != 0;
+    if (rawTag == &hoeTagToken) return (item->semanticTags & 0x4u) != 0;
+    return false;
+}
 static int damage(const void* p) { return static_cast<const Item*>(p)->damage; }
 static int duration(const void* p, const void*) { return static_cast<const Item*>(p)->duration; }
 static bool cannotAttack(const void*) { return false; }
@@ -112,6 +127,8 @@ static std::uint32_t blockUse(void*, const void* stack, const void*, int, const 
     }
     return hand == 0 ? mainResult : offResult;
 }
+static void noOpCallback(void*) {}
+
 static bool airUse(void*, const void* stack, unsigned char hand) {
     calls.push_back(hand);
     if (hand == 0 && mutateOffOnMain) offStack.count = 7;
@@ -119,6 +136,14 @@ static bool airUse(void*, const void* stack, unsigned char hand) {
         offInputCount = static_cast<const Stack*>(stack)->count;
         detached &= stack != &offStack;
         if (startUse) { usingItem = true; activeStack = offStack; }
+    }
+    if (
+        (hand == 0 && upperMainInstantTransaction) ||
+        (hand == 1 && upperOffInstantTransaction)
+    ) {
+        RightUseRouter::handTransactionDetour(
+            &player, hand, nullptr, &noOpCallback, nullptr
+        );
     }
     return hand == 0 ? mainResult : offResult;
 }
@@ -138,7 +163,25 @@ static void completeUse(void* owner) {
 static unsigned char transactionHand = 255;
 static int transactions = 0;
 static void transaction(void*, unsigned char hand, void*, void (*callback)(void*), void* context) {
-    ++transactions; transactionHand = hand; callback(context);
+    ++transactions;
+    transactionHand = hand;
+    if (callback != nullptr) callback(context);
+}
+
+static bool upperUse(void*, std::uintptr_t, std::uintptr_t, std::uintptr_t) {
+    ++upperCalls;
+    const void* selectedStack = RightUseRouter::selectedItemDetour(&player);
+    if (upperBlockTarget) {
+        const auto blockResult = RightUseRouter::useItemOnBlockDetour(
+            &gameMode, selectedStack, nullptr, 0, nullptr, 0, 0, false
+        );
+        if (blockResult != 0u) {
+            return true;
+        }
+    }
+    return RightUseRouter::baseUseItemDetour(
+        &gameMode, selectedStack, 0
+    );
 }
 static void releaseCallback(void* owner) { completeUse(owner); }
 static void releaseUse(void*) {
@@ -165,10 +208,15 @@ int main(int argc, char** argv) {
     auto& router = RightUseRouter::instance();
     RightUseRouter::sInstance = &router;
     router.mFeatureEnabled = true;
+    router.mUpperRightUseOriginal = reinterpret_cast<void*>(&upperUse);
     router.mSelectedItemOriginal = reinterpret_cast<void*>(&selected);
     router.mUseItemOnBlockOriginal = reinterpret_cast<void*>(&blockUse);
     router.mBaseUseItemOriginal = reinterpret_cast<void*>(&airUse);
     gGetOffhandSlot = offhand; gSetItemInHandSlot = setHand;
+    gItemHasTag = hasSemanticTag;
+    gShovelTag = &shovelTagToken;
+    gAxeTag = &axeTagToken;
+    gHoeTag = &hoeTagToken;
     gStackIsNull = isNull;
     gPlayerIsUsingItem = isUsing; gItemInUseStack = active;
     gStackDiffersForUse = differs; gItemStackCopyCtor = copyStack; gItemStackDtor = destroyStack;
@@ -221,6 +269,91 @@ int main(int argc, char** argv) {
         gSessionPlayer = &player; usingItem = true; activeStack = offStack;
         RightUseRouter::setSelectedItemDetour(&player, &mainStack);
         ok &= check(mainWrites == 1 && offhandSetterCalls == 0, "session alone cannot redirect inventory writes");
+    } else if (test == "upper_empty_main_off_instant") {
+        mainStack.count = 0;
+        offTable[0x290/8] = reinterpret_cast<void*>(testBase + 0xFFEA310);
+        offItem.duration = 0;
+        offResult = 0;
+        upperOffInstantTransaction = true;
+
+        const bool handled = RightUseRouter::upperRightUseDetour(
+            nullptr, 0, 0, 0
+        );
+        ok &= check(handled, "empty MAIN must fall through to OFF instant use");
+        ok &= check(upperCalls == 2, "dispatcher must run MAIN then OFF exactly once");
+        ok &= check(calls == std::vector<unsigned char>{1},
+                    "empty MAIN must not require a dummy MAIN item before OFF use");
+        ok &= check(transactions == 1 && transactionHand == 1,
+                    "OFF instant transaction must stay native hand=1");
+    } else if (test == "upper_main_instant_suppresses_off_block") {
+        mainTable[0x290/8] = reinterpret_cast<void*>(testBase + 0xFFEA310);
+        mainItem.duration = 0;
+        mainResult = 0;
+        offResult = 1;
+        upperBlockTarget = true;
+        upperMainInstantTransaction = true;
+
+        const bool handled = RightUseRouter::upperRightUseDetour(
+            nullptr, 0, 0, 0
+        );
+        ok &= check(handled, "MAIN instant transaction must own the click");
+        ok &= check(upperCalls == 1, "handled MAIN must suppress the OFF dispatcher pass");
+        ok &= check(
+            std::find(calls.begin(), calls.end(), 1) == calls.end(),
+            "OFF block placement must not fire after MAIN throwable/use"
+        );
+        ok &= check(transactions == 1 && transactionHand == 0,
+                    "only MAIN instant transaction may run");
+    } else if (test == "upper_main_block_suppresses_off_instant") {
+        mainTable[0x418/8] = reinterpret_cast<void*>(testBase + 0x1000AF40);
+        mainResult = 1;
+        offTable[0x290/8] = reinterpret_cast<void*>(testBase + 0xFFEA310);
+        offItem.duration = 0;
+        offResult = 0;
+        upperBlockTarget = true;
+        upperOffInstantTransaction = true;
+
+        const bool handled = RightUseRouter::upperRightUseDetour(
+            nullptr, 0, 0, 0
+        );
+        ok &= check(handled, "MAIN block placement must own the click");
+        ok &= check(upperCalls == 1, "handled MAIN block must suppress OFF pass");
+        ok &= check(calls == std::vector<unsigned char>{0},
+                    "OFF throwable must not fire after MAIN block placement");
+        ok &= check(transactions == 0, "OFF air transaction must never start");
+    } else if (test == "upper_sword_falls_to_off_block") {
+        mainItem.damage = 7;
+        mainTable[0x290/8] = reinterpret_cast<void*>(testBase + 0xFD66F30);
+        upperBlockTarget = true;
+        offResult = 1;
+
+        const bool handled = RightUseRouter::upperRightUseDetour(
+            nullptr, 0, 0, 0
+        );
+        ok &= check(handled, "attack-only MAIN must fall through to OFF block");
+        ok &= check(upperCalls == 2, "MAIN PASS must run one OFF dispatcher pass");
+        ok &= check(calls == std::vector<unsigned char>{1},
+                    "Sword/Pickaxe MAIN must not pre-prime block use before OFF");
+    } else if (test == "context_tool_main_success" || test == "context_tool_main_pass") {
+        mainItem.damage = 3;
+        mainItem.semanticTags = 0x1u;
+        upperBlockTarget = true;
+        mainResult = test == "context_tool_main_success" ? 1u : 0u;
+        offResult = 1u;
+
+        const bool handled = RightUseRouter::upperRightUseDetour(
+            nullptr, 0, 0, 0
+        );
+        ok &= check(handled, "contextual MAIN/OFF arbitration must handle click");
+        if (test == "context_tool_main_success") {
+            ok &= check(upperCalls == 1, "handled contextual MAIN suppresses OFF");
+            ok &= check(calls == std::vector<unsigned char>{0},
+                        "contextual MAIN success is single-owner");
+        } else {
+            ok &= check(upperCalls == 2, "contextual MAIN PASS falls through once");
+            ok &= check(calls == std::vector<unsigned char>{0,1},
+                        "contextual MAIN PASS then OFF exactly once");
+        }
     } else if (test == "shears") {
         mainItem.damage = 3;
         mainItem.maxStackSize = 1;

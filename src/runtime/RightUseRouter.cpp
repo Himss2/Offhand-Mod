@@ -24,6 +24,15 @@ namespace {
 constexpr char kMinecraftLibrary[] = "libminecraftpe.so";
 constexpr char kLogTag[] = "Levi Offhand";
 
+// Exact 1.26.51.1 top-level right-use dispatcher. RE shows that this function
+// performs the native block/use-on phase before the air/self-use phase.
+// Arbitration must happen here so a single click has exactly one owning hand.
+constexpr std::uintptr_t kUpperRightUseDispatcherRva = 0x97F85F8;
+constexpr std::array<std::uint8_t, 16> kUpperRightUseDispatcherFingerprint{
+    0xFF, 0xC3, 0x05, 0xD1, 0xFD, 0x7B, 0x11, 0xA9,
+    0xFC, 0x6F, 0x12, 0xA9, 0xFA, 0x67, 0x13, 0xA9,
+};
+
 // Minecraft Bedrock Android 1.26.51.1 (arm64-v8a)
 // GNU Build ID: 712509dc14ccc233e91f267937dfb46ecdcc4b68
 // SHA-256: b8a6351503d330628335a80e8131acd45291fa9a747465f0f34a31b2346847b4
@@ -176,6 +185,20 @@ constexpr std::uintptr_t kComponentItemRequiresInteractRva = 0xFDAA1FC;
 constexpr std::uintptr_t kBaseItemUseOnRva = 0xFF84B84;
 constexpr std::uintptr_t kComponentItemUseOnRva = 0xFDA8A20;
 
+// Optional native semantic tags distinguish contextual Digger actions from
+// Sword/Pickaxe without an item-ID allowlist.
+constexpr std::uintptr_t kItemHasTagRva = 0x1010DA9C;
+constexpr std::uintptr_t kAxeItemTagRva = 0x134F13F0;
+constexpr std::uintptr_t kHoeItemTagRva = 0x134F1418;
+constexpr std::uintptr_t kShovelItemTagRva = 0x134F15A8;
+constexpr std::uint64_t kAxeItemTagHash = 0xCB1D9DCFC8FA19CDULL;
+constexpr std::uint64_t kHoeItemTagHash = 0xCB3C94CFC914BA89ULL;
+constexpr std::uint64_t kShovelItemTagHash = 0xB4C59DBDE3006DF6ULL;
+constexpr std::array<std::uint8_t, 16> kItemHasTagFingerprint{
+    0xFD, 0x7B, 0xBD, 0xA9, 0xF5, 0x0B, 0x00, 0xF9,
+    0xF4, 0x4F, 0x02, 0xA9, 0xFD, 0x03, 0x00, 0x91,
+};
+
 constexpr std::size_t kGameModePlayerOffset = sizeof(void*);
 constexpr std::size_t kItemWeakPtrOffset = 0x08;
 constexpr std::size_t kItemGetMaxUseDurationVtableOffset = 0x30;
@@ -289,6 +312,10 @@ using ItemStackDtorFn = void (*)(void*);
 using GetMaxUseDurationFn = int (*)(const void*, const void*);
 using GetAttackDamageFn = int (*)(const void*);
 using ItemBoolFn = bool (*)(const void*);
+using ItemHasTagFn = bool (*)(const void*);
+using UpperRightUseFn = bool (*)(
+    void*, std::uintptr_t, std::uintptr_t, std::uintptr_t
+);
 
 OffhandItemFn gGetOffhandSlot = nullptr;
 SetItemInHandSlotFn gSetItemInHandSlot = nullptr;
@@ -298,6 +325,10 @@ ItemInUseStackFn gItemInUseStack = nullptr;
 StackDiffersForUseFn gStackDiffersForUse = nullptr;
 ItemStackCopyCtorFn gItemStackCopyCtor = nullptr;
 ItemStackDtorFn gItemStackDtor = nullptr;
+ItemHasTagFn gItemHasTag = nullptr;
+const void* gAxeTag = nullptr;
+const void* gHoeTag = nullptr;
+const void* gShovelTag = nullptr;
 
 using InteractionGateFn = std::uint32_t (*)(void*, const void*);
 using EnderPearlUseFn = void* (*)(void*, void*, void*, unsigned char);
@@ -306,6 +337,15 @@ void* gEnderPearlUseOriginal = nullptr;
 std::unique_ptr<pl::memory::HookHandle> gInteractionGateHook;
 std::unique_ptr<pl::memory::HookHandle> gEnderPearlUseHook;
 
+enum class UpperUseAttempt : std::uint8_t {
+    None,
+    MainOnly,
+    OffOnly,
+};
+
+thread_local UpperUseAttempt gUpperUseAttempt = UpperUseAttempt::None;
+thread_local bool gUpperAttemptCommitted = false;
+thread_local bool gInsideUpperRightUse = false;
 thread_local bool gInsideBaseUse = false;
 thread_local bool gInsideBlockUse = false;
 thread_local const void* gScopedPlayer = nullptr;
@@ -572,6 +612,31 @@ template <typename Fn>
     return function;
 }
 
+[[nodiscard]] bool runtimeTagHashMatches(
+    const void* tag,
+    std::uint64_t expected
+) noexcept {
+    if (tag == nullptr) {
+        return false;
+    }
+    std::uint64_t actual = 0;
+    std::memcpy(&actual, tag, sizeof(actual));
+    return actual == expected;
+}
+
+[[nodiscard]] bool itemHasContextualBlockUse(const void* item) noexcept {
+    if (
+        item == nullptr || gItemHasTag == nullptr ||
+        gShovelTag == nullptr || gAxeTag == nullptr || gHoeTag == nullptr
+    ) {
+        return false;
+    }
+    return
+        gItemHasTag(item, gShovelTag) ||
+        gItemHasTag(item, gAxeTag) ||
+        gItemHasTag(item, gHoeTag);
+}
+
 [[nodiscard]] bool stackClaimsMainhandRightClick(
     const void* stack,
     bool* yieldedAttackOnly = nullptr,
@@ -636,6 +701,10 @@ template <typename Fn>
         return true;
     }
 
+    if (includeBlockUse && itemHasContextualBlockUse(item)) {
+        return true;
+    }
+
     // Axe/Pickaxe/Sword baseline: attack-oriented items with no specialized
     // native right-click action yield the click to OFFHAND.  This uses the
     // same virtual getAttackDamage path that DiggerItem overrides, so Sword
@@ -683,6 +752,22 @@ template <typename Fn>
     }
 
     return true;
+}
+
+[[nodiscard]] bool stackShouldAttemptBlockUse(const void* stack) noexcept {
+    if (itemFromStack(stack) == nullptr) {
+        return false;
+    }
+
+    bool yieldedAttackOnly = false;
+    if (stackClaimsMainhandRightClick(stack, &yieldedAttackOnly, true)) {
+        return true;
+    }
+
+    // Neutral/non-attack stacks (including ordinary BlockItems) still get one
+    // native use-on attempt. Only proven attack-only MAIN items are skipped,
+    // preserving the transaction-safe Sword/Pickaxe behavior from #773.
+    return !yieldedAttackOnly;
 }
 
 [[nodiscard]] std::uintptr_t itemUseRvaForDiag(
@@ -1151,6 +1236,23 @@ bool RightUseRouter::install(pl::mod::ModContext& context) noexcept {
     const auto dtorTarget = resolveExactTarget(
         kItemStackDtorRva, kItemStackDtorFingerprint
     );
+
+    const auto itemHasTagTarget = resolveExactTarget(
+        kItemHasTagRva, kItemHasTagFingerprint
+    );
+    const auto moduleBase = minecraftModuleBase();
+    const void* axeTag =
+        moduleBase != 0 ? reinterpret_cast<const void*>(moduleBase + kAxeItemTagRva) : nullptr;
+    const void* hoeTag =
+        moduleBase != 0 ? reinterpret_cast<const void*>(moduleBase + kHoeItemTagRva) : nullptr;
+    const void* shovelTag =
+        moduleBase != 0 ? reinterpret_cast<const void*>(moduleBase + kShovelItemTagRva) : nullptr;
+    const bool contextualPriorityAvailable =
+        itemHasTagTarget != 0 &&
+        runtimeTagHashMatches(axeTag, kAxeItemTagHash) &&
+        runtimeTagHashMatches(hoeTag, kHoeItemTagHash) &&
+        runtimeTagHashMatches(shovelTag, kShovelItemTagHash);
+
     const auto setHandExact = resolveExactTarget(
         kSetItemInHandSlotRva, kSetItemInHandSlotFingerprint
     );
@@ -1228,6 +1330,11 @@ bool RightUseRouter::install(pl::mod::ModContext& context) noexcept {
     // Only after the exact stable guard passes do we resolve hookable entry
     // points. Their prologues may already be changed in memory by a hook, so
     // use the known RVA and let Levi's HookHandle chain the live target.
+    const auto upperRightUseTarget = resolveHookTarget(
+        "top-level right-use dispatcher",
+        kUpperRightUseDispatcherRva,
+        kUpperRightUseDispatcherFingerprint
+    );
     const auto selectedTarget = resolveHookTarget(
         "Player::getSelectedItem",
         kSelectedItemRva,
@@ -1252,6 +1359,7 @@ bool RightUseRouter::install(pl::mod::ModContext& context) noexcept {
     );
 
     if (
+        upperRightUseTarget == 0 ||
         selectedTarget == 0 || blockUseTarget == 0 ||
         useTarget == 0 || releaseTarget == 0
     ) {
@@ -1269,7 +1377,24 @@ bool RightUseRouter::install(pl::mod::ModContext& context) noexcept {
     gStackDiffersForUse = reinterpret_cast<StackDiffersForUseFn>(differsTarget);
     gItemStackCopyCtor = reinterpret_cast<ItemStackCopyCtorFn>(copyCtorTarget);
     gItemStackDtor = reinterpret_cast<ItemStackDtorFn>(dtorTarget);
+    gItemHasTag = contextualPriorityAvailable
+        ? reinterpret_cast<ItemHasTagFn>(itemHasTagTarget)
+        : nullptr;
+    gAxeTag = contextualPriorityAvailable ? axeTag : nullptr;
+    gHoeTag = contextualPriorityAvailable ? hoeTag : nullptr;
+    gShovelTag = contextualPriorityAvailable ? shovelTag : nullptr;
 
+    if (contextualPriorityAvailable) {
+        context.logger().info(
+            "[RightUseRouter] contextual MAINHAND block priority enabled"
+        );
+    } else {
+        context.logger().warn(
+            "[RightUseRouter] contextual tool tags unavailable; #773 attack-only fallback retained"
+        );
+    }
+
+    mUpperRightUseTarget = upperRightUseTarget;
     mSelectedItemTarget = selectedTarget;
     mReleaseUsingItemTarget = releaseTarget;
     mBaseUseItemTarget = useTarget;
@@ -1349,6 +1474,21 @@ bool RightUseRouter::install(pl::mod::ModContext& context) noexcept {
         mUseItemOnBlockOriginal == nullptr
     ) {
         context.logger().warn("[RightUseRouter] use-on-block hook failed");
+        uninstall(context);
+        return false;
+    }
+
+    mUpperRightUseHook = std::make_unique<pl::memory::HookHandle>(
+        reinterpret_cast<void*>(mUpperRightUseTarget),
+        reinterpret_cast<void*>(&RightUseRouter::upperRightUseDetour),
+        &mUpperRightUseOriginal,
+        pl::memory::HookPriority::Normal
+    );
+    if (
+        !mUpperRightUseHook || !mUpperRightUseHook->installed() ||
+        mUpperRightUseOriginal == nullptr
+    ) {
+        context.logger().warn("[RightUseRouter] top-level MAIN/OFF arbiter hook failed");
         uninstall(context);
         return false;
     }
@@ -1464,6 +1604,12 @@ void RightUseRouter::uninstall(pl::mod::ModContext& context) noexcept {
     mSetSelectedItemOriginal = nullptr;
     gStopUsingItem = nullptr;
 
+    if (mUpperRightUseHook) {
+        mUpperRightUseHook->reset();
+        mUpperRightUseHook.reset();
+    }
+    mUpperRightUseOriginal = nullptr;
+
     if (mUseItemOnBlockHook) {
         mUseItemOnBlockHook->reset();
         mUseItemOnBlockHook.reset();
@@ -1484,6 +1630,7 @@ void RightUseRouter::uninstall(pl::mod::ModContext& context) noexcept {
     mBaseUseItemOriginal = nullptr;
     mReleaseUsingItemOriginal = nullptr;
     mSelectedItemOriginal = nullptr;
+    mUpperRightUseTarget = 0;
     mUseItemOnBlockTarget = 0;
     mUseItemOnBlockPreHooked = false;
     mBaseUseItemTarget = 0;
@@ -1491,6 +1638,10 @@ void RightUseRouter::uninstall(pl::mod::ModContext& context) noexcept {
     mSelectedItemTarget = 0;
     gGetOffhandSlot = nullptr;
     gSetItemInHandSlot = nullptr;
+    gItemHasTag = nullptr;
+    gAxeTag = nullptr;
+    gHoeTag = nullptr;
+    gShovelTag = nullptr;
     gStackIsNull = nullptr;
     gPlayerIsUsingItem = nullptr;
     gItemInUseStack = nullptr;
@@ -1518,6 +1669,8 @@ bool RightUseRouter::installed() const noexcept {
         mHandTransactionOriginal != nullptr && mCompleteUsingItemHook != nullptr && mCompleteUsingItemHook->installed() &&
         mSetSelectedItemHook != nullptr && mSetSelectedItemHook->installed() &&
         mCompleteUsingItemOriginal != nullptr && mSetSelectedItemOriginal != nullptr &&
+        mUpperRightUseHook != nullptr && mUpperRightUseHook->installed() &&
+        mUpperRightUseOriginal != nullptr &&
         mSelectedItemHook != nullptr && mSelectedItemHook->installed() &&
         mUseTickPatchApplied &&
         mUpperAirUseGatePatchApplied &&
@@ -1529,6 +1682,52 @@ bool RightUseRouter::installed() const noexcept {
         mReleaseUsingItemOriginal != nullptr &&
         mBaseUseItemOriginal != nullptr &&
         mUseItemOnBlockOriginal != nullptr;
+}
+
+bool RightUseRouter::upperRightUseDetour(
+    void* owner,
+    std::uintptr_t arg1,
+    std::uintptr_t arg2,
+    std::uintptr_t arg3
+) noexcept {
+    auto* instance = sInstance;
+    if (instance == nullptr || instance->mUpperRightUseOriginal == nullptr) {
+        return false;
+    }
+
+    const auto original = reinterpret_cast<UpperRightUseFn>(
+        instance->mUpperRightUseOriginal
+    );
+    if (!instance->featureEnabled() || gInsideUpperRightUse) {
+        return original(owner, arg1, arg2, arg3);
+    }
+
+    ScopedBool reentry(gInsideUpperRightUse);
+    const auto previousAttempt = gUpperUseAttempt;
+    const bool previousCommitted = gUpperAttemptCommitted;
+
+    gUpperUseAttempt = UpperUseAttempt::MainOnly;
+    gUpperAttemptCommitted = false;
+    const bool mainNative = original(owner, arg1, arg2, arg3);
+    const bool mainHandled = mainNative || gUpperAttemptCommitted;
+
+    if (mainHandled) {
+        gUpperUseAttempt = previousAttempt;
+        gUpperAttemptCommitted = previousCommitted;
+        return true;
+    }
+
+    // MAIN genuinely passed the whole click (block phase + air phase). Run the
+    // same native dispatcher once more with getSelectedItem scoped to the live
+    // OFFHAND. Lower detours translate the native hand argument to hand=1.
+    gUpperUseAttempt = UpperUseAttempt::OffOnly;
+    gUpperAttemptCommitted = false;
+    const bool offNative = original(owner, arg1, arg2, arg3);
+    const bool offHandled = offNative || gUpperAttemptCommitted;
+
+    gUpperUseAttempt = previousAttempt;
+    gUpperAttemptCommitted = previousCommitted;
+    return offHandled;
 }
 
 bool RightUseRouter::baseUseItemDetour(
@@ -1568,6 +1767,60 @@ bool RightUseRouter::baseUseItemDetour(
     const void* mainStack = selectedOriginal(player);
     const void* offStack =
         gGetOffhandSlot != nullptr ? gGetOffhandSlot(player) : nullptr;
+
+    if (gUpperUseAttempt == UpperUseAttempt::MainOnly) {
+        if (
+            stackIsNull(mainStack) ||
+            !stackClaimsMainhandRightClick(mainStack, nullptr, false)
+        ) {
+            return false;
+        }
+
+        ScopedBool reentry(gInsideBaseUse);
+        ScopedPlayer routedPlayer(player);
+        ScopedActionHand mainScope(ActionHand::MainHand, ActionKind::UseAir);
+        const bool nativeHandled = original(
+            gameMode, itemStack, kMainHand
+        );
+        const bool activeMain = activeUseMatches(player, mainStack);
+        if (nativeHandled || activeMain) {
+            gUpperAttemptCommitted = true;
+        }
+        return nativeHandled || activeMain;
+    }
+
+    if (gUpperUseAttempt == UpperUseAttempt::OffOnly) {
+        if (
+            offStack == nullptr || stackIsNull(offStack) ||
+            !stackClaimsMainhandRightClick(offStack, nullptr, false)
+        ) {
+            return false;
+        }
+
+        ScopedItemStackSnapshot offSnapshot(offStack);
+        if (offSnapshot.get() == nullptr) {
+            return false;
+        }
+
+        ScopedBool reentry(gInsideBaseUse);
+        ScopedPlayer routedPlayer(player);
+        ScopedActionHand offScope(ActionHand::OffHand, ActionKind::UseAir);
+        const bool nativeHandled = original(
+            gameMode, offSnapshot.get(), kOffHand
+        );
+        const void* resultingOff =
+            gGetOffhandSlot != nullptr ? gGetOffhandSlot(player) : nullptr;
+        const bool activeOff = activeUseMatches(player, resultingOff);
+
+        if (activeOff) {
+            gSessionPlayer = player;
+            gSessionGameMode = gameMode;
+        }
+        if (nativeHandled || activeOff) {
+            gUpperAttemptCommitted = true;
+        }
+        return nativeHandled || activeOff;
+    }
 
     // 1.26.51.1's upper dispatcher passes a local ItemStack copy (sp+0x60),
     // so pointer identity with Player::getSelectedItem is invalid.
@@ -1841,6 +2094,57 @@ std::uint32_t RightUseRouter::useItemOnBlockDetour(
     const void* mainStack = selectedOriginal(player);
     const bool mainEmptyForDiag = stackIsNull(mainStack);
 
+    if (gUpperUseAttempt == UpperUseAttempt::MainOnly) {
+        if (!stackShouldAttemptBlockUse(mainStack)) {
+            return 0;
+        }
+
+        ScopedActionHand mainScope(ActionHand::MainHand, ActionKind::UseBlock);
+        const auto result = original(
+            gameMode, interaction, blockPos, face, hitPos,
+            kMainHand, extra, flag
+        );
+        if (result != 0u) {
+            gUpperAttemptCommitted = true;
+        }
+        return result;
+    }
+
+    if (gUpperUseAttempt == UpperUseAttempt::OffOnly) {
+        const void* offStack =
+            gGetOffhandSlot != nullptr ? gGetOffhandSlot(player) : nullptr;
+        if (stackIsNull(offStack) || !stackShouldAttemptBlockUse(offStack)) {
+            return 0;
+        }
+
+        ScopedItemStackSnapshot offSnapshot(offStack);
+        if (offSnapshot.get() == nullptr) {
+            return 0;
+        }
+
+        ScopedActionHand offScope(ActionHand::OffHand, ActionKind::UseBlock);
+        ScopedPlayer routedPlayer(player);
+        const auto result = original(
+            gameMode, offSnapshot.get(), blockPos, face, hitPos,
+            kOffHand, extra, flag
+        );
+
+        if ((result & 1u) != 0u) {
+            const std::uint8_t liveCount = stackCount(offStack);
+            const std::uint8_t usedCount = stackCount(offSnapshot.get());
+            if (gSetItemInHandSlot != nullptr && liveCount != usedCount) {
+                gSetItemInHandSlot(
+                    const_cast<void*>(player), kOffHand, offSnapshot.get()
+                );
+            }
+            OffhandPlacementAnimation::instance().trigger();
+        }
+        if (result != 0u) {
+            gUpperAttemptCommitted = true;
+        }
+        return result;
+    }
+
     // Decide whether MAINHAND genuinely owns right-click *before* executing
     // GameMode::useItemOn.  Calling the generic MAINHAND use-on wrapper first
     // can mutate/prime the client transaction even when a Sword/Pickaxe has no
@@ -2047,6 +2351,19 @@ const void* RightUseRouter::selectedItemDetour(const void* player) noexcept {
         return original(player);
     }
 
+    if (gUpperUseAttempt == UpperUseAttempt::MainOnly) {
+        return original(player);
+    }
+    if (
+        gUpperUseAttempt == UpperUseAttempt::OffOnly &&
+        gGetOffhandSlot != nullptr
+    ) {
+        const void* offStack = gGetOffhandSlot(player);
+        if (offStack != nullptr) {
+            return offStack;
+        }
+    }
+
     const auto scoped = currentScopedAction();
     // An active OFF session must not override an explicit MAIN attempt.
     if (scoped.has_value() && scoped->hand == ActionHand::MainHand) {
@@ -2229,6 +2546,21 @@ void RightUseRouter::handTransactionDetour(void* player, unsigned char hand, voi
     if (!instance || !instance->mHandTransactionOriginal) return;
     const auto original = reinterpret_cast<HandTransactionFn>(instance->mHandTransactionOriginal);
     const auto action = currentScopedAction();
+
+    if (instance->featureEnabled() && action) {
+        const bool mainCommit =
+            gUpperUseAttempt == UpperUseAttempt::MainOnly &&
+            action->hand == ActionHand::MainHand &&
+            hand == kMainHand;
+        const bool offCommit =
+            gUpperUseAttempt == UpperUseAttempt::OffOnly &&
+            action->hand == ActionHand::OffHand &&
+            hand == kOffHand;
+        if (mainCommit || offCommit) {
+            gUpperAttemptCommitted = true;
+        }
+    }
+
     if (instance->featureEnabled() && player && player == gReleasingPlayer &&
         action && action->hand == ActionHand::OffHand && hand == kMainHand &&
         reinterpret_cast<std::uintptr_t>(callback) == gReleaseCallback) {

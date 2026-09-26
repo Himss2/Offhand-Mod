@@ -87,6 +87,7 @@ def main() -> int:
         router,
         "712509dc14ccc233e91f267937dfb46ecdcc4b68",
         "b8a6351503d330628335a80e8131acd45291fa9a747465f0f34a31b2346847b4",
+        "kUpperRightUseDispatcherRva = 0x97F85F8",
         "kUseItemOnBlockRva = 0xF8A1CC4",
         "kBaseUseItemRva = 0xF8A285C",
         "kReleaseUsingItemRva = 0xF8A3204",
@@ -126,6 +127,10 @@ def main() -> int:
         "kComponentItemRequiresInteractRva = 0xFDAA1FC",
         "kBaseItemUseOnRva = 0xFF84B84",
         "kComponentItemUseOnRva = 0xFDA8A20",
+        "kItemHasTagRva = 0x1010DA9C",
+        "kAxeItemTagRva = 0x134F13F0",
+        "kHoeItemTagRva = 0x134F1418",
+        "kShovelItemTagRva = 0x134F15A8",
         "itemIsShears(",
         "itemId == kShearsItemId",
         "maxStackSize == 1",
@@ -214,6 +219,10 @@ def main() -> int:
         raise AssertionError(
             "ComponentItem::isUseable is too broad for MAINHAND priority"
         )
+    if "kShovelItemId" in router or "kAxeItemId" in router or "kHoeItemId" in router:
+        raise AssertionError(
+            "contextual priority must use native semantic tags, not numeric item IDs"
+        )
     if "requiresInteract(item)" in classifier:
         raise AssertionError(
             "generic ComponentItem::requiresInteract must not claim MAINHAND priority"
@@ -235,6 +244,7 @@ def main() -> int:
         "maxUseDuration",
         "attackOnly",
         "itemIsShears(item)",
+        "itemHasContextualBlockUse(item)",
     )
     if classifier.index("itemIsShears(item)") > classifier.index("attackDamage"):
         raise AssertionError(
@@ -243,6 +253,17 @@ def main() -> int:
     if classifier.index("specializedUse") > classifier.index("attackDamage"):
         raise AssertionError(
             "specialized native actions must be classified before axe-like attack fallback"
+        )
+    contextual_helper = function_body(router, "itemHasContextualBlockUse(")
+    require(
+        contextual_helper,
+        "gItemHasTag(item, gShovelTag)",
+        "gItemHasTag(item, gAxeTag)",
+        "gItemHasTag(item, gHoeTag)",
+    )
+    if classifier.index("itemHasContextualBlockUse(item)") > classifier.index("attackDamage"):
+        raise AssertionError(
+            "contextual MAINHAND priority must precede attack-only fallback"
         )
     if classifier.index("attackDamage") > classifier.index("maxUseDuration"):
         raise AssertionError(
@@ -333,6 +354,33 @@ def main() -> int:
             "MAINHAND use-on must not prime transaction before OFFHAND fallback"
         )
 
+    upper = function_body(router, "RightUseRouter::upperRightUseDetour(")
+    require(
+        upper,
+        "UpperUseAttempt::MainOnly",
+        "UpperUseAttempt::OffOnly",
+        "mainNative || gUpperAttemptCommitted",
+        "offNative || gUpperAttemptCommitted",
+    )
+    if upper.index("UpperUseAttempt::MainOnly") > upper.index("UpperUseAttempt::OffOnly"):
+        raise AssertionError("top-level right-use must arbitrate MAIN before OFF")
+
+    selected_detour = function_body(router, "RightUseRouter::selectedItemDetour(")
+    require(
+        selected_detour,
+        "gUpperUseAttempt == UpperUseAttempt::MainOnly",
+        "gUpperUseAttempt == UpperUseAttempt::OffOnly",
+        "gGetOffhandSlot(player)",
+    )
+
+    block_attempt = function_body(router, "stackShouldAttemptBlockUse(")
+    require(
+        block_attempt,
+        "stackClaimsMainhandRightClick",
+        "yieldedAttackOnly",
+        "return !yieldedAttackOnly",
+    )
+
     route = function_body(core, "UseRouteResult routeUseAction(")
     main = route.index("ScopedActionHand scope(ActionHand::MainHand")
     off = route.index("ScopedActionHand scope(ActionHand::OffHand")
@@ -359,8 +407,11 @@ def main() -> int:
         "differsTarget = resolveExactTarget(",
         "copyCtorTarget = resolveExactTarget(",
         "dtorTarget = resolveExactTarget(",
+        "itemHasTagTarget = resolveExactTarget(",
+        "contextualPriorityAvailable",
         "setHandExact = resolveExactTarget(",
         "kSetItemInHandSlotRva",
+        'resolveHookTarget(\n        "top-level right-use dispatcher"',
         'resolveHookTarget(\n        "Player::getSelectedItem"',
         'resolveHookTarget(\n        "GameMode::useItemOnBlock"',
         "&blockUsePreHooked",
@@ -374,6 +425,13 @@ def main() -> int:
         raise AssertionError(
             "exact stable fingerprint guard must run before live hook-target fallback"
         )
+
+    installed = function_body(router, "bool RightUseRouter::installed()")
+    require(
+        installed,
+        "mUpperRightUseHook",
+        "mUpperRightUseOriginal",
+    )
 
     require(
         levi,
