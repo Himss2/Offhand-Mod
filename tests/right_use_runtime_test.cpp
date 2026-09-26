@@ -309,6 +309,23 @@ int main(int argc, char** argv) {
             gSessionPlayer == nullptr && !usingItem,
             "instant OFFHAND use must not create a long-use session"
         );
+    } else if (test == "air_empty_main_no_off") {
+        mainStack.count = 0;
+        offStack.count = 0;
+        Stack dispatcherEmpty = mainStack;
+        dispatcherEmpty.id = 0;
+
+        const bool handled = RightUseRouter::baseUseItemDetour(
+            &gameMode, &dispatcherEmpty, 0
+        );
+        ok &= check(
+            !handled,
+            "empty MAIN with empty OFF must preserve vanilla unhandled result"
+        );
+        ok &= check(
+            calls.empty(),
+            "empty MAIN with empty OFF must not replay baseUseItem"
+        );
     } else if (test == "air_empty_main_instant_pass") {
         mainStack.count = 0;
         Stack dispatcherEmpty = mainStack;
