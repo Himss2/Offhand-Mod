@@ -201,6 +201,7 @@ constexpr std::size_t kItemUseVtableOffset = 0x290;
 constexpr std::size_t kItemCanUseAsAttackVtableOffset = 0x298;
 constexpr std::size_t kItemUseOnVtableOffset = 0x418;
 constexpr std::size_t kItemStackStorageSize = 0x98;
+constexpr std::size_t kItemStackBlockOffset = 0x18;
 constexpr std::size_t kItemStackCountOffset = 0x22;
 constexpr std::size_t kItemMaxStackSizeOffset = 0xA8;
 constexpr std::size_t kItemIdOffset = 0xAA;
@@ -491,6 +492,19 @@ template <std::size_t N>
         sizeof(count)
     );
     return count;
+}
+
+[[nodiscard]] bool stackCarriesBlock(const void* stack) noexcept {
+    if (stack == nullptr || stackIsNull(stack)) {
+        return false;
+    }
+    const void* block = nullptr;
+    std::memcpy(
+        &block,
+        static_cast<const std::byte*>(stack) + kItemStackBlockOffset,
+        sizeof(block)
+    );
+    return block != nullptr;
 }
 
 [[nodiscard]] bool stacksMatch(const void* lhs, const void* rhs) noexcept {
@@ -1950,13 +1964,23 @@ std::uint32_t RightUseRouter::useItemOnBlockDetour(
     // placement terminal while Sword/Pickaxe still yield without priming a
     // bogus MAIN transaction.
     bool yieldedAttackOnly = false;
-    (void)stackClaimsMainhandRightClick(
+    const bool mainClaimsRightClick = stackClaimsMainhandRightClick(
         mainStack, &yieldedAttackOnly, true
     );
+    const bool mainMayOwnAir = stackMayOwnMainhandAirUse(mainStack);
+    const bool mainCarriesBlock = stackCarriesBlock(mainStack);
 
     bool mainAttempted = false;
     std::uint32_t mainResult = 0;
-    if (!stackIsNull(mainStack) && !yieldedAttackOnly) {
+
+    // Do not probe arbitrary neutral MAIN items. A MAIN block stack or a
+    // proven right-click owner gets one native use-on attempt. This preserves
+    // #773's OFF-only behavior for neutral items and attack-only tools.
+    if (
+        !stackIsNull(mainStack) &&
+        !yieldedAttackOnly &&
+        (mainClaimsRightClick || mainCarriesBlock)
+    ) {
         mainAttempted = true;
         ScopedActionHand mainScope(ActionHand::MainHand, ActionKind::UseBlock);
         mainResult = original(
@@ -1966,14 +1990,13 @@ std::uint32_t RightUseRouter::useItemOnBlockDetour(
         if (mainResult != 0u) {
             return mainResult;
         }
+    }
 
-        // A neutral use-on result is not permission for OFFHAND to steal the
-        // click when MAIN still owns an air/self-use phase (Snowball, Spear,
-        // food, Bow, etc.). Let the untouched upper dispatcher continue to
-        // GameMode::baseUseItem for MAIN. No replay and no second hand here.
-        if (stackMayOwnMainhandAirUse(mainStack)) {
-            return 0u;
-        }
+    // MAIN may still own the air/self-use phase even when its block-use phase
+    // passed (or was intentionally skipped). Do not let OFF block-use fire
+    // before Snowball/Spear/Food/Bow-style MAIN actions get their native turn.
+    if (!yieldedAttackOnly && mainMayOwnAir) {
+        return 0u;
     }
 
     const auto mainFallback = [&]() noexcept -> std::uint32_t {
