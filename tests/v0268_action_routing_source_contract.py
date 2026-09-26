@@ -138,7 +138,7 @@ def main() -> int:
         "resolveExactTarget(",
         "resolveKnownBuildTarget(",
         "resolveHookTarget(",
-        "stable guard failed offhand=%d null=%d using=%d inUse=%d differs=%d copy=%d dtor=%d",
+        "core guard failed offhand=%d null=%d using=%d inUse=%d differs=%d copy=%d dtor=%d",
         "pre-hooked target detected; chaining live 1.26.51.1 target",
         "std::memcmp(",
     )
@@ -389,11 +389,47 @@ def main() -> int:
         'resolveHookTarget(\n        "GameMode::baseUseItem"',
         'resolveHookTarget(\n        "GameMode::releaseUsingItem"',
     )
-    stable_guard_pos = install.index("stable guard failed")
+    stable_guard_pos = install.index("core guard failed")
     hook_target_pos = install.index('resolveHookTarget(\n        "Player::getSelectedItem"')
     if stable_guard_pos > hook_target_pos:
         raise AssertionError(
             "exact stable fingerprint guard must run before live hook-target fallback"
+        )
+
+    # #778 added instant-air diagnostics/parity support. Those are additive:
+    # failure must not tear down the proven #752 use-on-block router.
+    require(
+        install,
+        "contextualPriorityAvailable",
+        "optional instant-air diagnostic hooks unavailable; core placement remains active",
+        "optional instant-air diagnostic targets unavailable; core placement remains active",
+        "optional instant air-use upper gate unavailable; #752 block placement remains active",
+        "optional server offhand-parity gate unavailable; #752 block placement remains active",
+    )
+    for forbidden_core_dependency in (
+        "itemHasTagTarget == 0 || !contextualTagsValid",
+        "useTickBridgeTarget == 0 || upperAirUseGateTarget == 0",
+        "offhandParityGateTarget == 0 ||",
+        "interactionGateTarget == 0 || enderPearlUseTarget == 0",
+    ):
+        if forbidden_core_dependency in install:
+            raise AssertionError(
+                "post-#752 optional instant-air/contextual probes must not disable core placement: "
+                + forbidden_core_dependency
+            )
+
+    installed_body = function_body(router, "bool RightUseRouter::installed()")
+    if (
+        "mUpperAirUseGatePatchApplied" in installed_body
+        or "mOffhandParityGatePatchApplied" in installed_body
+    ):
+        raise AssertionError(
+            "core RightUseRouter installed state must not depend on optional instant-air/parity patches"
+        )
+
+    if "[InstantAirDiag]" in use_block:
+        raise AssertionError(
+            "proven #752 useItemOnBlock path must remain isolated from instant-air diagnostics"
         )
 
     require(
