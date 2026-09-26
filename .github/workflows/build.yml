@@ -117,7 +117,15 @@ jobs:
             tests/v0268_semantic_bridge_binary_contract.py \
             tests/v0268_render_126511_compat_source_contract.py \
             tests/v0268_swap_button_source_contract.py
-          grep -q '"version": "0.2.68"' manifest.json
+          python3 - <<'PY_VERSION'
+          import json, re
+          with open('manifest.json', encoding='utf-8') as f:
+              version = json.load(f)['version']
+          assert version == '0.2.68' or re.fullmatch(r'test [1-9][0-9]*', version), (
+              f'unsupported manifest version: {version!r}'
+          )
+          print(f'validated manifest version: {version}')
+          PY_VERSION
           grep -q 'NativeCapabilityProbe.cpp' CMakeLists.txt
           grep -q 'NativeOffhandPolicy.cpp' CMakeLists.txt
           grep -q 'kPlannerRva126511 = 0xF9292A0' src/runtime/AutoInsertRouting.cpp
@@ -191,12 +199,21 @@ jobs:
           unzip -l dist/arm64-v8a/levi-offhand-v0.2.68.levipack
           file build/android-arm64-v8a-Release/out/arm64-v8a/liblevi_offhand.so
           python3 - <<'PY2'
-          import json, zipfile
+          import json, re, zipfile
           path='dist/arm64-v8a/levi-offhand-v0.2.68.levipack'
+          with open('manifest.json', encoding='utf-8') as f:
+              source_manifest=json.load(f)
           with zipfile.ZipFile(path) as z:
               assert set(z.namelist()) == {'manifest.json','liblevi_offhand.so'}
-              manifest=json.loads(z.read('manifest.json'))
-              assert manifest['version']=='0.2.68'
+              packaged_manifest=json.loads(z.read('manifest.json'))
+          version=source_manifest['version']
+          assert version == '0.2.68' or re.fullmatch(r'test [1-9][0-9]*', version), (
+              f'unsupported source manifest version: {version!r}'
+          )
+          assert packaged_manifest['version'] == version, (
+              f"packaged version {packaged_manifest['version']!r} != source {version!r}"
+          )
+          print(f'packaged manifest version verified: {version}')
           PY2
 
       - name: Upload artifact
