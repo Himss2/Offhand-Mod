@@ -327,9 +327,22 @@ enum class UpperUsePass : std::uint8_t {
     Off,
 };
 
+enum class RightClickOwner : std::uint8_t {
+    None,
+    Main,
+    Off,
+};
+
 thread_local bool gInsideUpperUse = false;
 thread_local UpperUsePass gUpperUsePass = UpperUsePass::None;
+thread_local RightClickOwner gRightClickOwner = RightClickOwner::None;
+thread_local const void* gRightClickPlayer = nullptr;
+thread_local bool gRightClickMainBlockAttempted = false;
+thread_local bool gRightClickMainAirAttempted = false;
+thread_local bool gRightClickOffBlockAttempted = false;
+thread_local bool gRightClickOffAirAttempted = false;
 thread_local bool gUpperMainClaimed = false;
+thread_local bool gUpperOffClaimed = false;
 thread_local bool gCaptureUpperPlayer = false;
 thread_local const void* gCapturedUpperPlayer = nullptr;
 thread_local bool gInsideBaseUse = false;
@@ -730,11 +743,21 @@ template <typename Fn>
         itemVirtual<ItemBoolFn>(item, kItemIsThrowableVtableOffset);
     const auto isUseable =
         itemVirtual<ItemBoolFn>(item, kItemIsUseableVtableOffset);
+    const auto getMaxUseDuration = itemVirtual<GetMaxUseDurationFn>(
+        item, kItemGetMaxUseDurationVtableOffset
+    );
+    const int maxUseDuration =
+        getMaxUseDuration != nullptr
+        ? getMaxUseDuration(item, stack)
+        : 0;
 
     if (
         (isFood != nullptr && isFood(item)) ||
         (isThrowable != nullptr && isThrowable(item)) ||
-        (isUseable != nullptr && isUseable(item))
+        (
+            isUseable != nullptr && isUseable(item) &&
+            maxUseDuration > 0
+        )
     ) {
         return true;
     }
@@ -1524,7 +1547,14 @@ void RightUseRouter::uninstall(pl::mod::ModContext& context) noexcept {
     mUpperUseTarget = 0;
     gInsideUpperUse = false;
     gUpperUsePass = UpperUsePass::None;
+    gRightClickOwner = RightClickOwner::None;
+    gRightClickPlayer = nullptr;
+    gRightClickMainBlockAttempted = false;
+    gRightClickMainAirAttempted = false;
+    gRightClickOffBlockAttempted = false;
+    gRightClickOffAirAttempted = false;
     gUpperMainClaimed = false;
+    gUpperOffClaimed = false;
     gCaptureUpperPlayer = false;
     gCapturedUpperPlayer = nullptr;
 
@@ -1652,43 +1682,69 @@ bool RightUseRouter::upperUseDetour(
 
     ScopedBool reentry(gInsideUpperUse);
 
+    // A new upper-dispatch entry is the start of a new physical right-click
+    // arbitration epoch.  Do NOT restore these fields on return: Bedrock can
+    // issue additional lower GameMode callbacks for the same click after this
+    // dispatcher has returned.  The latch survives those callbacks and is
+    // reset only by the next upper-dispatch entry.
+    gRightClickOwner = RightClickOwner::None;
+    gRightClickPlayer = nullptr;
+    gRightClickMainBlockAttempted = false;
+    gRightClickMainAirAttempted = false;
+    gRightClickOffBlockAttempted = false;
+    gRightClickOffAirAttempted = false;
+    gUpperMainClaimed = false;
+    gUpperOffClaimed = false;
+
     const UpperUsePass previousPass = gUpperUsePass;
     const bool previousCapture = gCaptureUpperPlayer;
     const void* previousCaptured = gCapturedUpperPlayer;
-    const bool previousClaimed = gUpperMainClaimed;
 
     gUpperUsePass = UpperUsePass::Main;
     gCaptureUpperPlayer = true;
     gCapturedUpperPlayer = nullptr;
-    gUpperMainClaimed = false;
 
     const bool mainHandled =
         original(controller, inputFlags, interaction, target);
     const void* player = gCapturedUpperPlayer;
-    const bool mainClaimed = mainHandled || gUpperMainClaimed;
 
     gCaptureUpperPlayer = previousCapture;
     gCapturedUpperPlayer = previousCaptured;
+
+    const auto selected =
+        instance->mSelectedItemOriginal != nullptr
+        ? reinterpret_cast<SelectedItemFn>(instance->mSelectedItemOriginal)
+        : nullptr;
+    const void* mainStack =
+        player != nullptr && selected != nullptr ? selected(player) : nullptr;
+    const bool mainPresent =
+        mainStack != nullptr && !stackIsNull(mainStack);
+
+    // Never use the broad upper return alone as evidence of MAIN ownership.
+    // Device logs showed mainCount=0 while the upper dispatcher returned
+    // handled.  Ownership comes only from a real lower MAIN block/self-use
+    // claim and requires an actual MAIN stack.
+    const bool mainClaimed = mainPresent && gUpperMainClaimed;
+    gRightClickPlayer = player;
 
     if (
         mainClaimed || player == nullptr || gGetOffhandSlot == nullptr ||
         stackIsNull(gGetOffhandSlot(player))
     ) {
         gUpperUsePass = previousPass;
-        gUpperMainClaimed = previousClaimed;
         if (mainClaimed) {
+            gRightClickOwner = RightClickOwner::Main;
             __android_log_print(
                 ANDROID_LOG_INFO,
                 kLogTag,
-                "[RightUseRouter] upper-use MAIN claimed; OFF suppressed"
+                "[RightUseRouter] click owner=MAIN; late OFF callbacks suppressed"
             );
         }
-        // Preserve vanilla MAIN return semantics. Some native throwable uses
-        // are real actions even though this bool is false.
         return mainHandled;
     }
 
     bool offHandled = false;
+    gUpperOffClaimed = false;
     {
         gUpperUsePass = UpperUsePass::Off;
         ScopedPlayer routedPlayer(player);
@@ -1697,13 +1753,21 @@ bool RightUseRouter::upperUseDetour(
     }
 
     gUpperUsePass = previousPass;
-    gUpperMainClaimed = previousClaimed;
+    if (gUpperOffClaimed) {
+        gRightClickOwner = RightClickOwner::Off;
+        __android_log_print(
+            ANDROID_LOG_INFO,
+            kLogTag,
+            "[RightUseRouter] click owner=OFF; late duplicate callbacks suppressed"
+        );
+    }
 
     __android_log_print(
         ANDROID_LOG_INFO,
         kLogTag,
-        "[RightUseRouter] upper-use OFF fallback handled=%d",
-        offHandled ? 1 : 0
+        "[RightUseRouter] upper-use OFF fallback handled=%d claimed=%d",
+        offHandled ? 1 : 0,
+        gUpperOffClaimed ? 1 : 0
     );
     return offHandled;
 }
@@ -1747,6 +1811,7 @@ bool RightUseRouter::baseUseItemDetour(
         gGetOffhandSlot != nullptr ? gGetOffhandSlot(player) : nullptr;
 
     if (gUpperUsePass == UpperUsePass::Main) {
+        gRightClickMainAirAttempted = true;
         if (
             itemStack == nullptr || mainStack == nullptr ||
             !useInputRepresentsSelected(itemStack, mainStack)
@@ -1767,6 +1832,7 @@ bool RightUseRouter::baseUseItemDetour(
     }
 
     if (gUpperUsePass == UpperUsePass::Off) {
+        gRightClickOffAirAttempted = true;
         if (
             itemStack == nullptr || offStack == nullptr ||
             stackIsNull(offStack) ||
@@ -1796,6 +1862,13 @@ bool RightUseRouter::baseUseItemDetour(
             }
         }
 
+        if (
+            nativeHandled || activeOff ||
+            stackDeclaresNativeAirUse(offStack)
+        ) {
+            gUpperOffClaimed = true;
+        }
+
         if (nativeHandled || activeOff) {
             bool expected = false;
             if (instance->mLoggedOffhandUse.compare_exchange_strong(
@@ -1809,6 +1882,43 @@ bool RightUseRouter::baseUseItemDetour(
             }
         }
         return nativeHandled || activeOff;
+    }
+
+    if (
+        gUpperUsePass == UpperUsePass::None &&
+        gRightClickPlayer == player
+    ) {
+        if (gRightClickOwner == RightClickOwner::Main) {
+            // MAIN already owned this physical click in the upper pass.  Any
+            // later air/self-use callback is part of the same input and must
+            // not start OFF or replay MAIN.
+            return false;
+        }
+
+        if (gRightClickOwner == RightClickOwner::Off) {
+            if (gRightClickOffAirAttempted || stackIsNull(offStack)) {
+                return false;
+            }
+            gRightClickOffAirAttempted = true;
+
+            ScopedItemStackSnapshot offSnapshot(offStack);
+            if (offSnapshot.get() == nullptr) {
+                return false;
+            }
+
+            ScopedActionHand offScope(ActionHand::OffHand, ActionKind::UseAir);
+            ScopedPlayer routedPlayer(player);
+            const bool nativeHandled =
+                original(gameMode, offSnapshot.get(), kOffHand);
+            const void* resultingOff = gGetOffhandSlot(player);
+            const bool activeOff = activeUseMatches(player, resultingOff);
+
+            if (activeOff) {
+                gSessionPlayer = player;
+                gSessionGameMode = gameMode;
+            }
+            return nativeHandled || activeOff;
+        }
     }
 
     // 1.26.51.1's upper dispatcher passes a local ItemStack copy (sp+0x60),
@@ -2084,6 +2194,7 @@ std::uint32_t RightUseRouter::useItemOnBlockDetour(
     const bool mainEmptyForDiag = stackIsNull(mainStack);
 
     if (gUpperUsePass == UpperUsePass::Main) {
+        gRightClickMainBlockAttempted = true;
         ScopedActionHand mainScope(ActionHand::MainHand, ActionKind::UseBlock);
         const std::uint32_t mainResult = original(
             gameMode, interaction, blockPos, face, hitPos,
@@ -2096,6 +2207,7 @@ std::uint32_t RightUseRouter::useItemOnBlockDetour(
     }
 
     if (gUpperUsePass == UpperUsePass::Off) {
+        gRightClickOffBlockAttempted = true;
         const void* liveOff =
             gGetOffhandSlot != nullptr ? gGetOffhandSlot(player) : nullptr;
         if (stackIsNull(liveOff)) {
@@ -2114,6 +2226,10 @@ std::uint32_t RightUseRouter::useItemOnBlockDetour(
             kOffHand, extra, flag
         );
 
+        if (offResult != 0u) {
+            gUpperOffClaimed = true;
+        }
+
         if ((offResult & 1u) != 0u) {
             const std::uint8_t liveCount = stackCount(liveOff);
             const std::uint8_t resultingCount = stackCount(offSnapshot.get());
@@ -2130,6 +2246,60 @@ std::uint32_t RightUseRouter::useItemOnBlockDetour(
             OffhandPlacementAnimation::instance().trigger();
         }
         return offResult;
+    }
+
+    if (
+        gUpperUsePass == UpperUsePass::None &&
+        gRightClickPlayer == player
+    ) {
+        if (gRightClickOwner == RightClickOwner::Main) {
+            // MAIN block/self-use already owns this click.  Bedrock may call
+            // useItemOnBlock again after the upper dispatcher returns; that
+            // callback must not be allowed to select OFF independently.
+            return 0;
+        }
+
+        if (gRightClickOwner == RightClickOwner::Off) {
+            if (gRightClickOffBlockAttempted) {
+                return 0;
+            }
+            gRightClickOffBlockAttempted = true;
+
+            const void* liveOff =
+                gGetOffhandSlot != nullptr ? gGetOffhandSlot(player) : nullptr;
+            if (stackIsNull(liveOff)) {
+                return 0;
+            }
+
+            ScopedItemStackSnapshot offSnapshot(liveOff);
+            if (offSnapshot.get() == nullptr) {
+                return 0;
+            }
+
+            ScopedActionHand offScope(ActionHand::OffHand, ActionKind::UseBlock);
+            ScopedPlayer routedPlayer(player);
+            const std::uint32_t offResult = original(
+                gameMode, offSnapshot.get(), blockPos, face, hitPos,
+                kOffHand, extra, flag
+            );
+
+            if ((offResult & 1u) != 0u) {
+                const std::uint8_t liveCount = stackCount(liveOff);
+                const std::uint8_t resultingCount = stackCount(offSnapshot.get());
+                if (
+                    gSetItemInHandSlot != nullptr &&
+                    liveCount != resultingCount
+                ) {
+                    gSetItemInHandSlot(
+                        const_cast<void*>(player),
+                        kOffHand,
+                        offSnapshot.get()
+                    );
+                }
+                OffhandPlacementAnimation::instance().trigger();
+            }
+            return offResult;
+        }
     }
 
     // Decide whether MAINHAND genuinely owns right-click *before* executing

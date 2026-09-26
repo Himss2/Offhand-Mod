@@ -413,3 +413,26 @@ MAIN Spear hold + OFF block, MAIN Shovel/Hoe contextual use + OFF action,
 MAIN throwable + OFF action, empty-MAIN Snowball/Wind Charge-style
 ComponentItem use, and empty-MAIN food long-use. Device validation is required
 before this becomes a new baseline.
+
+
+### Test 3 — persistent right-click ownership latch
+
+Device logs from test 2 proved that Minecraft can invoke
+`GameMode::useItemOnBlock` / `GameMode::baseUseItem` again after the upper
+dispatcher has already returned for the same physical click. Test 3 therefore
+keeps the selected hand owner latched until the next upper-dispatch entry.
+
+Important corrections:
+
+- the broad upper return is **not** ownership evidence; an empty MAIN was
+  observed with `mainCount=0` while the upper dispatcher still returned
+  handled;
+- MAIN ownership is recorded only by a real lower MAIN block/self-use claim;
+- once MAIN owns the click, every late lower callback is suppressed rather
+  than independently falling through to OFF;
+- once OFF owns the click, a lower block/air action is allowed at most once;
+- the next upper-dispatch entry resets the latch for the next click.
+
+This directly targets the device regressions: Spear hold + OFF block, MAIN
+block + OFF throwable, contextual Shovel/Hoe + OFF action, and empty-MAIN OFF
+ComponentItem use.

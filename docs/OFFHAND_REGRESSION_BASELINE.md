@@ -496,3 +496,33 @@ tracking.
 
 The old empty-MAIN instant-only gate is intentionally bypassed during the
 scoped OFF retry so `ComponentItem::use @ 0xFDA8274` can execute natively.
+
+
+### Test 3 evidence from device
+
+Test 2 logs showed both of these impossible-under-a-single-stack-frame
+sequences:
+
+```text
+mainCount=0
+... hand=0 transaction ...
+upper-use MAIN claimed; OFF suppressed
+```
+
+and:
+
+```text
+upper-use MAIN claimed; OFF suppressed
+... BlockPriorityDiag ...
+... handTransaction requestedHand=1 ...
+```
+
+Therefore `0x97F85F8` is a useful click-start boundary but does not remain on
+the stack for every later block/self-use callback. Test 3 adds a per-thread
+right-click owner latch. It is reset at the next upper entry and intentionally
+survives the return from the current upper call so late lower callbacks cannot
+select another hand.
+
+The latch does not use the upper function's bool as proof of MAIN ownership.
+A real MAIN stack plus a lower block result, active MAIN use session, or
+verified native air-use capability must claim MAIN.
