@@ -27,6 +27,13 @@ public:
 private:
     RightUseRouter() = default;
 
+    static bool upperUseDetour(
+        void* controller,
+        const void* inputFlags,
+        const void* interaction,
+        const void* target
+    ) noexcept;
+
     static bool baseUseItemDetour(
         void* gameMode,
         const void* itemStack,
@@ -59,16 +66,19 @@ private:
     std::unique_ptr<pl::memory::HookHandle> mSetSelectedItemHook;
     void* mCompleteUsingItemOriginal{nullptr};
     void* mSetSelectedItemOriginal{nullptr};
+    std::unique_ptr<pl::memory::HookHandle> mUpperUseHook;
     std::unique_ptr<pl::memory::HookHandle> mSelectedItemHook;
     std::unique_ptr<pl::memory::HookHandle> mReleaseUsingItemHook;
     std::unique_ptr<pl::memory::HookHandle> mBaseUseItemHook;
     std::unique_ptr<pl::memory::HookHandle> mUseItemOnBlockHook;
 
+    void* mUpperUseOriginal{nullptr};
     void* mSelectedItemOriginal{nullptr};
     void* mReleaseUsingItemOriginal{nullptr};
     void* mBaseUseItemOriginal{nullptr};
     void* mUseItemOnBlockOriginal{nullptr};
 
+    std::uintptr_t mUpperUseTarget{0};
     std::uintptr_t mSelectedItemTarget{0};
     std::uintptr_t mReleaseUsingItemTarget{0};
     std::uintptr_t mBaseUseItemTarget{0};

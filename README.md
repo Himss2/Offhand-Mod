@@ -384,3 +384,32 @@ and so on.
 
 Do **not** bump test branches as `0.2.69`, `0.2.70`, etc. Numeric release
 versions are reserved for an accepted/release baseline after device validation.
+
+
+### Test 2 — single-owner right-click arbitration candidate
+
+This branch keeps build #773 as the runtime baseline and changes right-click
+ownership at one verified boundary: the 1.26.51.1 upper dispatcher
+`0x97F85F8`. The purpose is to stop separate block-use and air/self-use hooks
+from independently selecting different hands for one physical input.
+
+Invariant under test:
+
+```text
+run the complete vanilla MAIN pass
+  MAIN block action / contextual tool action / hold / throwable claims
+      -> OFF is suppressed for this click
+  MAIN has no action
+      -> retry the complete dispatcher once with the live OFF slot
+```
+
+The OFF retry does not use the old instant-only classifier. It forwards native
+`hand=1` for both block-use and base-use, allowing data-driven
+`ComponentItem::use @ 0xFDA8274` items (throwables, food/long-use, etc.) to
+reach the same native server parity path already enabled in build #773.
+
+This candidate is specifically intended to cover: MAIN block + OFF throwable,
+MAIN Spear hold + OFF block, MAIN Shovel/Hoe contextual use + OFF action,
+MAIN throwable + OFF action, empty-MAIN Snowball/Wind Charge-style
+ComponentItem use, and empty-MAIN food long-use. Device validation is required
+before this becomes a new baseline.

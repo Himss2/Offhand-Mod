@@ -475,3 +475,24 @@ numeric release version only after the candidate is accepted on device.
 Do not start new visual/animation hooks until the four action-routing bugs above
 are device-validated. Renderer work must not be used to mask or compensate for
 incorrect hand ownership.
+
+
+### Test 2 ownership hypothesis
+
+Branch manifest version: `test 2`.
+
+Root cause under test: build #773 arbitrates at `GameMode::useItemOnBlock`
+and `GameMode::baseUseItem` independently. One physical right-click may
+therefore run OFF block-use before MAIN self-use, or run OFF air-use after a
+MAIN block action. The upper client dispatcher `0x97F85F8` is the first
+shared boundary covering both paths.
+
+Test 2 performs one complete MAIN pass first. Lower detours are bridge-only
+during that pass. A nonzero MAIN block result, an active MAIN use session, or a
+declared native MAIN air-use capability claims the input. Only an unclaimed
+MAIN pass permits one complete OFF retry, where lower detours force native
+hand=1 and preserve OFF placement count reconciliation / long-use session
+tracking.
+
+The old empty-MAIN instant-only gate is intentionally bypassed during the
+scoped OFF retry so `ComponentItem::use @ 0xFDA8274` can execute natively.

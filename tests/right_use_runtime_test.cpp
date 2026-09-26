@@ -71,8 +71,15 @@ static const Item* mainWeak = &mainItem;
 static const Item* offWeak = &offItem;
 static Stack mainStack, offStack, activeStack;
 static std::vector<unsigned char> calls;
+static std::vector<unsigned char> blockCalls, airCalls;
 static std::uint32_t mainResult = 0, offResult = 1;
-static bool usingItem = false, startUse = false, detached = true;
+static bool separateUpperResults = false;
+static std::uint32_t mainBlockResult = 0, offBlockResult = 1;
+static bool mainAirResult = false, offAirResult = true;
+static bool upperTryBlock = true;
+static bool usingItem = false, startUse = false, startMainUse = false, detached = true;
+static bool mainFood = false, mainThrowable = false, mainUseable = false;
+static bool offFood = false, offThrowable = false, offUseable = false;
 static int copies = 0, destroys = 0;
 static bool mutateOffOnMain = false;
 static bool mutateOffCountOnBlock = false;
@@ -81,6 +88,15 @@ static int offhandSetterCalls = 0;
 static int damage(const void* p) { return static_cast<const Item*>(p)->damage; }
 static int duration(const void* p, const void*) { return static_cast<const Item*>(p)->duration; }
 static bool cannotAttack(const void*) { return false; }
+static bool isFoodCapability(const void* p) {
+    return p == &mainItem ? mainFood : p == &offItem ? offFood : false;
+}
+static bool isThrowableCapability(const void* p) {
+    return p == &mainItem ? mainThrowable : p == &offItem ? offThrowable : false;
+}
+static bool isUseableCapability(const void* p) {
+    return p == &mainItem ? mainUseable : p == &offItem ? offUseable : false;
+}
 static bool isNull(const void* p) { return !p || static_cast<const Stack*>(p)->count == 0; }
 static bool differs(const void* a, const void* b) {
     return static_cast<const Stack*>(a)->id != static_cast<const Stack*>(b)->id;
@@ -99,6 +115,7 @@ static void copyStack(void* out, const void* in) { ++copies; std::memcpy(out, in
 static void destroyStack(void*) { ++destroys; }
 static std::uint32_t blockUse(void*, const void* stack, const void*, int, const void*, unsigned char hand, std::uintptr_t, bool) {
     calls.push_back(hand);
+    blockCalls.push_back(hand);
     if (hand == 1) {
         detached &= stack != &offStack;
         if (mutateOffCountOnBlock && offResult != 0) {
@@ -110,17 +127,40 @@ static std::uint32_t blockUse(void*, const void* stack, const void*, int, const 
             }
         }
     }
-    return hand == 0 ? mainResult : offResult;
+    return separateUpperResults
+        ? (hand == 0 ? mainBlockResult : offBlockResult)
+        : (hand == 0 ? mainResult : offResult);
 }
 static bool airUse(void*, const void* stack, unsigned char hand) {
     calls.push_back(hand);
+    airCalls.push_back(hand);
     if (hand == 0 && mutateOffOnMain) offStack.count = 7;
+    if (hand == 0 && startMainUse) {
+        usingItem = true;
+        activeStack = mainStack;
+    }
     if (hand == 1) {
         offInputCount = static_cast<const Stack*>(stack)->count;
         detached &= stack != &offStack;
         if (startUse) { usingItem = true; activeStack = offStack; }
     }
-    return hand == 0 ? mainResult : offResult;
+    return separateUpperResults
+        ? (hand == 0 ? mainAirResult : offAirResult)
+        : (hand == 0 ? mainResult : offResult);
+}
+static bool upperUse(void*, const void*, const void*, const void*) {
+    const void* selectedNow = RightUseRouter::selectedItemDetour(&player);
+    if (upperTryBlock) {
+        const auto block = RightUseRouter::useItemOnBlockDetour(
+            &gameMode, selectedNow, nullptr, 0, nullptr, 0, 0, false
+        );
+        if (block != 0u) {
+            return true;
+        }
+    }
+    return RightUseRouter::baseUseItemDetour(
+        &gameMode, selectedNow, 0
+    );
 }
 static int mainWrites = 0, completions = 0, cancellations = 0;
 static bool returnContainer = false, emptyReadStayedOff = false;
@@ -146,6 +186,9 @@ static void releaseUse(void*) {
 }
 static void configureTable(std::array<void*,134>& t) {
     t[0x30/8] = reinterpret_cast<void*>(&duration);
+    t[0xA0/8] = reinterpret_cast<void*>(&isFoodCapability);
+    t[0xA8/8] = reinterpret_cast<void*>(&isThrowableCapability);
+    t[0xB0/8] = reinterpret_cast<void*>(&isUseableCapability);
     t[0x130/8] = reinterpret_cast<void*>(&damage);
     t[0x298/8] = reinterpret_cast<void*>(&cannotAttack);
     t[0x290/8] = reinterpret_cast<void*>(testBase + kBaseItemUseRva);
@@ -165,6 +208,7 @@ int main(int argc, char** argv) {
     auto& router = RightUseRouter::instance();
     RightUseRouter::sInstance = &router;
     router.mFeatureEnabled = true;
+    router.mUpperUseOriginal = reinterpret_cast<void*>(&upperUse);
     router.mSelectedItemOriginal = reinterpret_cast<void*>(&selected);
     router.mUseItemOnBlockOriginal = reinterpret_cast<void*>(&blockUse);
     router.mBaseUseItemOriginal = reinterpret_cast<void*>(&airUse);
@@ -180,7 +224,126 @@ int main(int argc, char** argv) {
     gReleaseCallback = reinterpret_cast<std::uintptr_t>(&releaseCallback);
     const std::string test = argv[1];
     bool ok = true;
-    if (test == "release_off" || test == "release_main" || test == "release_stale") {
+    if (test == "upper_main_block_terminal") {
+        separateUpperResults = true;
+        mainBlockResult = 1;
+        offBlockResult = 0;
+        offAirResult = true;
+        const bool handled = RightUseRouter::upperUseDetour(
+            nullptr, nullptr, nullptr, nullptr
+        );
+        ok &= check(handled, "MAIN block action must handle the physical click");
+        ok &= check(
+            blockCalls == std::vector<unsigned char>{0} && airCalls.empty(),
+            "MAIN block placement must suppress every OFF action for the same click"
+        );
+    } else if (test == "upper_main_context_tool_terminal") {
+        separateUpperResults = true;
+        mainItem.damage = 6; // shovel/hoe-like attack-capable tool
+        mainBlockResult = 1;
+        offBlockResult = 1;
+        const bool handled = RightUseRouter::upperUseDetour(
+            nullptr, nullptr, nullptr, nullptr
+        );
+        ok &= check(handled, "contextual MAIN tool use must own the click");
+        ok &= check(
+            blockCalls == std::vector<unsigned char>{0},
+            "contextual MAIN tool use must not fall through to OFF block-use"
+        );
+    } else if (test == "upper_main_hold_terminal") {
+        separateUpperResults = true;
+        mainBlockResult = 0;
+        mainAirResult = false;
+        offBlockResult = 1;
+        startMainUse = true;
+        mainUseable = true;
+        const bool handled = RightUseRouter::upperUseDetour(
+            nullptr, nullptr, nullptr, nullptr
+        );
+        ok &= check(handled, "active MAIN hold-use must claim the physical click");
+        ok &= check(
+            blockCalls == std::vector<unsigned char>{0} &&
+            airCalls == std::vector<unsigned char>{0},
+            "MAIN Spear-like hold must suppress OFF block placement"
+        );
+        ok &= check(usingItem, "MAIN hold-use must remain active");
+    } else if (test == "upper_main_component_throwable_terminal") {
+        separateUpperResults = true;
+        upperTryBlock = false;
+        mainTable[0x290/8] =
+            reinterpret_cast<void*>(testBase + kComponentItemUseRva);
+        mainThrowable = true;
+        mainAirResult = false; // real throwable can return false locally
+        offAirResult = true;
+        const bool handled = RightUseRouter::upperUseDetour(
+            nullptr, nullptr, nullptr, nullptr
+        );
+        ok &= check(
+            !handled,
+            "component throwable keeps native MAIN return semantics"
+        );
+        ok &= check(
+            airCalls == std::vector<unsigned char>{0},
+            "MAIN component throwable must suppress OFF throwable/self-use"
+        );
+    } else if (test == "upper_empty_component_throwable_off") {
+        separateUpperResults = true;
+        upperTryBlock = false;
+        mainStack.count = 0;
+        offTable[0x290/8] =
+            reinterpret_cast<void*>(testBase + kComponentItemUseRva);
+        offThrowable = true;
+        mainAirResult = false;
+        offAirResult = true;
+        const bool handled = RightUseRouter::upperUseDetour(
+            nullptr, nullptr, nullptr, nullptr
+        );
+        ok &= check(handled, "empty MAIN must allow OFF ComponentItem throwable");
+        ok &= check(
+            airCalls == std::vector<unsigned char>{0,1},
+            "OFF ComponentItem throwable must receive native hand=1 fallback"
+        );
+    } else if (test == "upper_empty_food_off") {
+        separateUpperResults = true;
+        upperTryBlock = false;
+        mainStack.count = 0;
+        offTable[0x290/8] =
+            reinterpret_cast<void*>(testBase + kComponentItemUseRva);
+        offFood = true;
+        offItem.duration = 32;
+        startUse = true;
+        mainAirResult = false;
+        offAirResult = false;
+        const bool handled = RightUseRouter::upperUseDetour(
+            nullptr, nullptr, nullptr, nullptr
+        );
+        ok &= check(handled, "OFF food active-use must own empty-MAIN click");
+        ok &= check(
+            airCalls == std::vector<unsigned char>{0,1},
+            "OFF food must enter native hand=1 base-use"
+        );
+        ok &= check(
+            gSessionPlayer == &player && usingItem,
+            "OFF food must pin the long-use session"
+        );
+    } else if (test == "upper_sword_off_block_fallback") {
+        separateUpperResults = true;
+        mainItem.damage = 7;
+        mainTable[0x290/8] =
+            reinterpret_cast<void*>(testBase + kWeaponItemNoopUseRva);
+        mainBlockResult = 0;
+        mainAirResult = false;
+        offBlockResult = 1;
+        const bool handled = RightUseRouter::upperUseDetour(
+            nullptr, nullptr, nullptr, nullptr
+        );
+        ok &= check(handled, "no-action MAIN must allow OFF block fallback");
+        ok &= check(
+            blockCalls == std::vector<unsigned char>{0,1} &&
+            airCalls == std::vector<unsigned char>{0},
+            "Sword/Pickaxe-like MAIN PASS must retry whole dispatcher once in OFF"
+        );
+    } else if (test == "release_off" || test == "release_main" || test == "release_stale") {
         usingItem = true; activeStack = offStack;
         if (test != "release_main") { gSessionPlayer = &player; gSessionGameMode = &gameMode; }
         else activeStack = mainStack;

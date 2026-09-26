@@ -36,6 +36,15 @@ constexpr char kLogTag[] = "Levi Offhand";
 constexpr unsigned char kMainHand = 0;
 constexpr unsigned char kOffHand = 1;
 
+// One physical right-click enters this client dispatcher before the separate
+// block-use and air/self-use GameMode boundaries.  Test-2 owns MAIN/OFF
+// arbitration here so lower hooks cannot independently fire both hands.
+constexpr std::uintptr_t kUpperUseDispatcherRva = 0x97F85F8;
+constexpr std::array<std::uint8_t, 16> kUpperUseDispatcherFingerprint{
+    0xFF, 0xC3, 0x05, 0xD1, 0xFD, 0x7B, 0x11, 0xA9,
+    0xFC, 0x6F, 0x12, 0xA9, 0xFA, 0x67, 0x13, 0xA9,
+};
+
 constexpr std::uintptr_t kUseItemOnBlockRva = 0xF8A1CC4;
 constexpr std::uintptr_t kBaseUseItemRva = 0xF8A285C;
 // Completion is distinct from release: native callback 0xFA05E30 invokes
@@ -179,8 +188,13 @@ constexpr std::uintptr_t kComponentItemUseOnRva = 0xFDA8A20;
 constexpr std::size_t kGameModePlayerOffset = sizeof(void*);
 constexpr std::size_t kItemWeakPtrOffset = 0x08;
 constexpr std::size_t kItemGetMaxUseDurationVtableOffset = 0x30;
-constexpr std::size_t kItemGetAttackDamageVtableOffset = 0x130;
+// Verified against the 1.26.51.1 Item vtable ordering: getMaxUseDuration is
+// +0x30, then the early capability virtuals place isFood/isThrowable/isUseable
+// at +0xA0/+0xA8/+0xB0 respectively.
+constexpr std::size_t kItemIsFoodVtableOffset = 0xA0;
+constexpr std::size_t kItemIsThrowableVtableOffset = 0xA8;
 constexpr std::size_t kItemIsUseableVtableOffset = 0xB0;
+constexpr std::size_t kItemGetAttackDamageVtableOffset = 0x130;
 constexpr std::size_t kItemRequiresInteractVtableOffset = 0x1A8;
 constexpr std::size_t kItemUseVtableOffset = 0x290;
 constexpr std::size_t kItemCanUseAsAttackVtableOffset = 0x298;
@@ -242,6 +256,7 @@ constexpr std::array<std::uint8_t, 28> kItemStackDtorFingerprint{
     0x54, 0xD0, 0x3B, 0xD5, 0xF3, 0x03, 0x00, 0xAA,
     0xE9, 0x56, 0x05, 0xD0,
 };
+using UpperUseFn = bool (*)(void*, const void*, const void*, const void*);
 using BaseUseItemFn = bool (*)(void*, const void*, unsigned char);
 using UseItemOnBlockFn = std::uint32_t (*)(
     void*,
@@ -306,6 +321,17 @@ void* gEnderPearlUseOriginal = nullptr;
 std::unique_ptr<pl::memory::HookHandle> gInteractionGateHook;
 std::unique_ptr<pl::memory::HookHandle> gEnderPearlUseHook;
 
+enum class UpperUsePass : std::uint8_t {
+    None,
+    Main,
+    Off,
+};
+
+thread_local bool gInsideUpperUse = false;
+thread_local UpperUsePass gUpperUsePass = UpperUsePass::None;
+thread_local bool gUpperMainClaimed = false;
+thread_local bool gCaptureUpperPlayer = false;
+thread_local const void* gCapturedUpperPlayer = nullptr;
 thread_local bool gInsideBaseUse = false;
 thread_local bool gInsideBlockUse = false;
 thread_local const void* gScopedPlayer = nullptr;
@@ -683,6 +709,45 @@ template <typename Fn>
     }
 
     return true;
+}
+
+[[nodiscard]] bool stackDeclaresNativeAirUse(
+    const void* stack
+) noexcept {
+    const void* item = itemFromStack(stack);
+    if (item == nullptr) {
+        return false;
+    }
+
+    const auto moduleBase = minecraftModuleBase();
+    if (moduleBase == 0) {
+        return false;
+    }
+
+    const auto isFood =
+        itemVirtual<ItemBoolFn>(item, kItemIsFoodVtableOffset);
+    const auto isThrowable =
+        itemVirtual<ItemBoolFn>(item, kItemIsThrowableVtableOffset);
+    const auto isUseable =
+        itemVirtual<ItemBoolFn>(item, kItemIsUseableVtableOffset);
+
+    if (
+        (isFood != nullptr && isFood(item)) ||
+        (isThrowable != nullptr && isThrowable(item)) ||
+        (isUseable != nullptr && isUseable(item))
+    ) {
+        return true;
+    }
+
+    // Preserve proven native subclasses (Pearl/Egg/Eye/etc.) whose use
+    // override owns an action even when GameMode::baseUseItem returns false.
+    const auto use = itemVirtual<void*>(item, kItemUseVtableOffset);
+    const auto useAddress = reinterpret_cast<std::uintptr_t>(use);
+    return
+        use != nullptr &&
+        useAddress != moduleBase + kBaseItemUseRva &&
+        useAddress != moduleBase + kComponentItemUseRva &&
+        useAddress != moduleBase + kWeaponItemNoopUseRva;
 }
 
 [[nodiscard]] std::uintptr_t itemUseRvaForDiag(
@@ -1250,10 +1315,15 @@ bool RightUseRouter::install(pl::mod::ModContext& context) noexcept {
         kReleaseUsingItemRva,
         kReleaseUsingItemFingerprint
     );
+    const auto upperUseTarget = resolveHookTarget(
+        "upper right-use dispatcher",
+        kUpperUseDispatcherRva,
+        kUpperUseDispatcherFingerprint
+    );
 
     if (
         selectedTarget == 0 || blockUseTarget == 0 ||
-        useTarget == 0 || releaseTarget == 0
+        useTarget == 0 || releaseTarget == 0 || upperUseTarget == 0
     ) {
         context.logger().warn(
             "[RightUseRouter] Minecraft 1.26.51.1 live hook target resolution failed; right-use disabled"
@@ -1274,6 +1344,7 @@ bool RightUseRouter::install(pl::mod::ModContext& context) noexcept {
     mReleaseUsingItemTarget = releaseTarget;
     mBaseUseItemTarget = useTarget;
     mUseItemOnBlockTarget = blockUseTarget;
+    mUpperUseTarget = upperUseTarget;
     mUseItemOnBlockPreHooked = blockUsePreHooked;
     sInstance = this;
     gStopUsingItem = reinterpret_cast<CompleteUsingItemFn>(stopTarget);
@@ -1411,6 +1482,23 @@ bool RightUseRouter::install(pl::mod::ModContext& context) noexcept {
         static_cast<unsigned long long>(kOffhandParityGateRva)
     );
 
+    // Publish the single-owner dispatcher last.  Its MAIN pass is allowed to
+    // traverse all vanilla block/self-use decisions before OFF is considered.
+    mUpperUseHook = std::make_unique<pl::memory::HookHandle>(
+        reinterpret_cast<void*>(mUpperUseTarget),
+        reinterpret_cast<void*>(&RightUseRouter::upperUseDetour),
+        &mUpperUseOriginal,
+        pl::memory::HookPriority::Normal
+    );
+    if (
+        !mUpperUseHook || !mUpperUseHook->installed() ||
+        mUpperUseOriginal == nullptr
+    ) {
+        context.logger().warn("[RightUseRouter] upper right-use dispatcher hook failed");
+        uninstall(context);
+        return false;
+    }
+
     mFeatureEnabled.store(true, std::memory_order_release);
     mLoggedOffhandUse.store(false, std::memory_order_relaxed);
     mLoggedBlockUse.store(false, std::memory_order_relaxed);
@@ -1427,6 +1515,18 @@ bool RightUseRouter::install(pl::mod::ModContext& context) noexcept {
 void RightUseRouter::uninstall(pl::mod::ModContext& context) noexcept {
     mFeatureEnabled.store(false, std::memory_order_release);
     clearSession();
+
+    if (mUpperUseHook) {
+        mUpperUseHook->reset();
+        mUpperUseHook.reset();
+    }
+    mUpperUseOriginal = nullptr;
+    mUpperUseTarget = 0;
+    gInsideUpperUse = false;
+    gUpperUsePass = UpperUsePass::None;
+    gUpperMainClaimed = false;
+    gCaptureUpperPlayer = false;
+    gCapturedUpperPlayer = nullptr;
 
     if (mOffhandParityGatePatchApplied) {
         revertOffhandParityGatePatch();
@@ -1514,7 +1614,9 @@ bool RightUseRouter::featureEnabled() const noexcept {
 }
 
 bool RightUseRouter::installed() const noexcept {
-    return mHandTransactionHook != nullptr && mHandTransactionHook->installed() &&
+    return mUpperUseHook != nullptr && mUpperUseHook->installed() &&
+        mUpperUseOriginal != nullptr &&
+        mHandTransactionHook != nullptr && mHandTransactionHook->installed() &&
         mHandTransactionOriginal != nullptr && mCompleteUsingItemHook != nullptr && mCompleteUsingItemHook->installed() &&
         mSetSelectedItemHook != nullptr && mSetSelectedItemHook->installed() &&
         mCompleteUsingItemOriginal != nullptr && mSetSelectedItemOriginal != nullptr &&
@@ -1529,6 +1631,81 @@ bool RightUseRouter::installed() const noexcept {
         mReleaseUsingItemOriginal != nullptr &&
         mBaseUseItemOriginal != nullptr &&
         mUseItemOnBlockOriginal != nullptr;
+}
+
+bool RightUseRouter::upperUseDetour(
+    void* controller,
+    const void* inputFlags,
+    const void* interaction,
+    const void* target
+) noexcept {
+    auto* instance = sInstance;
+    if (instance == nullptr || instance->mUpperUseOriginal == nullptr) {
+        return false;
+    }
+
+    const auto original =
+        reinterpret_cast<UpperUseFn>(instance->mUpperUseOriginal);
+    if (!instance->featureEnabled() || gInsideUpperUse) {
+        return original(controller, inputFlags, interaction, target);
+    }
+
+    ScopedBool reentry(gInsideUpperUse);
+
+    const UpperUsePass previousPass = gUpperUsePass;
+    const bool previousCapture = gCaptureUpperPlayer;
+    const void* previousCaptured = gCapturedUpperPlayer;
+    const bool previousClaimed = gUpperMainClaimed;
+
+    gUpperUsePass = UpperUsePass::Main;
+    gCaptureUpperPlayer = true;
+    gCapturedUpperPlayer = nullptr;
+    gUpperMainClaimed = false;
+
+    const bool mainHandled =
+        original(controller, inputFlags, interaction, target);
+    const void* player = gCapturedUpperPlayer;
+    const bool mainClaimed = mainHandled || gUpperMainClaimed;
+
+    gCaptureUpperPlayer = previousCapture;
+    gCapturedUpperPlayer = previousCaptured;
+
+    if (
+        mainClaimed || player == nullptr || gGetOffhandSlot == nullptr ||
+        stackIsNull(gGetOffhandSlot(player))
+    ) {
+        gUpperUsePass = previousPass;
+        gUpperMainClaimed = previousClaimed;
+        if (mainClaimed) {
+            __android_log_print(
+                ANDROID_LOG_DEBUG,
+                kLogTag,
+                "[RightUseRouter] upper-use MAIN claimed; OFF suppressed"
+            );
+        }
+        // Preserve vanilla MAIN return semantics. Some native throwable uses
+        // are real actions even though this bool is false.
+        return mainHandled;
+    }
+
+    bool offHandled = false;
+    {
+        gUpperUsePass = UpperUsePass::Off;
+        ScopedPlayer routedPlayer(player);
+        ScopedActionHand offScope(ActionHand::OffHand, ActionKind::UseBlock);
+        offHandled = original(controller, inputFlags, interaction, target);
+    }
+
+    gUpperUsePass = previousPass;
+    gUpperMainClaimed = previousClaimed;
+
+    __android_log_print(
+        ANDROID_LOG_DEBUG,
+        kLogTag,
+        "[RightUseRouter] upper-use OFF fallback handled=%d",
+        offHandled ? 1 : 0
+    );
+    return offHandled;
 }
 
 bool RightUseRouter::baseUseItemDetour(
@@ -1568,6 +1745,71 @@ bool RightUseRouter::baseUseItemDetour(
     const void* mainStack = selectedOriginal(player);
     const void* offStack =
         gGetOffhandSlot != nullptr ? gGetOffhandSlot(player) : nullptr;
+
+    if (gUpperUsePass == UpperUsePass::Main) {
+        if (
+            itemStack == nullptr || mainStack == nullptr ||
+            !useInputRepresentsSelected(itemStack, mainStack)
+        ) {
+            return original(gameMode, itemStack, hand);
+        }
+
+        ScopedActionHand mainScope(ActionHand::MainHand, ActionKind::UseAir);
+        const bool nativeHandled = original(gameMode, itemStack, kMainHand);
+        const bool activeMain = activeUseMatches(player, mainStack);
+        if (
+            nativeHandled || activeMain ||
+            stackDeclaresNativeAirUse(mainStack)
+        ) {
+            gUpperMainClaimed = true;
+        }
+        return nativeHandled || activeMain;
+    }
+
+    if (gUpperUsePass == UpperUsePass::Off) {
+        if (
+            itemStack == nullptr || offStack == nullptr ||
+            stackIsNull(offStack) ||
+            !useInputRepresentsSelected(itemStack, offStack)
+        ) {
+            return false;
+        }
+
+        ScopedActionHand offScope(ActionHand::OffHand, ActionKind::UseAir);
+        ScopedPlayer routedPlayer(player);
+        const bool nativeHandled =
+            original(gameMode, itemStack, kOffHand);
+        const bool activeOff = activeUseMatches(player, offStack);
+
+        if (activeOff) {
+            gSessionPlayer = player;
+            gSessionGameMode = gameMode;
+            bool expected = false;
+            if (instance->mLoggedLongUse.compare_exchange_strong(
+                    expected, true, std::memory_order_relaxed
+                )) {
+                __android_log_print(
+                    ANDROID_LOG_INFO,
+                    kLogTag,
+                    "[RightUseRouter] OFFHAND long-use session pinned until release"
+                );
+            }
+        }
+
+        if (nativeHandled || activeOff) {
+            bool expected = false;
+            if (instance->mLoggedOffhandUse.compare_exchange_strong(
+                    expected, true, std::memory_order_relaxed
+                )) {
+                __android_log_print(
+                    ANDROID_LOG_INFO,
+                    kLogTag,
+                    "[RightUseRouter] air/self-use handled by OFFHAND (upper fallback, native hand=1)"
+                );
+            }
+        }
+        return nativeHandled || activeOff;
+    }
 
     // 1.26.51.1's upper dispatcher passes a local ItemStack copy (sp+0x60),
     // so pointer identity with Player::getSelectedItem is invalid.
@@ -1841,6 +2083,55 @@ std::uint32_t RightUseRouter::useItemOnBlockDetour(
     const void* mainStack = selectedOriginal(player);
     const bool mainEmptyForDiag = stackIsNull(mainStack);
 
+    if (gUpperUsePass == UpperUsePass::Main) {
+        ScopedActionHand mainScope(ActionHand::MainHand, ActionKind::UseBlock);
+        const std::uint32_t mainResult = original(
+            gameMode, interaction, blockPos, face, hitPos,
+            kMainHand, extra, flag
+        );
+        if (mainResult != 0u) {
+            gUpperMainClaimed = true;
+        }
+        return mainResult;
+    }
+
+    if (gUpperUsePass == UpperUsePass::Off) {
+        const void* liveOff =
+            gGetOffhandSlot != nullptr ? gGetOffhandSlot(player) : nullptr;
+        if (stackIsNull(liveOff)) {
+            return 0;
+        }
+
+        ScopedItemStackSnapshot offSnapshot(liveOff);
+        if (offSnapshot.get() == nullptr) {
+            return 0;
+        }
+
+        ScopedActionHand offScope(ActionHand::OffHand, ActionKind::UseBlock);
+        ScopedPlayer routedPlayer(player);
+        const std::uint32_t offResult = original(
+            gameMode, offSnapshot.get(), blockPos, face, hitPos,
+            kOffHand, extra, flag
+        );
+
+        if ((offResult & 1u) != 0u) {
+            const std::uint8_t liveCount = stackCount(liveOff);
+            const std::uint8_t resultingCount = stackCount(offSnapshot.get());
+            if (
+                gSetItemInHandSlot != nullptr &&
+                liveCount != resultingCount
+            ) {
+                gSetItemInHandSlot(
+                    const_cast<void*>(player),
+                    kOffHand,
+                    offSnapshot.get()
+                );
+            }
+            OffhandPlacementAnimation::instance().trigger();
+        }
+        return offResult;
+    }
+
     // Decide whether MAINHAND genuinely owns right-click *before* executing
     // GameMode::useItemOn.  Calling the generic MAINHAND use-on wrapper first
     // can mutate/prime the client transaction even when a Sword/Pickaxe has no
@@ -2044,6 +2335,14 @@ const void* RightUseRouter::selectedItemDetour(const void* player) noexcept {
 
 
     if (!instance->featureEnabled() || player == nullptr) {
+        return original(player);
+    }
+
+    if (gCaptureUpperPlayer) {
+        gCapturedUpperPlayer = player;
+    }
+
+    if (gUpperUsePass == UpperUsePass::Main) {
         return original(player);
     }
 
