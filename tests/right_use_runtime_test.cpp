@@ -355,20 +355,19 @@ int main(int argc, char** argv) {
             "blocked long-use must not create an active OFF session"
         );
     } else if (
-        test == "eat_offhand_manual" ||
-        test == "eat_offhand_swap_result"
+        test == "eat_offhand_manual_blocked" ||
+        test == "eat_offhand_swap_blocked"
     ) {
-        // MAIN is empty. The upper dispatcher is allowed to hand baseUseItem a
-        // different EMPTY_ITEM representation than Player::getSelectedItem.
-        // OFFHAND origin must be irrelevant once the live slot contains food.
+        // The old #752 host test called baseUseItemDetour directly and thereby
+        // skipped the real upper-dispatcher gate.  Device testing never proved
+        // empty-MAIN eating.  The instant-use candidate deliberately keeps
+        // long-use closed until that lifecycle is solved separately.
         mainStack.count = 0;
         Stack dispatcherEmpty = mainStack;
         dispatcherEmpty.id = 0;
+        offItem.duration = 32;
 
-        if (test == "eat_offhand_swap_result") {
-            // Model the post-swap state through the native hand-slot writer,
-            // then forget how the item arrived. RightUseRouter must observe
-            // only the resulting live OFFHAND stack.
+        if (test == "eat_offhand_swap_blocked") {
             Stack swappedFood = offStack;
             offStack.count = 0;
             setHand(&player, 1, &swappedFood);
@@ -379,40 +378,21 @@ int main(int argc, char** argv) {
         const bool started = RightUseRouter::baseUseItemDetour(
             &gameMode, &dispatcherEmpty, 0
         );
-        ok &= check(started, "empty MAIN must allow OFFHAND food self-use");
         ok &= check(
-            calls == std::vector<unsigned char>{1},
-            "OFFHAND food must start directly with native hand=1"
+            !started,
+            "unproven empty-MAIN OFFHAND eating must remain closed"
         );
         ok &= check(
-            gSessionPlayer == &player && usingItem,
-            "OFFHAND food must pin the native use session"
-        );
-
-        gUseTickSelectedOriginal = selected;
-        const void* tickStack = useTickSelectedStackBridge(&player);
-        ok &= check(
-            tickStack == &offStack,
-            "native use tick must read the same live OFFHAND stack regardless of item origin"
-        );
-
-        RightUseRouter::completeUsingItemDetour(&player);
-
-        ok &= check(
-            completions == 1 && mainWrites == 0 && offhandSetterCalls == 1,
-            "food completion must write OFF exactly once and never MAIN"
+            calls.empty() && copies == 0,
+            "blocked eating must not enter native use or snapshot OFF"
         );
         ok &= check(
-            mainStack.count == 0,
-            "empty MAIN must remain untouched after OFFHAND eating"
+            !usingItem && gSessionPlayer == nullptr,
+            "blocked eating must not create an OFF long-use session"
         );
         ok &= check(
-            offStack.id == 20 && offStack.count == 15,
-            "OFFHAND food must decrement 16 -> 15"
-        );
-        ok &= check(
-            gSessionPlayer == nullptr,
-            "OFFHAND food session must end after completion"
+            mainStack.count == 0 && offStack.count == 16,
+            "blocked eating must not mutate either hand"
         );
     } else if (test == "air_snapshot") {
         startUse = true;
